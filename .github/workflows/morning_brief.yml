@@ -26,3 +26,11 @@ jobs:
         env:
           WB_API_TOKEN_TEST: ${{ secrets.WB_API_TOKEN_TEST }}
         run: python -m app.main
+      - name: Upload funnel reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: funnel-reports
+          path: reports/
+          if-no-files-found: warn
+
