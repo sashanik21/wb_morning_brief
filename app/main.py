@@ -15,6 +15,7 @@ from app.sheets.google_sheets import (
     get_change_log,
     get_products,
     get_sellers,
+    log_google_sheets_configuration,
 )
 
 
@@ -23,6 +24,8 @@ def main():
     print("MAIN VERSION: TELEGRAM ENABLED")
     print("=" * 50)
     print("WB MORNING BRIEF")
+    print("=" * 50)
+    log_google_sheets_configuration()
     print("=" * 50)
 
     sellers = get_sellers()
