@@ -5,7 +5,10 @@ from app.analyzers.products_filter import filter_funnel_data_by_products
 from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import collect_ads_stats
 from app.collectors.funnel import (
+    build_top_funnel_drop_signals,
     collect_sales_funnel,
+    count_sku_ignored_by_abc_filter,
+    flatten_sales_funnel_data,
     save_funnel_problems_report,
     save_sales_funnel_report,
 )
@@ -17,6 +20,70 @@ from app.sheets.google_sheets import (
     get_sellers,
     log_google_sheets_configuration,
 )
+
+
+def _extract_funnel_products(data):
+    if isinstance(data, list):
+        return data
+
+    if not isinstance(data, dict):
+        return []
+
+    nested_data = data.get("data")
+
+    if isinstance(nested_data, dict) and isinstance(nested_data.get("products"), list):
+        return nested_data["products"]
+
+    if isinstance(data.get("products"), list):
+        return data["products"]
+
+    if isinstance(nested_data, list):
+        return nested_data
+
+    return []
+
+
+def _sum_report_column(dataframe, column_name):
+    if column_name not in dataframe:
+        return 0
+
+    numeric_values = pd.to_numeric(dataframe[column_name], errors="coerce").fillna(0)
+    total = numeric_values.sum()
+
+    return int(total) if float(total).is_integer() else round(float(total), 2)
+
+
+def _build_summary_stats(
+    seller_name,
+    total_sku_from_api,
+    sku_after_products_filter,
+    sku_ignored_by_abc_filter,
+    critical_problems_count,
+    funnel_data,
+):
+    funnel_report = flatten_sales_funnel_data(funnel_data)
+
+    return {
+        "sellerName": seller_name,
+        "totalSkuFromApi": total_sku_from_api,
+        "skuAfterProductsFilter": sku_after_products_filter,
+        "skuRemovedByProductsFilter": total_sku_from_api - sku_after_products_filter,
+        "skuIgnoredByAbcFilter": sku_ignored_by_abc_filter,
+        "criticalProblemsCount": critical_problems_count,
+        "totalOrders": _sum_report_column(funnel_report, "orderCount"),
+        "totalOrderSum": _sum_report_column(funnel_report, "orderSum"),
+        "totalOpenCount": _sum_report_column(funnel_report, "openCount"),
+        "totalCartCount": _sum_report_column(funnel_report, "cartCount"),
+        "topDropSignals": build_top_funnel_drop_signals(funnel_data),
+    }
+
+
+def _print_summary_stats(summary_stats):
+    print("MORNING BRIEF SUMMARY:")
+    print(f"totalSkuFromApi: {summary_stats['totalSkuFromApi']}")
+    print(f"skuAfterProductsFilter: {summary_stats['skuAfterProductsFilter']}")
+    print(f"skuRemovedByProductsFilter: {summary_stats['skuRemovedByProductsFilter']}")
+    print(f"skuIgnoredByAbcFilter: {summary_stats['skuIgnoredByAbcFilter']}")
 
 
 def main():
@@ -32,8 +99,9 @@ def main():
     print(f"SELLERS LOADED: {len(sellers)}")
     active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
     print(f"Активных продавцов: {len(active_sellers)}")
+    seller_name = active_sellers[0]["seller_name"] if active_sellers else ""
     if active_sellers:
-        print(f"Текущий продавец: {active_sellers[0]['seller_name']}")
+        print(f"Текущий продавец: {seller_name}")
 
     products = get_products()
     print(f"PRODUCTS LOADED: {len(products)}")
@@ -50,7 +118,9 @@ def main():
     print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
     print("=" * 50)
 
+    total_sku_from_api = len(_extract_funnel_products(data))
     data = filter_funnel_data_by_products(data, products)
+    sku_after_products_filter = len(_extract_funnel_products(data))
     print("=" * 50)
 
     ads_data = collect_ads_stats()
@@ -75,6 +145,17 @@ def main():
         .to_dict("records")
     )
     all_problems = funnel_problems + ads_problems + stocks_problems
+    summary_stats = _build_summary_stats(
+        seller_name=seller_name,
+        total_sku_from_api=total_sku_from_api,
+        sku_after_products_filter=sku_after_products_filter,
+        sku_ignored_by_abc_filter=count_sku_ignored_by_abc_filter(data),
+        critical_problems_count=len(all_problems),
+        funnel_data=data,
+    )
+
+    _print_summary_stats(summary_stats)
+    print("=" * 50)
 
     print("TOTAL PROBLEMS:")
     print(f"funnel: {len(funnel_problems)}")
@@ -84,7 +165,7 @@ def main():
     print("=" * 50)
 
     print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
-    send_telegram_morning_brief(all_problems)
+    send_telegram_morning_brief(all_problems, summary_stats=summary_stats)
     print("=" * 50)
 
     tasks = build_tasks_from_problems(all_problems)
