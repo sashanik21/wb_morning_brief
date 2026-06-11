@@ -8,21 +8,8 @@ def get_cards_list():
 
     url = "https://content-api.wildberries.ru/content/v2/get/cards/list"
 
-    payload = {
-        "settings": {
-            "cursor": {
-                "limit": 10
-            },
-            "filter": {
-                "withPhoto": -1
-            }
-        }
-    }
+    payload = {"settings": {"cursor": {"limit": 10}, "filter": {"withPhoto": -1}}}
 
-    data = client.request(
-        method="POST",
-        url=url,
-        json_data=payload
-    )
+    data = client.request(method="POST", url=url, json_data=payload)
 
     return data
