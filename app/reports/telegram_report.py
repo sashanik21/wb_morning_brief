@@ -10,6 +10,15 @@ TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_TIMEOUT_SECONDS = 15
 TELEGRAM_TOP_LIMIT = 5
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
+PROBLEM_TYPE_LABELS = {
+    "openCount": "Падение переходов в карточку",
+    "cartCount": "Падение добавлений в корзину",
+    "orderCount": "Падение заказов",
+    "orderSum": "Падение выручки",
+    "addToCartPercent": "Падение конверсии в корзину",
+    "cartToOrderPercent": "Падение конверсии в заказ",
+    "wbStocks": "Закончился остаток WB",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +76,23 @@ def _group_problems_by_product(records):
     )
 
 
+def _human_readable_problem_type(problem):
+    metric = problem.get("metric")
+
+    if metric in PROBLEM_TYPE_LABELS:
+        return PROBLEM_TYPE_LABELS[metric]
+
+    problem_type = str(problem.get("problemType") or "").strip()
+
+    for technical_name, human_readable_name in PROBLEM_TYPE_LABELS.items():
+        if problem_type.startswith(technical_name):
+            return human_readable_name
+
+    return problem_type or "n/a"
+
+
 def _format_problem_line(problem):
-    problem_type = html.escape(str(problem.get("problemType") or "n/a"))
+    problem_type = html.escape(_human_readable_problem_type(problem))
     dynamic_percent = html.escape(
         _format_dynamic_percent(problem.get("dynamicPercent"))
     )
