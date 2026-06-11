@@ -238,10 +238,29 @@ def _normalize_numeric_fields(row):
     return row
 
 
+def _google_sheets_credentials_configured():
+    return bool(os.getenv(GOOGLE_SHEETS_CREDENTIALS_JSON_ENV))
+
+
+def _google_sheets_spreadsheet_configured():
+    return bool(os.getenv(GOOGLE_SHEETS_SPREADSHEET_ID_ENV))
+
+
 def _google_sheets_configured():
-    return bool(
-        os.getenv(GOOGLE_SHEETS_CREDENTIALS_JSON_ENV)
-        and os.getenv(GOOGLE_SHEETS_SPREADSHEET_ID_ENV)
+    return (
+        _google_sheets_credentials_configured()
+        and _google_sheets_spreadsheet_configured()
+    )
+
+
+def log_google_sheets_configuration():
+    print(
+        "Google Sheets credentials configured: "
+        f"{str(_google_sheets_credentials_configured()).lower()}"
+    )
+    print(
+        "Google Sheets spreadsheet configured: "
+        f"{str(_google_sheets_spreadsheet_configured()).lower()}"
     )
 
 
@@ -259,17 +278,20 @@ def get_google_client():
 @lru_cache(maxsize=None)
 def _get_worksheet_records(worksheet_name):
     if not _google_sheets_configured():
-        print("Google Sheets not configured, using stub data")
+        print(f"Google Sheets not configured for {worksheet_name}, using stub data")
         return None
 
     try:
         client = get_google_client()
         spreadsheet = client.open_by_key(os.environ[GOOGLE_SHEETS_SPREADSHEET_ID_ENV])
         worksheet = spreadsheet.worksheet(worksheet_name)
-        return worksheet.get_all_records()
+        records = worksheet.get_all_records()
     except Exception:
-        print("Google Sheets read failed, using stub data")
+        print(f"Google Sheets {worksheet_name} read failed, using stub data")
         return None
+
+    print(f"Google Sheets {worksheet_name} read succeeded: {len(records)} rows")
+    return records
 
 
 @lru_cache(maxsize=None)

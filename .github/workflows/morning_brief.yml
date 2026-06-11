@@ -13,8 +13,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,6 +32,8 @@ jobs:
         run: |
           echo "Telegram token configured: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}"
           echo "Telegram chat configured: ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
+          echo "Google Sheets credentials configured: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS_JSON != '' }}"
+          echo "Google Sheets spreadsheet configured: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID != '' }}"
           python -m app.main
       - name: Upload funnel reports
         if: always()
