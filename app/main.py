@@ -1,24 +1,24 @@
 import json
 
-from app.collectors.cards import get_cards_list
+from app.collectors.funnel import collect_sales_funnel
 
 
 def main():
 
     print("=" * 50)
-    print("GET WB CARDS")
+    print("WB MORNING BRIEF")
     print("=" * 50)
 
-    data = get_cards_list()
+    data = collect_sales_funnel()
 
     if data is None:
-        print("Карточки не получены")
+        print("Данные funnel не получены")
         return
 
-    print("КАРТОЧКИ УСПЕШНО ПОЛУЧЕНЫ")
+    print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
     print("=" * 50)
 
-    print(json.dumps(data, ensure_ascii=False, indent=2)[:10000])
+    print(json.dumps(data, ensure_ascii=False, indent=2)[:15000])
 
 
 if __name__ == "__main__":
