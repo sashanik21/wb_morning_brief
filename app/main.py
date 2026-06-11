@@ -12,6 +12,7 @@ from app.reports.telegram_report import send_telegram_morning_brief
 
 def main():
 
+    print("MAIN VERSION: TELEGRAM ENABLED")
     print("=" * 50)
     print("WB MORNING BRIEF")
     print("=" * 50)
