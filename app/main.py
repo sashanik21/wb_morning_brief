@@ -33,7 +33,12 @@ def main():
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
     print("=" * 50)
 
-    problems = pd.read_excel(problems_report_path, sheet_name="problems").fillna("")
+    problems = (
+        pd.read_excel(problems_report_path, sheet_name="problems")
+        .fillna("")
+        .to_dict("records")
+    )
+    print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
     send_telegram_morning_brief(problems)
     print("=" * 50)
 

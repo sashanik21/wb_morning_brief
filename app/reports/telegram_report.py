@@ -116,6 +116,6 @@ def send_telegram_morning_brief(problems):
         print(f"Telegram API returned error: {data}")
         return False
 
-    logger.info("Telegram morning brief sent successfully")
-    print("Telegram morning brief sent successfully")
+    logger.info("Telegram Morning Brief sent successfully")
+    print("Telegram Morning Brief sent successfully")
     return True
