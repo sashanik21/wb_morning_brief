@@ -70,6 +70,7 @@ def _group_problems_by_product(records):
                 "vendorCode": problem.get("vendorCode") or "n/a",
                 "nmId": problem.get("nmId") or "n/a",
                 "sellerName": problem.get("sellerName") or SELLER_NAME,
+                "ABC": problem.get("ABC") or "n/a",
             }
 
         grouped_products[group_key]["problems"].append(problem)
@@ -152,6 +153,7 @@ def _format_product_item(_index, product):
     title = html.escape(str(product["title"]))
     vendor_code = html.escape(str(product["vendorCode"]))
     nm_id = html.escape(str(product["nmId"]))
+    abc = html.escape(str(product.get("ABC") or "n/a"))
     problems = product["problems"]
     problem_lines = [
         _format_problem_line(problem)
@@ -163,7 +165,8 @@ def _format_product_item(_index, product):
     return (
         f"🏷️ <b>{title}</b>\n\n"
         f"Артикул продавца: {vendor_code}\n"
-        f"Артикул WB: {nm_id}\n\n"
+        f"Артикул WB: {nm_id}\n"
+        f"ABC: {abc}\n\n"
         f"Проблем: <b>{len(problems)}</b>\n\n"
         + "\n".join(problem_lines)
         + recent_changes
@@ -206,10 +209,8 @@ def _build_summary_block(summary_stats):
     return (
         "📊 <b>Сводка:</b>\n"
         f"SKU из WB API: {_format_number(summary_stats.get('totalSkuFromApi'))}\n"
-        f"SKU после фильтра товаров: "
-        f"{_format_number(summary_stats.get('skuAfterProductsFilter'))}\n"
-        f"Отфильтровано товаров: "
-        f"{_format_number(summary_stats.get('skuRemovedByProductsFilter'))}\n"
+        f"SKU есть в PRODUCTS: {_format_number(summary_stats.get('skuInProducts'))}\n"
+        f"SKU нет в PRODUCTS: {_format_number(summary_stats.get('skuNotInProducts'))}\n"
         f"Проигнорировано ABC-фильтром: "
         f"{_format_number(summary_stats.get('skuIgnoredByAbcFilter'))}\n"
         f"Переходы в карточку: "
@@ -226,8 +227,8 @@ def _build_control_signals_block(summary_stats):
 
     signals = []
 
-    if summary_stats.get("skuRemovedByProductsFilter", 0) > 0:
-        signals.append("⚠️ Часть SKU исключена PRODUCTS whitelist")
+    if summary_stats.get("skuNotInProducts", 0) > 0:
+        signals.append("⚠️ Есть карточки WB, не внесённые в PRODUCTS")
 
     if summary_stats.get("skuIgnoredByAbcFilter", 0) > 0:
         signals.append("⚠️ Часть SKU проигнорирована ABC-фильтром")
@@ -287,7 +288,7 @@ def _build_telegram_message(problems, summary_stats=None):
         message_parts.append(
             "✅ Критичных проблем не найдено\n"
             "⚠️ Это не означает отсутствие просадок — часть SKU могла быть "
-            "отфильтрована whitelist/ABC."
+            "отфильтрована ABC."
         )
         return "\n\n".join(part for part in message_parts if part)
 
