@@ -49,10 +49,13 @@ def main():
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("=" * 50)
 
+    stocks_problems = []
+
     report_path = save_sales_funnel_report(data)
     print(f"XLSX отчёт: {report_path}")
     print("=" * 50)
 
+    # TODO: switch problems XLSX generation to all_problems after ads/stocks problems are enabled
     problems_report_path = save_funnel_problems_report(data)
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
     print("=" * 50)
@@ -62,10 +65,17 @@ def main():
         .fillna("")
         .to_dict("records")
     )
-    all_problems = funnel_problems + ads_problems
+    all_problems = funnel_problems + ads_problems + stocks_problems
+
+    print("TOTAL PROBLEMS:")
+    print(f"funnel: {len(funnel_problems)}")
+    print(f"ads: {len(ads_problems)}")
+    print(f"stocks: {len(stocks_problems)}")
+    print(f"all: {len(all_problems)}")
+    print("=" * 50)
 
     print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
-    send_telegram_morning_brief(funnel_problems)
+    send_telegram_morning_brief(all_problems)
     print("=" * 50)
 
     print("WB Morning Brief completed successfully")
