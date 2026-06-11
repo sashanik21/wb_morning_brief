@@ -29,6 +29,8 @@ jobs:
           WB_API_TOKEN_TEST: ${{ secrets.WB_API_TOKEN_TEST }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SHEETS_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS_JSON }}
+          GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
         run: |
           echo "Telegram token configured: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}"
           echo "Telegram chat configured: ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
