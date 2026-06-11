@@ -8,6 +8,7 @@ from app.collectors.funnel import (
     save_sales_funnel_report,
 )
 from app.reports.telegram_report import send_telegram_morning_brief
+from app.sheets.google_sheets import get_sellers
 
 
 def main():
@@ -16,6 +17,12 @@ def main():
     print("=" * 50)
     print("WB MORNING BRIEF")
     print("=" * 50)
+
+    sellers = get_sellers()
+    active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
+    print(f"Активных продавцов: {len(active_sellers)}")
+    if active_sellers:
+        print(f"Текущий продавец: {active_sellers[0]['seller_name']}")
 
     data = collect_sales_funnel()
 
