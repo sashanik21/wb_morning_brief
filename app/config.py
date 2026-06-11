@@ -9,3 +9,22 @@ if not WB_API_TOKEN:
 
 
 HEADERS = {"Authorization": WB_API_TOKEN}
+
+
+ABC_RULES = {
+    "A": {
+        "min_open_count": 1000,
+        "min_orders": 10,
+        "min_order_sum": 10000,
+    },
+    "B": {
+        "min_open_count": 500,
+        "min_orders": 5,
+        "min_order_sum": 5000,
+    },
+    "C": {
+        "min_open_count": 200,
+        "min_orders": 3,
+        "min_order_sum": 2000,
+    },
+}

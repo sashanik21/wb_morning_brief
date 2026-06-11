@@ -147,7 +147,8 @@ def _build_telegram_header(total_problems, problem_products_count):
         "📊 <b>WB Morning Brief</b>\n"
         f"Продавец: <b>{seller_name}</b>\n\n"
         f"Всего проблем: <b>{total_problems}</b>\n"
-        f"Проблемных товаров: <b>{problem_products_count}</b>"
+        f"Проблемных товаров: <b>{problem_products_count}</b>\n"
+        f"📦 SKU после ABC-фильтра: <b>{problem_products_count}</b>"
     )
 
 
