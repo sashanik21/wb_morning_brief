@@ -1,5 +1,6 @@
 import pandas as pd
 
+from app.collectors.ads import collect_ads_stats
 from app.collectors.funnel import (
     collect_sales_funnel,
     save_funnel_problems_report,
@@ -29,6 +30,10 @@ def main():
         return
 
     print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
+    print("=" * 50)
+
+    ads_data = collect_ads_stats()
+    print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("=" * 50)
 
     report_path = save_sales_funnel_report(data)
