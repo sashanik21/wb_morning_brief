@@ -2,6 +2,7 @@ import pandas as pd
 
 from app.analyzers.ads_analyzer import analyze_ads_problems
 from app.analyzers.products_filter import filter_funnel_data_by_products
+from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import collect_ads_stats
 from app.collectors.funnel import (
     collect_sales_funnel,
@@ -9,7 +10,12 @@ from app.collectors.funnel import (
     save_sales_funnel_report,
 )
 from app.reports.telegram_report import send_telegram_morning_brief
-from app.sheets.google_sheets import get_change_log, get_products, get_sellers
+from app.sheets.google_sheets import (
+    create_tasks,
+    get_change_log,
+    get_products,
+    get_sellers,
+)
 
 
 def main():
@@ -76,6 +82,10 @@ def main():
 
     print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
     send_telegram_morning_brief(all_problems)
+    print("=" * 50)
+
+    tasks = build_tasks_from_problems(all_problems)
+    create_tasks(tasks)
     print("=" * 50)
 
     print("WB Morning Brief completed successfully")
