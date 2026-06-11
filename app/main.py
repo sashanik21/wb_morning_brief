@@ -1,5 +1,3 @@
-import json
-
 import pandas as pd
 
 from app.collectors.funnel import (
@@ -50,7 +48,7 @@ def main():
     send_telegram_morning_brief(problems)
     print("=" * 50)
 
-    print(json.dumps(data, ensure_ascii=False, indent=2)[:15000])
+    print("WB Morning Brief completed successfully")
 
 
 if __name__ == "__main__":
