@@ -96,7 +96,53 @@ def get_products():
 
 
 def get_change_log():
-    return []
+    return [
+        {
+            "date": "2026-06-10",
+            "seller_id": 1,
+            "nmId": 1088430501,
+            "changeType": "Главное фото",
+            "oldValue": "старое фото",
+            "newValue": "новое фото",
+            "comment": "Изменили главное фото карточки",
+        },
+        {
+            "date": "2026-06-09",
+            "seller_id": 1,
+            "nmId": 1088430502,
+            "changeType": "Цена",
+            "oldValue": "1290",
+            "newValue": "1190",
+            "comment": "Снизили цену для теста конверсии",
+        },
+        {
+            "date": "2026-06-08",
+            "seller_id": 1,
+            "nmId": 1088430503,
+            "changeType": "Ставка рекламы",
+            "oldValue": "350",
+            "newValue": "420",
+            "comment": "Повысили ставку рекламы в поиске",
+        },
+        {
+            "date": "2026-06-07",
+            "seller_id": 1,
+            "nmId": 1088430504,
+            "changeType": "Описание / SEO",
+            "oldValue": "старое описание",
+            "newValue": "обновлённое описание",
+            "comment": "Обновили описание и SEO-ключи карточки",
+        },
+        {
+            "date": "2026-06-06",
+            "seller_id": 1,
+            "nmId": 1088430505,
+            "changeType": "Остатки / поставка",
+            "oldValue": "15",
+            "newValue": "95",
+            "comment": "Добавили поставку на склад WB",
+        },
+    ]
 
 
 def create_tasks(tasks):

@@ -36,6 +36,10 @@ def _problems_to_records(problems):
     return []
 
 
+def _is_present(value):
+    return value not in (None, "") and str(value) != "nan"
+
+
 def _format_dynamic_percent(value):
     if value in (None, ""):
         return "n/a"
@@ -100,6 +104,31 @@ def _format_problem_line(problem):
     return f"— {problem_type}: {dynamic_percent}"
 
 
+def _format_recent_changes(problems):
+    changes = []
+    seen_changes = set()
+
+    for problem in problems:
+        recent_changes = problem.get("recentChanges")
+
+        if not _is_present(recent_changes):
+            continue
+
+        for change in str(recent_changes).splitlines():
+            change = change.strip()
+
+            if not change or change in seen_changes:
+                continue
+
+            seen_changes.add(change)
+            changes.append(f"— {html.escape(change)}")
+
+    if not changes:
+        return ""
+
+    return "\n\n🧩 <b>Последние изменения:</b>\n" + "\n".join(changes)
+
+
 def _format_recommendations(problems):
     recommendations = []
     seen_recommendations = set()
@@ -129,6 +158,7 @@ def _format_product_item(_index, product):
         for problem in problems[:TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT]
     ]
     recommendations = _format_recommendations(problems)
+    recent_changes = _format_recent_changes(problems)
 
     return (
         f"🏷️ <b>{title}</b>\n\n"
@@ -136,6 +166,7 @@ def _format_product_item(_index, product):
         f"Артикул WB: {nm_id}\n\n"
         f"Проблем: <b>{len(problems)}</b>\n\n"
         + "\n".join(problem_lines)
+        + recent_changes
         + f"\n\n💡 <b>Что проверить:</b>\n{recommendations}"
     )
 

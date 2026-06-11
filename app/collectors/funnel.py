@@ -6,7 +6,7 @@ import pandas as pd
 from app.collectors.cards import get_cards_list
 from app.config import ABC_RULES, HEADERS
 from app.seller_config import SELLER_NAME
-from app.sheets.google_sheets import get_products
+from app.sheets.google_sheets import get_change_log, get_products
 from app.wb_client import WBClient
 
 SALES_FUNNEL_URL = (
@@ -46,6 +46,7 @@ PROBLEMS_REPORT_COLUMNS = [
     "pastValue",
     "dynamicPercent",
     "recommendation",
+    "recentChanges",
 ]
 PROBLEM_RULES = [
     {
@@ -395,8 +396,70 @@ def _extract_problem_records(funnel_data):
     return pd.json_normalize(products, sep=".").to_dict("records")
 
 
+def _parse_change_date(value):
+    if _is_missing(value):
+        return None
+
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _format_change_log_item(change):
+    change_date = str(change.get("date") or "").strip()
+    change_type = str(change.get("changeType") or "").strip()
+    comment = str(change.get("comment") or "").strip()
+
+    if change_type and comment:
+        change_text = f"{change_type} — {comment}"
+    else:
+        change_text = change_type or comment
+
+    return f"{change_date}: {change_text}" if change_date else change_text
+
+
+def _build_recent_changes_by_nm_id(days=7):
+    today = datetime.now().date()
+    start_date = today - timedelta(days=days)
+    changes_by_nm_id = {}
+
+    for change in get_change_log():
+        change_date = _parse_change_date(change.get("date"))
+
+        if change_date is None or change_date < start_date or change_date > today:
+            continue
+
+        nm_id = _normalize_nm_id(change.get("nmId"))
+
+        if not nm_id:
+            continue
+
+        changes_by_nm_id.setdefault(nm_id, []).append(change)
+
+    for changes in changes_by_nm_id.values():
+        changes.sort(key=lambda item: item.get("date") or "", reverse=True)
+
+    return {
+        nm_id: "\n".join(_format_change_log_item(change) for change in changes)
+        for nm_id, changes in changes_by_nm_id.items()
+    }
+
+
+def _recent_changes(record, recent_changes_by_nm_id):
+    nm_id = _normalize_nm_id(_problem_product_value(record, "nmId"))
+
+    return recent_changes_by_nm_id.get(nm_id, "")
+
+
 def _build_problem_row(
-    record, rule, selected_value, past_value, dynamic_percent, products_by_nm_id
+    record,
+    rule,
+    selected_value,
+    past_value,
+    dynamic_percent,
+    products_by_nm_id,
+    recent_changes,
 ):
     return {
         "sellerName": SELLER_NAME,
@@ -411,6 +474,7 @@ def _build_problem_row(
         "pastValue": _format_problem_number(past_value),
         "dynamicPercent": round(dynamic_percent, 2),
         "recommendation": rule["recommendation"],
+        "recentChanges": recent_changes,
     }
 
 
@@ -418,9 +482,11 @@ def analyze_funnel_problems(funnel_data):
     problem_rows = []
     ignored_sku_count = 0
     products_by_nm_id = _build_products_by_nm_id()
+    recent_changes_by_nm_id = _build_recent_changes_by_nm_id()
 
     for record in _extract_problem_records(funnel_data):
         record_problem_rows = []
+        recent_changes = _recent_changes(record, recent_changes_by_nm_id)
 
         for rule in PROBLEM_RULES:
             selected_value = _first_present(
@@ -450,6 +516,7 @@ def analyze_funnel_problems(funnel_data):
                     past_value,
                     dynamic_percent,
                     products_by_nm_id,
+                    recent_changes,
                 )
             )
 
@@ -470,6 +537,7 @@ def analyze_funnel_problems(funnel_data):
                     "pastValue": "",
                     "dynamicPercent": "",
                     "recommendation": STOCK_PROBLEM_RECOMMENDATION,
+                    "recentChanges": recent_changes,
                 }
             )
 
