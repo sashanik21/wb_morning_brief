@@ -9,7 +9,7 @@ from app.collectors.funnel import (
     save_sales_funnel_report,
 )
 from app.reports.telegram_report import send_telegram_morning_brief
-from app.sheets.google_sheets import get_products, get_sellers
+from app.sheets.google_sheets import get_change_log, get_products, get_sellers
 
 
 def main():
@@ -20,10 +20,17 @@ def main():
     print("=" * 50)
 
     sellers = get_sellers()
+    print(f"SELLERS LOADED: {len(sellers)}")
     active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
     print(f"Активных продавцов: {len(active_sellers)}")
     if active_sellers:
         print(f"Текущий продавец: {active_sellers[0]['seller_name']}")
+
+    products = get_products()
+    print(f"PRODUCTS LOADED: {len(products)}")
+
+    change_log = get_change_log()
+    print(f"CHANGE_LOG LOADED: {len(change_log)}")
 
     data = collect_sales_funnel()
 
@@ -34,7 +41,6 @@ def main():
     print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
     print("=" * 50)
 
-    products = get_products()
     data = filter_funnel_data_by_products(data, products)
     print("=" * 50)
 
