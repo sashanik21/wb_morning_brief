@@ -340,3 +340,6 @@ def get_change_log():
 
 def create_tasks(tasks):
     print(f"TASKS TO CREATE: {len(tasks)}")
+
+    for task in tasks[:5]:
+        print(task)
