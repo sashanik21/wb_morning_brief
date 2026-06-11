@@ -1,10 +1,13 @@
 import json
 
+import pandas as pd
+
 from app.collectors.funnel import (
     collect_sales_funnel,
     save_funnel_problems_report,
     save_sales_funnel_report,
 )
+from app.reports.telegram_report import send_telegram_morning_brief
 
 
 def main():
@@ -28,6 +31,10 @@ def main():
 
     problems_report_path = save_funnel_problems_report(data)
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
+    print("=" * 50)
+
+    problems = pd.read_excel(problems_report_path, sheet_name="problems").fillna("")
+    send_telegram_morning_brief(problems)
     print("=" * 50)
 
     print(json.dumps(data, ensure_ascii=False, indent=2)[:15000])
