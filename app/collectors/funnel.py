@@ -4,8 +4,9 @@ from pathlib import Path
 import pandas as pd
 
 from app.collectors.cards import get_cards_list
-from app.config import HEADERS
+from app.config import ABC_RULES, HEADERS
 from app.seller_config import SELLER_NAME
+from app.sheets.google_sheets import get_products
 from app.wb_client import WBClient
 
 SALES_FUNNEL_URL = (
@@ -38,6 +39,7 @@ PROBLEMS_REPORT_COLUMNS = [
     "vendorCode",
     "brandName",
     "title",
+    "ABC",
     "problemType",
     "metric",
     "selectedValue",
@@ -319,10 +321,69 @@ def _problem_product_value(record, key):
         "vendorCode": ["product.vendorCode", "vendorCode"],
         "brandName": ["product.brandName", "brandName"],
         "title": ["product.title", "title"],
+        "openCount": _metric_paths("selected", "openCount") + ["openCount"],
+        "orderCount": _metric_paths("selected", "orderCount") + ["orderCount"],
+        "orderSum": _metric_paths("selected", "orderSum") + ["orderSum"],
         "wbStocks": ["product.stocks.wb", "stocks.wb", "wbStocks"],
     }
 
     return _first_present(record, paths[key], default="")
+
+
+def _normalize_nm_id(nm_id):
+    if _is_missing(nm_id):
+        return ""
+
+    number = _to_number(nm_id)
+
+    if number is not None:
+        if isinstance(number, float) and number.is_integer():
+            return str(int(number))
+
+        return str(number)
+
+    return str(nm_id).strip()
+
+
+def _build_products_by_nm_id():
+    products_by_nm_id = {}
+
+    for product in get_products():
+        nm_id = _normalize_nm_id(product.get("nmId"))
+
+        if nm_id:
+            products_by_nm_id[nm_id] = product
+
+    return products_by_nm_id
+
+
+def _product_metadata(record, products_by_nm_id):
+    nm_id = _normalize_nm_id(_problem_product_value(record, "nmId"))
+
+    return products_by_nm_id.get(nm_id, {})
+
+
+def _product_abc(record, products_by_nm_id):
+    abc = str(_product_metadata(record, products_by_nm_id).get("abc") or "C").upper()
+
+    if abc not in ABC_RULES:
+        return "C"
+
+    return abc
+
+
+def _passes_abc_filter(record, products_by_nm_id):
+    abc = _product_abc(record, products_by_nm_id)
+    rules = ABC_RULES[abc]
+    open_count = _to_number(_problem_product_value(record, "openCount")) or 0
+    order_count = _to_number(_problem_product_value(record, "orderCount")) or 0
+    order_sum = _to_number(_problem_product_value(record, "orderSum")) or 0
+
+    return (
+        open_count >= rules["min_open_count"]
+        and order_count >= rules["min_orders"]
+        and order_sum >= rules["min_order_sum"]
+    )
 
 
 def _extract_problem_records(funnel_data):
@@ -334,13 +395,16 @@ def _extract_problem_records(funnel_data):
     return pd.json_normalize(products, sep=".").to_dict("records")
 
 
-def _build_problem_row(record, rule, selected_value, past_value, dynamic_percent):
+def _build_problem_row(
+    record, rule, selected_value, past_value, dynamic_percent, products_by_nm_id
+):
     return {
         "sellerName": SELLER_NAME,
         "nmId": _problem_product_value(record, "nmId"),
         "vendorCode": _problem_product_value(record, "vendorCode"),
         "brandName": _problem_product_value(record, "brandName"),
         "title": _problem_product_value(record, "title"),
+        "ABC": _product_abc(record, products_by_nm_id),
         "problemType": rule["problem_type"],
         "metric": rule["metric"],
         "selectedValue": _format_problem_number(selected_value),
@@ -352,8 +416,12 @@ def _build_problem_row(record, rule, selected_value, past_value, dynamic_percent
 
 def analyze_funnel_problems(funnel_data):
     problem_rows = []
+    ignored_sku_count = 0
+    products_by_nm_id = _build_products_by_nm_id()
 
     for record in _extract_problem_records(funnel_data):
+        record_problem_rows = []
+
         for rule in PROBLEM_RULES:
             selected_value = _first_present(
                 record, _metric_paths("selected", rule["metric"]), default=""
@@ -374,22 +442,28 @@ def analyze_funnel_problems(funnel_data):
             if dynamic_percent is None or dynamic_percent > rule["threshold"]:
                 continue
 
-            problem_rows.append(
+            record_problem_rows.append(
                 _build_problem_row(
-                    record, rule, selected_value, past_value, dynamic_percent
+                    record,
+                    rule,
+                    selected_value,
+                    past_value,
+                    dynamic_percent,
+                    products_by_nm_id,
                 )
             )
 
         wb_stocks = _to_number(_problem_product_value(record, "wbStocks"))
 
         if wb_stocks == 0:
-            problem_rows.append(
+            record_problem_rows.append(
                 {
                     "sellerName": SELLER_NAME,
                     "nmId": _problem_product_value(record, "nmId"),
                     "vendorCode": _problem_product_value(record, "vendorCode"),
                     "brandName": _problem_product_value(record, "brandName"),
                     "title": _problem_product_value(record, "title"),
+                    "ABC": _product_abc(record, products_by_nm_id),
                     "problemType": "wbStocks == 0",
                     "metric": "wbStocks",
                     "selectedValue": 0,
@@ -398,6 +472,19 @@ def analyze_funnel_problems(funnel_data):
                     "recommendation": STOCK_PROBLEM_RECOMMENDATION,
                 }
             )
+
+        if not record_problem_rows:
+            continue
+
+        if not _passes_abc_filter(record, products_by_nm_id):
+            ignored_sku_count += 1
+            continue
+
+        problem_rows.extend(record_problem_rows)
+
+    print("ABC FILTER:")
+    print(f"ignored SKU: {ignored_sku_count}")
+    print(f"remaining problems: {len(problem_rows)}")
 
     return pd.DataFrame(problem_rows, columns=PROBLEMS_REPORT_COLUMNS).fillna("")
 
