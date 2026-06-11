@@ -478,6 +478,123 @@ def _build_problem_row(
     }
 
 
+def _metric_dynamic_percent(record, rule):
+    selected_value = _first_present(
+        record, _metric_paths("selected", rule["metric"]), default=""
+    )
+    past_value = _first_present(
+        record, _metric_paths("past", rule["metric"]), default=""
+    )
+    dynamic_value = _first_present(
+        record,
+        _dynamic_paths(rule["metric"], rule["dynamic_metric"]),
+        default=None,
+    )
+    dynamic_percent = _to_number(dynamic_value)
+
+    if dynamic_percent is None:
+        dynamic_percent = _calculate_dynamic_percent(selected_value, past_value)
+
+    return selected_value, past_value, dynamic_percent
+
+
+def _build_record_problem_rows(record, products_by_nm_id, recent_changes=""):
+    record_problem_rows = []
+
+    for rule in PROBLEM_RULES:
+        selected_value, past_value, dynamic_percent = _metric_dynamic_percent(
+            record, rule
+        )
+
+        if dynamic_percent is None or dynamic_percent > rule["threshold"]:
+            continue
+
+        record_problem_rows.append(
+            _build_problem_row(
+                record,
+                rule,
+                selected_value,
+                past_value,
+                dynamic_percent,
+                products_by_nm_id,
+                recent_changes,
+            )
+        )
+
+    wb_stocks = _to_number(_problem_product_value(record, "wbStocks"))
+
+    if wb_stocks == 0:
+        record_problem_rows.append(
+            {
+                "sellerName": SELLER_NAME,
+                "nmId": _problem_product_value(record, "nmId"),
+                "vendorCode": _problem_product_value(record, "vendorCode"),
+                "brandName": _problem_product_value(record, "brandName"),
+                "title": _problem_product_value(record, "title"),
+                "ABC": _product_abc(record, products_by_nm_id),
+                "problemType": "wbStocks == 0",
+                "metric": "wbStocks",
+                "selectedValue": 0,
+                "pastValue": "",
+                "dynamicPercent": "",
+                "recommendation": STOCK_PROBLEM_RECOMMENDATION,
+                "recentChanges": recent_changes,
+            }
+        )
+
+    return record_problem_rows
+
+
+def count_sku_ignored_by_abc_filter(funnel_data):
+    ignored_sku_count = 0
+    products_by_nm_id = _build_products_by_nm_id()
+
+    for record in _extract_problem_records(funnel_data):
+        if _build_record_problem_rows(
+            record, products_by_nm_id
+        ) and not _passes_abc_filter(record, products_by_nm_id):
+            ignored_sku_count += 1
+
+    return ignored_sku_count
+
+
+def build_top_funnel_drop_signals(funnel_data, limit=5):
+    signals_by_sku = {}
+
+    for record in _extract_problem_records(funnel_data):
+        nm_id = _problem_product_value(record, "nmId")
+        signal_key = nm_id or _problem_product_value(record, "title")
+
+        for rule in PROBLEM_RULES:
+            selected_value, past_value, dynamic_percent = _metric_dynamic_percent(
+                record, rule
+            )
+
+            if dynamic_percent is None or dynamic_percent >= 0:
+                continue
+
+            signal = {
+                "nmId": nm_id,
+                "vendorCode": _problem_product_value(record, "vendorCode"),
+                "title": _problem_product_value(record, "title"),
+                "metric": rule["metric"],
+                "selectedValue": _format_problem_number(selected_value),
+                "pastValue": _format_problem_number(past_value),
+                "dynamicPercent": round(dynamic_percent, 2),
+            }
+
+            if (
+                signal_key not in signals_by_sku
+                or signal["dynamicPercent"]
+                < signals_by_sku[signal_key]["dynamicPercent"]
+            ):
+                signals_by_sku[signal_key] = signal
+
+    return sorted(signals_by_sku.values(), key=lambda signal: signal["dynamicPercent"])[
+        :limit
+    ]
+
+
 def analyze_funnel_problems(funnel_data):
     problem_rows = []
     ignored_sku_count = 0
@@ -485,61 +602,10 @@ def analyze_funnel_problems(funnel_data):
     recent_changes_by_nm_id = _build_recent_changes_by_nm_id()
 
     for record in _extract_problem_records(funnel_data):
-        record_problem_rows = []
         recent_changes = _recent_changes(record, recent_changes_by_nm_id)
-
-        for rule in PROBLEM_RULES:
-            selected_value = _first_present(
-                record, _metric_paths("selected", rule["metric"]), default=""
-            )
-            past_value = _first_present(
-                record, _metric_paths("past", rule["metric"]), default=""
-            )
-            dynamic_value = _first_present(
-                record,
-                _dynamic_paths(rule["metric"], rule["dynamic_metric"]),
-                default=None,
-            )
-            dynamic_percent = _to_number(dynamic_value)
-
-            if dynamic_percent is None:
-                dynamic_percent = _calculate_dynamic_percent(selected_value, past_value)
-
-            if dynamic_percent is None or dynamic_percent > rule["threshold"]:
-                continue
-
-            record_problem_rows.append(
-                _build_problem_row(
-                    record,
-                    rule,
-                    selected_value,
-                    past_value,
-                    dynamic_percent,
-                    products_by_nm_id,
-                    recent_changes,
-                )
-            )
-
-        wb_stocks = _to_number(_problem_product_value(record, "wbStocks"))
-
-        if wb_stocks == 0:
-            record_problem_rows.append(
-                {
-                    "sellerName": SELLER_NAME,
-                    "nmId": _problem_product_value(record, "nmId"),
-                    "vendorCode": _problem_product_value(record, "vendorCode"),
-                    "brandName": _problem_product_value(record, "brandName"),
-                    "title": _problem_product_value(record, "title"),
-                    "ABC": _product_abc(record, products_by_nm_id),
-                    "problemType": "wbStocks == 0",
-                    "metric": "wbStocks",
-                    "selectedValue": 0,
-                    "pastValue": "",
-                    "dynamicPercent": "",
-                    "recommendation": STOCK_PROBLEM_RECOMMENDATION,
-                    "recentChanges": recent_changes,
-                }
-            )
+        record_problem_rows = _build_record_problem_rows(
+            record, products_by_nm_id, recent_changes
+        )
 
         if not record_problem_rows:
             continue
