@@ -40,6 +40,8 @@ PROBLEMS_REPORT_COLUMNS = [
     "brandName",
     "title",
     "ABC",
+    "productInCatalog",
+    "productStatus",
     "problemType",
     "metric",
     "selectedValue",
@@ -322,6 +324,9 @@ def _problem_product_value(record, key):
         "vendorCode": ["product.vendorCode", "vendorCode"],
         "brandName": ["product.brandName", "brandName"],
         "title": ["product.title", "title"],
+        "ABC": ["product.ABC", "ABC", "product.abc", "abc"],
+        "productInCatalog": ["product.productInCatalog", "productInCatalog"],
+        "productStatus": ["product.productStatus", "productStatus"],
         "openCount": _metric_paths("selected", "openCount") + ["openCount"],
         "orderCount": _metric_paths("selected", "orderCount") + ["orderCount"],
         "orderSum": _metric_paths("selected", "orderSum") + ["orderSum"],
@@ -365,7 +370,17 @@ def _product_metadata(record, products_by_nm_id):
 
 
 def _product_abc(record, products_by_nm_id):
-    abc = str(_product_metadata(record, products_by_nm_id).get("abc") or "C").upper()
+    enriched_abc = _problem_product_value(record, "ABC")
+
+    if not _is_missing(enriched_abc):
+        abc = str(enriched_abc).upper()
+    else:
+        abc = str(
+            _product_metadata(record, products_by_nm_id).get("abc") or "C"
+        ).upper()
+
+    if abc == "UNKNOWN":
+        return abc
 
     if abc not in ABC_RULES:
         return "C"
@@ -373,8 +388,40 @@ def _product_abc(record, products_by_nm_id):
     return abc
 
 
+def _abc_rules_key(abc):
+    return "C" if abc == "UNKNOWN" else abc
+
+
+def _product_in_catalog(record, products_by_nm_id):
+    enriched_value = _problem_product_value(record, "productInCatalog")
+
+    if isinstance(enriched_value, bool):
+        return enriched_value
+
+    if not _is_missing(enriched_value):
+        return str(enriched_value).strip().lower() in {"true", "1", "yes", "да"}
+
+    return bool(_product_metadata(record, products_by_nm_id))
+
+
+def _product_status(record, products_by_nm_id):
+    enriched_status = _problem_product_value(record, "productStatus")
+
+    if not _is_missing(enriched_status):
+        return enriched_status
+
+    return _product_metadata(record, products_by_nm_id).get("status", "")
+
+
+def _recommendation(record, products_by_nm_id, recommendation):
+    if _product_in_catalog(record, products_by_nm_id):
+        return recommendation
+
+    return f"{recommendation}; внести товар в PRODUCTS и назначить ABC"
+
+
 def _passes_abc_filter(record, products_by_nm_id):
-    abc = _product_abc(record, products_by_nm_id)
+    abc = _abc_rules_key(_product_abc(record, products_by_nm_id))
     rules = ABC_RULES[abc]
     open_count = _to_number(_problem_product_value(record, "openCount")) or 0
     order_count = _to_number(_problem_product_value(record, "orderCount")) or 0
@@ -468,12 +515,16 @@ def _build_problem_row(
         "brandName": _problem_product_value(record, "brandName"),
         "title": _problem_product_value(record, "title"),
         "ABC": _product_abc(record, products_by_nm_id),
+        "productInCatalog": _product_in_catalog(record, products_by_nm_id),
+        "productStatus": _product_status(record, products_by_nm_id),
         "problemType": rule["problem_type"],
         "metric": rule["metric"],
         "selectedValue": _format_problem_number(selected_value),
         "pastValue": _format_problem_number(past_value),
         "dynamicPercent": round(dynamic_percent, 2),
-        "recommendation": rule["recommendation"],
+        "recommendation": _recommendation(
+            record, products_by_nm_id, rule["recommendation"]
+        ),
         "recentChanges": recent_changes,
     }
 
@@ -532,12 +583,16 @@ def _build_record_problem_rows(record, products_by_nm_id, recent_changes=""):
                 "brandName": _problem_product_value(record, "brandName"),
                 "title": _problem_product_value(record, "title"),
                 "ABC": _product_abc(record, products_by_nm_id),
+                "productInCatalog": _product_in_catalog(record, products_by_nm_id),
+                "productStatus": _product_status(record, products_by_nm_id),
                 "problemType": "wbStocks == 0",
                 "metric": "wbStocks",
                 "selectedValue": 0,
                 "pastValue": "",
                 "dynamicPercent": "",
-                "recommendation": STOCK_PROBLEM_RECOMMENDATION,
+                "recommendation": _recommendation(
+                    record, products_by_nm_id, STOCK_PROBLEM_RECOMMENDATION
+                ),
                 "recentChanges": recent_changes,
             }
         )

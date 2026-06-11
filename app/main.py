@@ -1,7 +1,7 @@
 import pandas as pd
 
 from app.analyzers.ads_analyzer import analyze_ads_problems
-from app.analyzers.products_filter import filter_funnel_data_by_products
+from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import collect_ads_stats
 from app.collectors.funnel import (
@@ -56,7 +56,8 @@ def _sum_report_column(dataframe, column_name):
 def _build_summary_stats(
     seller_name,
     total_sku_from_api,
-    sku_after_products_filter,
+    sku_in_products,
+    sku_not_in_products,
     sku_ignored_by_abc_filter,
     critical_problems_count,
     funnel_data,
@@ -66,8 +67,10 @@ def _build_summary_stats(
     return {
         "sellerName": seller_name,
         "totalSkuFromApi": total_sku_from_api,
-        "skuAfterProductsFilter": sku_after_products_filter,
-        "skuRemovedByProductsFilter": total_sku_from_api - sku_after_products_filter,
+        "skuInProducts": sku_in_products,
+        "skuNotInProducts": sku_not_in_products,
+        "skuAfterProductsFilter": total_sku_from_api,
+        "skuRemovedByProductsFilter": 0,
         "skuIgnoredByAbcFilter": sku_ignored_by_abc_filter,
         "criticalProblemsCount": critical_problems_count,
         "totalOrders": _sum_report_column(funnel_report, "orderCount"),
@@ -81,8 +84,8 @@ def _build_summary_stats(
 def _print_summary_stats(summary_stats):
     print("MORNING BRIEF SUMMARY:")
     print(f"totalSkuFromApi: {summary_stats['totalSkuFromApi']}")
-    print(f"skuAfterProductsFilter: {summary_stats['skuAfterProductsFilter']}")
-    print(f"skuRemovedByProductsFilter: {summary_stats['skuRemovedByProductsFilter']}")
+    print(f"skuInProducts: {summary_stats['skuInProducts']}")
+    print(f"skuNotInProducts: {summary_stats['skuNotInProducts']}")
     print(f"skuIgnoredByAbcFilter: {summary_stats['skuIgnoredByAbcFilter']}")
 
 
@@ -119,8 +122,19 @@ def main():
     print("=" * 50)
 
     total_sku_from_api = len(_extract_funnel_products(data))
-    data = filter_funnel_data_by_products(data, products)
-    sku_after_products_filter = len(_extract_funnel_products(data))
+    data = enrich_funnel_data_with_products(data, products)
+    enriched_products = _extract_funnel_products(data)
+    sku_in_products = sum(
+        1
+        for funnel_product in enriched_products
+        if (
+            funnel_product.get("product", funnel_product)
+            if isinstance(funnel_product, dict)
+            else {}
+        ).get("productInCatalog")
+        is True
+    )
+    sku_not_in_products = len(enriched_products) - sku_in_products
     print("=" * 50)
 
     ads_data = collect_ads_stats()
@@ -148,7 +162,8 @@ def main():
     summary_stats = _build_summary_stats(
         seller_name=seller_name,
         total_sku_from_api=total_sku_from_api,
-        sku_after_products_filter=sku_after_products_filter,
+        sku_in_products=sku_in_products,
+        sku_not_in_products=sku_not_in_products,
         sku_ignored_by_abc_filter=count_sku_ignored_by_abc_filter(data),
         critical_problems_count=len(all_problems),
         funnel_data=data,
