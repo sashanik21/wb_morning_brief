@@ -5,6 +5,7 @@ import pandas as pd
 
 from app.collectors.cards import get_cards_list
 from app.config import HEADERS
+from app.seller_config import SELLER_NAME
 from app.wb_client import WBClient
 
 SALES_FUNNEL_URL = (
@@ -14,6 +15,7 @@ SALES_FUNNEL_URL = (
 MAX_FUNNEL_NM_IDS = 1000
 REPORTS_DIR = Path("reports")
 FUNNEL_REPORT_COLUMNS = [
+    "sellerName",
     "date",
     "nmId",
     "vendorCode",
@@ -31,6 +33,7 @@ FUNNEL_REPORT_COLUMNS = [
 ]
 
 PROBLEMS_REPORT_COLUMNS = [
+    "sellerName",
     "nmId",
     "vendorCode",
     "brandName",
@@ -193,6 +196,7 @@ def _flatten_history_products(products):
 
             rows.append(
                 {
+                    "sellerName": SELLER_NAME,
                     "date": history_item.get("date"),
                     "nmId": product.get("nmId"),
                     "vendorCode": product.get("vendorCode"),
@@ -332,6 +336,7 @@ def _extract_problem_records(funnel_data):
 
 def _build_problem_row(record, rule, selected_value, past_value, dynamic_percent):
     return {
+        "sellerName": SELLER_NAME,
         "nmId": _problem_product_value(record, "nmId"),
         "vendorCode": _problem_product_value(record, "vendorCode"),
         "brandName": _problem_product_value(record, "brandName"),
@@ -380,6 +385,7 @@ def analyze_funnel_problems(funnel_data):
         if wb_stocks == 0:
             problem_rows.append(
                 {
+                    "sellerName": SELLER_NAME,
                     "nmId": _problem_product_value(record, "nmId"),
                     "vendorCode": _problem_product_value(record, "vendorCode"),
                     "brandName": _problem_product_value(record, "brandName"),
@@ -461,6 +467,7 @@ def flatten_sales_funnel_data(funnel_data):
 
         rows.append(
             {
+                "sellerName": SELLER_NAME,
                 "date": report_date,
                 "nmId": _first_present(record, ["product.nmId", "nmId", "nmID"]),
                 "vendorCode": _first_present(
