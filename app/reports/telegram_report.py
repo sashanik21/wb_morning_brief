@@ -4,6 +4,8 @@ import os
 
 import requests
 
+from app.seller_config import SELLER_NAME
+
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_TIMEOUT_SECONDS = 15
 TELEGRAM_TOP_LIMIT = 5
@@ -48,11 +50,22 @@ def _format_problem_item(index, problem):
     )
 
 
+def _build_telegram_header(total_problems):
+    seller_name = html.escape(SELLER_NAME)
+
+    return (
+        "📊 <b>WB Morning Brief</b>\n"
+        f"Продавец: <b>{seller_name}</b>\n\n"
+        f"Всего проблем: <b>{total_problems}</b>"
+    )
+
+
 def _build_telegram_message(problems):
     records = _problems_to_records(problems)
+    header = _build_telegram_header(len(records))
 
     if not records:
-        return "✅ Критичных проблем не найдено"
+        return f"{header}\n\n✅ Критичных проблем не найдено"
 
     top_problems = records[:TELEGRAM_TOP_LIMIT]
     formatted_problems = [
@@ -60,11 +73,7 @@ def _build_telegram_message(problems):
         for index, problem in enumerate(top_problems, start=1)
     ]
 
-    return (
-        "📊 <b>WB Morning Brief</b>\n\n"
-        f"Всего проблем: <b>{len(records)}</b>\n\n"
-        "🔴 <b>ТОП-5:</b>\n\n" + "\n\n".join(formatted_problems)
-    )
+    return header + "\n\n🔴 <b>ТОП-5:</b>\n\n" + "\n\n".join(formatted_problems)
 
 
 def send_telegram_morning_brief(problems):

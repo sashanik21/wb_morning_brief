@@ -1,5 +1,7 @@
 import os
 
+from app.seller_config import SELLER_CONFIG, SELLER_NAME
+
 WB_API_TOKEN = os.getenv("WB_API_TOKEN_TEST")
 
 if not WB_API_TOKEN:
