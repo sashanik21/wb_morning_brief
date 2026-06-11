@@ -1,6 +1,6 @@
 import json
 
-from app.collectors.funnel import collect_sales_funnel
+from app.collectors.funnel import collect_sales_funnel, save_sales_funnel_report
 
 
 def main():
@@ -16,6 +16,10 @@ def main():
         return
 
     print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
+    print("=" * 50)
+
+    report_path = save_sales_funnel_report(data)
+    print(f"XLSX отчёт: {report_path}")
     print("=" * 50)
 
     print(json.dumps(data, ensure_ascii=False, indent=2)[:15000])
