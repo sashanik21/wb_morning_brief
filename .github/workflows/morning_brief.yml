@@ -27,7 +27,12 @@ jobs:
       - name: Run WB Morning Brief
         env:
           WB_API_TOKEN_TEST: ${{ secrets.WB_API_TOKEN_TEST }}
-        run: python -m app.main
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "Telegram token configured: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}"
+          echo "Telegram chat configured: ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
+          python -m app.main
       - name: Upload funnel reports
         if: always()
         uses: actions/upload-artifact@v4
