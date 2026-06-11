@@ -1,5 +1,6 @@
 import pandas as pd
 
+from app.analyzers.ads_analyzer import analyze_ads_problems
 from app.collectors.ads import collect_ads_stats
 from app.collectors.funnel import (
     collect_sales_funnel,
@@ -33,6 +34,7 @@ def main():
     print("=" * 50)
 
     ads_data = collect_ads_stats()
+    ads_problems = analyze_ads_problems(ads_data)
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("=" * 50)
 
@@ -44,13 +46,15 @@ def main():
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
     print("=" * 50)
 
-    problems = (
+    funnel_problems = (
         pd.read_excel(problems_report_path, sheet_name="problems")
         .fillna("")
         .to_dict("records")
     )
+    all_problems = funnel_problems + ads_problems
+
     print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
-    send_telegram_morning_brief(problems)
+    send_telegram_morning_brief(funnel_problems)
     print("=" * 50)
 
     print("WB Morning Brief completed successfully")
