@@ -1,4 +1,5 @@
 import time
+
 import requests
 
 
@@ -35,8 +36,10 @@ class WBClient:
                 continue
 
             if response.status_code >= 500:
-                wait_time = min(2 ** attempt, 30)
-                print(f"WB SERVER ERROR {response.status_code}. WAIT {wait_time} seconds")
+                wait_time = min(2**attempt, 30)
+                print(
+                    f"WB SERVER ERROR {response.status_code}. WAIT {wait_time} seconds"
+                )
                 time.sleep(wait_time)
                 continue
 
