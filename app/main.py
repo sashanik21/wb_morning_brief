@@ -1,21 +1,24 @@
 import json
-from datetime import datetime
 
-from app.collectors.funnel import collect_sales_funnel
+from app.collectors.cards import get_cards_list
 
 
 def main():
-    print("WB Morning Brief MVP started")
-    print("Started at:", datetime.now().isoformat())
 
-    data = collect_sales_funnel()
+    print("=" * 50)
+    print("GET WB CARDS")
+    print("=" * 50)
+
+    data = get_cards_list()
 
     if data is None:
-        print("Данные не получены")
+        print("Карточки не получены")
         return
 
-    print("Данные успешно получены")
-    print(json.dumps(data, ensure_ascii=False, indent=2)[:5000])
+    print("КАРТОЧКИ УСПЕШНО ПОЛУЧЕНЫ")
+    print("=" * 50)
+
+    print(json.dumps(data, ensure_ascii=False, indent=2)[:10000])
 
 
 if __name__ == "__main__":
