@@ -54,7 +54,7 @@ STUB_PRODUCTS = [
     {
         "seller_id": 1,
         "nmId": 1088430501,
-        "vendorCode": "Пэпэ Кедрус_30ml Шнейе?",
+        "vendorCode": "Пэпэ Кедрус_30ml",
         "productName": "Масляные духи по мотивам Chloe Cedrus 30 мл",
         "brand": "МИЗ",
         "abc": "A",
@@ -111,7 +111,7 @@ STUB_PRODUCTS = [
         "vendorCode": "Пэпэ Абсолю_30ml",
         "productName": "Масляные духи по мотивам Chloe Absolu 30 мл",
         "brand": "МИЗ",
-        "abc": "B",
+        "abc": "C",
         "status": "active",
     },
     {
