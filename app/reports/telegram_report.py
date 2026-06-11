@@ -95,11 +95,10 @@ def _format_recommendations(problems):
     return "; ".join(recommendations)
 
 
-def _format_product_item(index, product):
+def _format_product_item(_index, product):
     title = html.escape(str(product["title"]))
     vendor_code = html.escape(str(product["vendorCode"]))
     nm_id = html.escape(str(product["nmId"]))
-    seller_name = html.escape(str(product["sellerName"]))
     problems = product["problems"]
     problem_lines = [
         _format_problem_line(problem)
@@ -108,10 +107,9 @@ def _format_product_item(index, product):
     recommendations = _format_recommendations(problems)
 
     return (
-        f"<b>{index}.</b> 🏷️ <b>{title}</b>\n"
-        f"Продавец: {seller_name}\n"
-        f"Артикул: {vendor_code}\n"
-        f"nmId: {nm_id}\n"
+        f"🏷️ <b>{title}</b>\n\n"
+        f"Артикул продавца: {vendor_code}\n"
+        f"Артикул WB: {nm_id}\n\n"
         f"Проблем: <b>{len(problems)}</b>\n\n"
         + "\n".join(problem_lines)
         + f"\n\n💡 <b>Что проверить:</b>\n{recommendations}"
