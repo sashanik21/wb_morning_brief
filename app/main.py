@@ -1,6 +1,7 @@
 import pandas as pd
 
 from app.analyzers.ads_analyzer import analyze_ads_problems
+from app.analyzers.products_filter import filter_funnel_data_by_products
 from app.collectors.ads import collect_ads_stats
 from app.collectors.funnel import (
     collect_sales_funnel,
@@ -8,7 +9,7 @@ from app.collectors.funnel import (
     save_sales_funnel_report,
 )
 from app.reports.telegram_report import send_telegram_morning_brief
-from app.sheets.google_sheets import get_sellers
+from app.sheets.google_sheets import get_products, get_sellers
 
 
 def main():
@@ -31,6 +32,10 @@ def main():
         return
 
     print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
+    print("=" * 50)
+
+    products = get_products()
+    data = filter_funnel_data_by_products(data, products)
     print("=" * 50)
 
     ads_data = collect_ads_stats()

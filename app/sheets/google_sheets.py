@@ -19,6 +19,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Cedrus 30 мл",
             "brand": "МИЗ",
             "abc": "A",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -27,6 +28,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Nomade 30 мл",
             "brand": "МИЗ",
             "abc": "A",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -35,6 +37,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Love 30 мл",
             "brand": "МИЗ",
             "abc": "A",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -43,6 +46,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Fleur 30 мл",
             "brand": "МИЗ",
             "abc": "B",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -51,6 +55,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Signature 30 мл",
             "brand": "МИЗ",
             "abc": "B",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -59,6 +64,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Roses 30 мл",
             "brand": "МИЗ",
             "abc": "B",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -67,6 +73,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Absolu 30 мл",
             "brand": "МИЗ",
             "abc": "B",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -75,6 +82,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Naturelle 30 мл",
             "brand": "МИЗ",
             "abc": "C",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -83,6 +91,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Lumineuse 30 мл",
             "brand": "МИЗ",
             "abc": "C",
+            "status": "active",
         },
         {
             "seller_id": 1,
@@ -91,6 +100,7 @@ def get_products():
             "productName": "Масляные духи по мотивам Chloe Intense 30 мл",
             "brand": "МИЗ",
             "abc": "C",
+            "status": "active",
         },
     ]
 
