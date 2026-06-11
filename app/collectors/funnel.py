@@ -6,7 +6,6 @@ from app.collectors.cards import get_cards_list
 
 
 def collect_sales_funnel():
-
     client = WBClient(HEADERS)
 
     cards_data = get_cards_list()
@@ -20,7 +19,6 @@ def collect_sales_funnel():
     nm_ids = []
 
     for card in cards:
-
         nm_id = card.get("nmID")
 
         if nm_id:
@@ -36,30 +34,31 @@ def collect_sales_funnel():
 
     today = datetime.now().date()
 
-    selected_begin = (today - timedelta(days=1)).strftime("%Y-%m-%d")
-    selected_end = selected_begin
+    selected_day = today - timedelta(days=1)
 
-    past_begin = (today - timedelta(days=4)).strftime("%Y-%m-%d")
-    past_end = (today - timedelta(days=2)).strftime("%Y-%m-%d")
+    past_begin = today - timedelta(days=4)
+    past_end = today - timedelta(days=2)
 
     payload = {
         "selectedPeriod": {
-            "begin": selected_begin,
-            "end": selected_end
+            "start": selected_day.strftime("%Y-%m-%d"),
+            "end": selected_day.strftime("%Y-%m-%d"),
         },
         "pastPeriod": {
-            "begin": past_begin,
-            "end": past_end
+            "start": past_begin.strftime("%Y-%m-%d"),
+            "end": past_end.strftime("%Y-%m-%d"),
         },
-        "nmIds": nm_ids
+        "nmIds": nm_ids,
     }
 
     print("Отправляем запрос в funnel API")
+    print("selectedPeriod:", payload["selectedPeriod"])
+    print("pastPeriod:", payload["pastPeriod"])
 
     data = client.request(
         method="POST",
         url=url,
-        json_data=payload
+        json_data=payload,
     )
 
     return data
