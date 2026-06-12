@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from app.analyzers.ads_analyzer import analyze_ads_problems
+from app.analyzers.ads_analyzer import (
+    analyze_ads_problems,
+    build_ads_summary,
+    save_ads_report,
+)
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 from app.analyzers.tasks_builder import build_tasks_from_problems
@@ -163,15 +167,23 @@ def main():
     print("=" * 50)
 
     ads_data = collect_ads_stats()
-    ads_problems = analyze_ads_problems(ads_data)
+    funnel_report = flatten_sales_funnel_data(data)
+    ads_problems = analyze_ads_problems(ads_data, funnel_report)
+    ads_summary = build_ads_summary(ads_data, ads_problems)
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
+    print("ADS SUMMARY:")
+    print(f"campaigns: {ads_summary['activeCampaigns']}")
+    print(f"problems: {ads_summary['problems']}")
     print("=" * 50)
 
     stocks_problems = []
 
     report_path = save_sales_funnel_report(data)
     print(f"XLSX отчёт: {report_path}")
-    funnel_report = flatten_sales_funnel_data(data)
+    print("=" * 50)
+
+    ads_report_path = save_ads_report(ads_data, ads_problems)
+    print(f"XLSX отчёт по рекламе: {ads_report_path}")
     print("=" * 50)
 
     # TODO: switch problems XLSX generation to all_problems after ads/stocks problems are enabled
@@ -184,7 +196,7 @@ def main():
     ).fillna("")
     funnel_problems = funnel_problems_df.to_dict("records")
     all_problems = funnel_problems + ads_problems + stocks_problems
-    root_cause_insights = analyze_root_causes(funnel_problems, data)
+    root_cause_insights = analyze_root_causes(all_problems, data)
     print(f"ROOT CAUSE INSIGHTS: {len(root_cause_insights)}")
     summary_stats = _build_summary_stats(
         seller_name=seller_name,
@@ -196,6 +208,7 @@ def main():
         funnel_data=data,
     )
 
+    summary_stats["adsSummary"] = ads_summary
     _print_summary_stats(summary_stats)
     print("=" * 50)
 

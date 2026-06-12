@@ -342,6 +342,69 @@ def _build_top_drop_signals_block(summary_stats):
     )
 
 
+def _format_money(value):
+    return f"{_format_number(value)} ₽"
+
+
+def _build_ads_block(records, summary_stats):
+    ads_summary = (summary_stats or {}).get("adsSummary") or {}
+    ads_records = [
+        record
+        for record in records
+        if isinstance(record, dict) and record.get("problemCategory") == "ads"
+    ]
+
+    if not ads_summary and not ads_records:
+        return ""
+
+    active_campaigns = ads_summary.get("activeCampaigns", 0)
+    problem_campaigns = ads_summary.get("problemCampaigns", 0)
+    block_lines = [
+        "📢 <b>Реклама:</b>",
+        f"Активных кампаний: <b>{_format_number(active_campaigns)}</b>",
+        f"Проблемных кампаний: <b>{_format_number(problem_campaigns)}</b>",
+    ]
+
+    if not ads_records:
+        block_lines.append("✅ Проблем рекламы не найдено")
+        return "\n".join(block_lines)
+
+    grouped_campaigns = {}
+
+    for record in ads_records:
+        campaign_key = record.get("campaignId") or record.get("title")
+
+        if campaign_key not in grouped_campaigns:
+            grouped_campaigns[campaign_key] = record
+
+    problem_lines = []
+
+    for record in list(grouped_campaigns.values())[:TELEGRAM_TOP_LIMIT]:
+        title = html.escape(
+            str(record.get("title") or record.get("campaignName") or "Без названия")
+        )
+        reason = html.escape(
+            str(
+                record.get("problemLabel")
+                or record.get("problemType")
+                or "реклама стала неэффективной"
+            )
+        )
+        problem_lines.append(
+            f"— <b>{title}</b>\n"
+            f"CTR рекламы: {_format_dynamic_value(record.get('ctr'))}\n"
+            f"CPC: {_format_money(record.get('cpc'))}\n"
+            f"ДРР: {_format_dynamic_value(record.get('drr'))}\n"
+            f"Причина:\n{reason}"
+        )
+
+    return (
+        "\n".join(block_lines)
+        + "\n\n🔴 <b>Проблемы рекламы:</b>\n\n"
+        + "\n\n".join(problem_lines)
+    )
+
+
 def _insight_key(insight):
     nm_id = insight.get("nmId")
 
@@ -402,6 +465,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         _build_store_dynamics_block(summary_stats),
         _build_control_signals_block(summary_stats),
         _build_top_drop_signals_block(summary_stats),
+        _build_ads_block(records, summary_stats),
     ]
 
     if not records:
