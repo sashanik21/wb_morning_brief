@@ -22,6 +22,7 @@ from app.collectors.funnel import (
     save_sales_funnel_report,
 )
 from app.reports.dashboard_image import generate_dashboard_image
+from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
 from app.sheets.google_sheets import (
     create_tasks,
@@ -106,6 +107,8 @@ def _build_summary_stats(
             funnel_summary_dynamics, "selectedCartCount", funnel_report, "cartCount"
         ),
         "topDropSignals": build_top_funnel_drop_signals(funnel_data),
+        "evidenceRows": build_evidence_rows(funnel_data, limit=EVIDENCE_LIMIT_TELEGRAM),
+        "funnelData": funnel_data,
         **funnel_summary_dynamics,
     }
 
@@ -226,7 +229,7 @@ def main():
 
     try:
         dashboard_image_path = generate_dashboard_image(
-            funnel_report,
+            data,
             funnel_problems_df,
             dashboard_output_path,
         )
