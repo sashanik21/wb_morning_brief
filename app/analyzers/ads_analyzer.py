@@ -140,12 +140,16 @@ def _is_funnel_order_not_growing(row):
 
 
 def _funnel_rows_by_nm_id(funnel_rows):
-    if not funnel_rows:
+    if funnel_rows is None:
         return {}
 
-    if hasattr(funnel_rows, "to_dict"):
+    if isinstance(funnel_rows, pd.DataFrame):
+        if funnel_rows.empty:
+            return {}
         records = funnel_rows.to_dict("records")
-    elif isinstance(funnel_rows, list):
+    elif isinstance(funnel_rows, (list, tuple)):
+        if len(funnel_rows) == 0:
+            return {}
         records = funnel_rows
     else:
         records = []
