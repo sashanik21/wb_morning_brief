@@ -5,6 +5,7 @@ import pandas as pd
 
 from app.collectors.cards import get_cards_list
 from app.config import ABC_RULES, HEADERS
+from app.constants.problem_labels import get_problem_label
 from app.seller_config import SELLER_NAME
 from app.sheets.google_sheets import get_change_log, get_products
 from app.wb_client import WBClient
@@ -44,6 +45,7 @@ PROBLEMS_REPORT_COLUMNS = [
     "productStatus",
     "problemType",
     "metric",
+    "problemLabel",
     "selectedValue",
     "pastValue",
     "dynamicPercent",
@@ -519,6 +521,7 @@ def _build_problem_row(
         "productStatus": _product_status(record, products_by_nm_id),
         "problemType": rule["problem_type"],
         "metric": rule["metric"],
+        "problemLabel": get_problem_label(rule["metric"]),
         "selectedValue": _format_problem_number(selected_value),
         "pastValue": _format_problem_number(past_value),
         "dynamicPercent": round(dynamic_percent, 2),
@@ -587,6 +590,7 @@ def _build_record_problem_rows(record, products_by_nm_id, recent_changes=""):
                 "productStatus": _product_status(record, products_by_nm_id),
                 "problemType": "wbStocks == 0",
                 "metric": "wbStocks",
+                "problemLabel": get_problem_label("wbStocks"),
                 "selectedValue": 0,
                 "pastValue": "",
                 "dynamicPercent": "",
@@ -633,6 +637,7 @@ def build_top_funnel_drop_signals(funnel_data, limit=5):
                 "vendorCode": _problem_product_value(record, "vendorCode"),
                 "title": _problem_product_value(record, "title"),
                 "metric": rule["metric"],
+                "problemLabel": get_problem_label(rule["metric"]),
                 "selectedValue": _format_problem_number(selected_value),
                 "pastValue": _format_problem_number(past_value),
                 "dynamicPercent": round(dynamic_percent, 2),
@@ -759,7 +764,7 @@ def _print_problems_summary(dataframe):
         dynamic_text = f"{dynamic}%" if dynamic != "" else "n/a"
         print(
             f"{index + 1}. nmId={row['nmId']} | {row['problemType']} | "
-            f"{row['metric']}: {row['selectedValue']} vs {row['pastValue']} "
+            f"{row['problemLabel']}: {row['selectedValue']} vs {row['pastValue']} "
             f"({dynamic_text}) | {row['recommendation']}"
         )
 

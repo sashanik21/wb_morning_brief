@@ -4,22 +4,13 @@ import os
 
 import requests
 
+from app.constants.problem_labels import get_problem_label
 from app.seller_config import SELLER_NAME
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_TIMEOUT_SECONDS = 15
 TELEGRAM_TOP_LIMIT = 5
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
-PROBLEM_TYPE_LABELS = {
-    "openCount": "Падение переходов в карточку",
-    "cartCount": "Падение добавлений в корзину",
-    "orderCount": "Падение заказов",
-    "orderSum": "Падение выручки",
-    "addToCartPercent": "Падение конверсии в корзину",
-    "cartToOrderPercent": "Падение конверсии в заказ",
-    "wbStocks": "Закончился остаток WB",
-}
-
 logger = logging.getLogger(__name__)
 
 
@@ -82,27 +73,32 @@ def _group_problems_by_product(records):
 
 
 def _human_readable_problem_type(problem):
-    metric = problem.get("metric")
+    problem_label = str(problem.get("problemLabel") or "").strip()
 
-    if metric in PROBLEM_TYPE_LABELS:
-        return PROBLEM_TYPE_LABELS[metric]
+    if problem_label:
+        return problem_label
 
-    problem_type = str(problem.get("problemType") or "").strip()
+    metric = str(problem.get("metric") or "").strip()
 
-    for technical_name, human_readable_name in PROBLEM_TYPE_LABELS.items():
-        if problem_type.startswith(technical_name):
-            return human_readable_name
+    if metric:
+        return get_problem_label(metric)
 
-    return problem_type or "n/a"
+    return get_problem_label(problem.get("problemType"))
 
 
 def _format_problem_line(problem):
     problem_type = html.escape(_human_readable_problem_type(problem))
-    dynamic_percent = html.escape(
-        _format_dynamic_percent(problem.get("dynamicPercent"))
-    )
 
-    return f"— {problem_type}: {dynamic_percent}"
+    if problem.get("metric") == "wbStocks" and _is_present(
+        problem.get("selectedValue")
+    ):
+        problem_value = html.escape(str(problem.get("selectedValue")))
+    else:
+        problem_value = html.escape(
+            _format_dynamic_percent(problem.get("dynamicPercent"))
+        )
+
+    return f"— {problem_type}: {problem_value}"
 
 
 def _format_recent_changes(problems):
@@ -318,7 +314,9 @@ def _build_control_signals_block(summary_stats):
 def _format_drop_signal(signal):
     title = html.escape(str(signal.get("title") or "Без названия"))
     nm_id = html.escape(str(signal.get("nmId") or "n/a"))
-    metric = html.escape(str(signal.get("metric") or "n/a"))
+    metric = html.escape(
+        str(signal.get("problemLabel") or get_problem_label(signal.get("metric")))
+    )
     dynamic = html.escape(_format_dynamic_percent(signal.get("dynamicPercent")))
     selected_value = html.escape(str(signal.get("selectedValue") or "0"))
     past_value = html.escape(str(signal.get("pastValue") or "0"))
