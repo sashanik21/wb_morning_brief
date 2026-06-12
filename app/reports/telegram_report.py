@@ -5,6 +5,13 @@ import os
 import requests
 
 from app.constants.problem_labels import get_problem_label
+from app.reports.evidence import (
+    EVIDENCE_LIMIT_TELEGRAM,
+    build_evidence_rows,
+    escape,
+    format_number,
+    format_percent,
+)
 from app.seller_config import SELLER_NAME
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -455,6 +462,88 @@ def _build_root_cause_insights_block(root_cause_insights, top_products):
     return "🧠 <b>Возможная причина:</b>\n\n" + "\n\n".join(formatted_insights)
 
 
+def _format_evidence_metric(row, label, metric, suffix=""):
+    selected_value = format_number(row.get(f"{metric}_selected"))
+    past_value = format_number(row.get(f"{metric}_past"))
+    dynamic_value = format_percent(row.get(f"{metric}_delta"))
+
+    return f"{label}:\nсейчас {selected_value}{suffix} / было {past_value}{suffix} → {dynamic_value}"
+
+
+def _telegram_evidence_conclusion(row):
+    orders_delta = row.get("orderCount_delta")
+    opens_delta = row.get("openCount_delta")
+    carts_delta = row.get("cartCount_delta")
+
+    if (
+        orders_delta is not None
+        and orders_delta < 0
+        and opens_delta is not None
+        and opens_delta < 0
+        and carts_delta is not None
+        and carts_delta < 0
+    ):
+        return "просадка заказов подтверждается падением переходов и корзин."
+
+    return row.get("diagnosis") or "Требует проверки"
+
+
+def _evidence_footer():
+    return (
+        "Формула динамики:\n"
+        + "(сейчас - было) / было × 100%\n\n"
+        + "Пример:\n"
+        + "(17 - 30) / 30 × 100% = -43%\n\n"
+        + "Источник данных:\n"
+        + "WB API sales funnel, selectedPeriod vs pastPeriod."
+    )
+
+
+def _build_evidence_block(summary_stats):
+    summary_stats = summary_stats or {}
+    evidence_rows = summary_stats.get("evidenceRows")
+
+    if evidence_rows is None:
+        evidence_rows = build_evidence_rows(
+            summary_stats.get("funnelData"), limit=EVIDENCE_LIMIT_TELEGRAM
+        )
+
+    logger.info("EVIDENCE BLOCK: top evidence rows: %s", len(evidence_rows))
+    print("EVIDENCE BLOCK:")
+    print(f"top evidence rows: {len(evidence_rows)}")
+
+    if not evidence_rows:
+        return (
+            "📌 <b>Подтверждение по ключевым просадкам:</b>\n"
+            "— Просадок заказов/выручки не найдено\n\n" + _evidence_footer()
+        )
+
+    formatted_rows = []
+
+    for row in evidence_rows[:EVIDENCE_LIMIT_TELEGRAM]:
+        formatted_rows.append(
+            f"🏷️ <b>{escape(row.get('title') or 'Без названия')}</b>\n"
+            f"Артикул продавца: {escape(row.get('vendorCode') or 'n/a')}\n"
+            f"Артикул WB: {escape(row.get('nmId') or 'n/a')}\n\n"
+            + _format_evidence_metric(row, "Переходы", "openCount")
+            + "\n\n"
+            + _format_evidence_metric(row, "Корзины", "cartCount")
+            + "\n\n"
+            + _format_evidence_metric(row, "Заказы", "orderCount")
+            + "\n\n"
+            + _format_evidence_metric(row, "Выручка", "orderSum", suffix=" ₽")
+            + "\n\nВывод:\n"
+            + escape(_telegram_evidence_conclusion(row))
+        )
+
+    return (
+        "📌 <b>Подтверждение по ключевым просадкам:</b>\n\n"
+        + "\n\n".join(formatted_rows)
+        + "\n\n"
+        + _evidence_footer()
+    )
+
+
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = _problems_to_records(problems)
     problem_products = _group_problems_by_product(records)
@@ -466,6 +555,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         _build_control_signals_block(summary_stats),
         _build_top_drop_signals_block(summary_stats),
         _build_ads_block(records, summary_stats),
+        _build_evidence_block(summary_stats),
     ]
 
     if not records:
