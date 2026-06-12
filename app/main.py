@@ -1,3 +1,6 @@
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 
 from app.analyzers.ads_analyzer import analyze_ads_problems
@@ -13,6 +16,7 @@ from app.collectors.funnel import (
     save_funnel_problems_report,
     save_sales_funnel_report,
 )
+from app.reports.dashboard_image import generate_dashboard_image
 from app.reports.telegram_report import send_telegram_morning_brief
 from app.sheets.google_sheets import (
     create_tasks,
@@ -166,6 +170,7 @@ def main():
 
     report_path = save_sales_funnel_report(data)
     print(f"XLSX отчёт: {report_path}")
+    funnel_report = flatten_sales_funnel_data(data)
     print("=" * 50)
 
     # TODO: switch problems XLSX generation to all_problems after ads/stocks problems are enabled
@@ -173,11 +178,10 @@ def main():
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
     print("=" * 50)
 
-    funnel_problems = (
-        pd.read_excel(problems_report_path, sheet_name="problems")
-        .fillna("")
-        .to_dict("records")
-    )
+    funnel_problems_df = pd.read_excel(
+        problems_report_path, sheet_name="problems"
+    ).fillna("")
+    funnel_problems = funnel_problems_df.to_dict("records")
     all_problems = funnel_problems + ads_problems + stocks_problems
     summary_stats = _build_summary_stats(
         seller_name=seller_name,
@@ -199,8 +203,29 @@ def main():
     print(f"all: {len(all_problems)}")
     print("=" * 50)
 
+    dashboard_image_path = None
+    dashboard_output_path = (
+        Path("reports") / f"dashboard_{datetime.now().date():%Y_%m_%d}.png"
+    )
+
+    try:
+        dashboard_image_path = generate_dashboard_image(
+            funnel_report,
+            funnel_problems_df,
+            dashboard_output_path,
+        )
+        print(f"PNG dashboard: {dashboard_image_path}")
+    except Exception as error:
+        print(f"PNG dashboard не создан: {error}")
+
+    print("=" * 50)
+
     print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
-    send_telegram_morning_brief(all_problems, summary_stats=summary_stats)
+    send_telegram_morning_brief(
+        all_problems,
+        summary_stats=summary_stats,
+        dashboard_image_path=dashboard_image_path,
+    )
     print("=" * 50)
 
     tasks = build_tasks_from_problems(all_problems)
