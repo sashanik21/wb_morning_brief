@@ -54,6 +54,15 @@ def _sum_report_column(dataframe, column_name):
     return int(total) if float(total).is_integer() else round(float(total), 2)
 
 
+def _summary_total(summary_dynamics, summary_key, fallback_report, fallback_column):
+    summary_value = summary_dynamics.get(summary_key)
+
+    if summary_value not in (None, ""):
+        return summary_value
+
+    return _sum_report_column(fallback_report, fallback_column)
+
+
 def _build_summary_stats(
     seller_name,
     total_sku_from_api,
@@ -75,10 +84,18 @@ def _build_summary_stats(
         "skuRemovedByProductsFilter": 0,
         "skuIgnoredByAbcFilter": sku_ignored_by_abc_filter,
         "criticalProblemsCount": critical_problems_count,
-        "totalOrders": _sum_report_column(funnel_report, "orderCount"),
-        "totalOrderSum": _sum_report_column(funnel_report, "orderSum"),
-        "totalOpenCount": _sum_report_column(funnel_report, "openCount"),
-        "totalCartCount": _sum_report_column(funnel_report, "cartCount"),
+        "totalOrders": _summary_total(
+            funnel_summary_dynamics, "selectedOrderCount", funnel_report, "orderCount"
+        ),
+        "totalOrderSum": _summary_total(
+            funnel_summary_dynamics, "selectedOrderSum", funnel_report, "orderSum"
+        ),
+        "totalOpenCount": _summary_total(
+            funnel_summary_dynamics, "selectedOpenCount", funnel_report, "openCount"
+        ),
+        "totalCartCount": _summary_total(
+            funnel_summary_dynamics, "selectedCartCount", funnel_report, "cartCount"
+        ),
         "topDropSignals": build_top_funnel_drop_signals(funnel_data),
         **funnel_summary_dynamics,
     }
