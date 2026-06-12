@@ -6,28 +6,72 @@ import pandas as pd
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
 
-DASHBOARD_COLUMNS = [
-    "Товар",
+REPORT_COLUMNS = [
+    "Артикул продавца",
     "Артикул WB",
-    "Переходы",
-    "Корзины",
-    "Заказы",
-    "Выручка",
-    "Δ Заказы %",
-    "Δ Выручка %",
+    "Показы",
+    "CTR",
+    "CTR CPC",
+    "Ставки АРК было",
+    "Ставки АРК стало",
+    "Аукцион/СРС было",
+    "Аукцион/СРС стало",
+    "Переходы в карточку",
+    "Положили в корзину",
+    "Заказали товаров, шт",
+    "Выкупили, шт",
+    "Конверсия в корзину, %",
+    "Конверсия в заказ, %",
+    "Процент выкупа",
+    "Заказали на сумму, ₽",
+    "Выкупили на сумму, ₽",
+    "Отменили на сумму, ₽",
 ]
-TOP_SKU_LIMIT = 10
-GROWTH_COLOR = "#DCFCE7"
-DROP_COLOR = "#FEE2E2"
-WEAK_COLOR = "#FEF3C7"
-HEADER_COLOR = "#111827"
+TOP_ROWS_LIMIT = 15
+EMPTY_VALUE = ""
+HEADER_COLOR = "#E5E7EB"
+ROW_COLOR = "#FFFFFF"
+ALT_ROW_COLOR = "#F8FAFC"
+TOTAL_ROW_COLOR = "#DCFCE7"
+GRID_COLOR = "#CBD5E1"
+TITLE_COLOR = "#111827"
 TEXT_COLOR = "#1F2937"
-MUTED_TEXT_COLOR = "#6B7280"
-CARD_EDGE_COLOR = "#E5E7EB"
-CARD_FACE_COLOR = "#FFFFFF"
-BACKGROUND_COLOR = "#F8FAFC"
+BACKGROUND_COLOR = "#FFFFFF"
+
+
+NUMERIC_REPORT_COLUMNS = [
+    "Показы",
+    "Переходы в карточку",
+    "Положили в корзину",
+    "Заказали товаров, шт",
+    "Выкупили, шт",
+    "Заказали на сумму, ₽",
+    "Выкупили на сумму, ₽",
+    "Отменили на сумму, ₽",
+]
+PERCENT_REPORT_COLUMNS = [
+    "CTR",
+    "Конверсия в корзину, %",
+    "Конверсия в заказ, %",
+    "Процент выкупа",
+]
+SUM_REPORT_COLUMNS = [
+    "Показы",
+    "Переходы в карточку",
+    "Положили в корзину",
+    "Заказали товаров, шт",
+    "Выкупили, шт",
+    "Заказали на сумму, ₽",
+    "Выкупили на сумму, ₽",
+    "Отменили на сумму, ₽",
+]
+MEAN_REPORT_COLUMNS = [
+    "CTR",
+    "Конверсия в корзину, %",
+    "Конверсия в заказ, %",
+    "Процент выкупа",
+]
 
 
 def _records_dataframe(dataframe):
@@ -48,310 +92,218 @@ def _first_existing_column(dataframe, columns):
     return None
 
 
-def _numeric_series(dataframe, column):
-    if column is None or column not in dataframe.columns:
-        return pd.Series([0] * len(dataframe), index=dataframe.index, dtype="float64")
+def _column_or_empty(dataframe, columns):
+    column = _first_existing_column(dataframe, columns)
 
-    return pd.to_numeric(dataframe[column], errors="coerce").fillna(0)
+    if column is None:
+        return pd.Series(
+            [pd.NA] * len(dataframe), index=dataframe.index, dtype="object"
+        )
+
+    return dataframe[column]
 
 
-def _format_number(value, suffix=""):
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return str(value or "0")
+def _numeric_series(dataframe, columns):
+    return pd.to_numeric(_column_or_empty(dataframe, columns), errors="coerce")
+
+
+def _format_number(value):
+    if pd.isna(value):
+        return EMPTY_VALUE
+
+    number = float(value)
 
     if number.is_integer():
-        formatted = f"{int(number):,}".replace(",", " ")
-    else:
-        formatted = f"{number:,.1f}".replace(",", " ").replace(".", ",")
+        return f"{int(number):,}".replace(",", " ")
 
-    return f"{formatted}{suffix}"
+    return f"{number:,.1f}".replace(",", " ").replace(".", ",")
 
 
 def _format_percent(value):
-    if value in (None, ""):
-        return "n/a"
+    if pd.isna(value):
+        return EMPTY_VALUE
 
-    try:
-        return f"{float(value):+.1f}%"
-    except (TypeError, ValueError):
-        return str(value)
+    return f"{float(value):.1f}%".replace(".", ",")
 
 
-def _dynamic_color(value):
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return WEAK_COLOR
+def _format_cell(column, value):
+    if column in PERCENT_REPORT_COLUMNS:
+        return _format_percent(value)
 
-    if number >= 5:
-        return GROWTH_COLOR
+    if column in NUMERIC_REPORT_COLUMNS:
+        return _format_number(value)
 
-    if number <= -5:
-        return DROP_COLOR
+    if pd.isna(value):
+        return EMPTY_VALUE
 
-    return WEAK_COLOR
+    return str(value)
 
 
-def _metric_dynamic_map(problems_df, metric):
-    if problems_df.empty or "metric" not in problems_df.columns:
-        return {}
-
-    nm_column = _first_existing_column(problems_df, ["nmId", "Артикул WB"])
-    dynamic_column = _first_existing_column(
-        problems_df, ["dynamicPercent", "Динамика", "Δ", "delta"]
-    )
-
-    if nm_column is None or dynamic_column is None:
-        return {}
-
-    metric_rows = problems_df[problems_df["metric"].astype(str) == metric]
-
-    return {
-        str(row[nm_column]): row[dynamic_column]
-        for _, row in metric_rows.iterrows()
-        if pd.notna(row[nm_column])
-    }
+def _safe_ratio_percent(numerator, denominator):
+    return (numerator / denominator * 100).where(denominator > 0)
 
 
-def _build_top_sku_table(funnel_df, problems_df):
+def _build_report_dataframe(funnel_df):
     if funnel_df.empty:
-        return pd.DataFrame(columns=DASHBOARD_COLUMNS)
+        return pd.DataFrame(columns=REPORT_COLUMNS)
 
-    title_column = _first_existing_column(
-        funnel_df, ["title", "Товар", "product.title"]
-    )
-    nm_column = _first_existing_column(
-        funnel_df, ["nmId", "Артикул WB", "product.nmId"]
-    )
-    open_column = _first_existing_column(funnel_df, ["openCount", "Переходы"])
-    cart_column = _first_existing_column(funnel_df, ["cartCount", "Корзины"])
-    order_column = _first_existing_column(funnel_df, ["orderCount", "Заказы"])
-    revenue_column = _first_existing_column(funnel_df, ["orderSum", "Выручка"])
-    orders_dynamic = _metric_dynamic_map(problems_df, "orderCount")
-    revenue_dynamic = _metric_dynamic_map(problems_df, "orderSum")
+    impressions = _numeric_series(funnel_df, ["impressions", "views", "openCount"])
+    opens = _numeric_series(funnel_df, ["openCount"])
+    order_sum = _numeric_series(funnel_df, ["orderSum"])
 
-    table_df = pd.DataFrame(
+    report_df = pd.DataFrame(
         {
-            "Товар": funnel_df[title_column] if title_column else "Без названия",
-            "Артикул WB": funnel_df[nm_column] if nm_column else "n/a",
-            "Переходы": _numeric_series(funnel_df, open_column),
-            "Корзины": _numeric_series(funnel_df, cart_column),
-            "Заказы": _numeric_series(funnel_df, order_column),
-            "Выручка": _numeric_series(funnel_df, revenue_column),
+            "Артикул продавца": _column_or_empty(funnel_df, ["vendorCode"]),
+            "Артикул WB": _column_or_empty(funnel_df, ["nmId"]),
+            "Показы": impressions,
+            "CTR": _safe_ratio_percent(opens, impressions),
+            "CTR CPC": pd.NA,
+            "Ставки АРК было": pd.NA,
+            "Ставки АРК стало": pd.NA,
+            "Аукцион/СРС было": pd.NA,
+            "Аукцион/СРС стало": pd.NA,
+            "Переходы в карточку": opens,
+            "Положили в корзину": _numeric_series(funnel_df, ["cartCount"]),
+            "Заказали товаров, шт": _numeric_series(funnel_df, ["orderCount"]),
+            "Выкупили, шт": _numeric_series(funnel_df, ["buyoutCount"]),
+            "Конверсия в корзину, %": _numeric_series(funnel_df, ["addToCartPercent"]),
+            "Конверсия в заказ, %": _numeric_series(funnel_df, ["cartToOrderPercent"]),
+            "Процент выкупа": _numeric_series(funnel_df, ["buyoutPercent"]),
+            "Заказали на сумму, ₽": order_sum,
+            "Выкупили на сумму, ₽": _numeric_series(funnel_df, ["buyoutSum"]),
+            "Отменили на сумму, ₽": _numeric_series(funnel_df, ["cancelSum"]),
         }
     )
-    table_df["_sort_revenue"] = table_df["Выручка"]
-    table_df["_sort_orders"] = table_df["Заказы"]
-    table_df = table_df.sort_values(
-        ["_sort_revenue", "_sort_orders", "Переходы"], ascending=False
-    ).head(TOP_SKU_LIMIT)
-    table_df["Δ Заказы %"] = table_df["Артикул WB"].astype(str).map(orders_dynamic)
-    table_df["Δ Выручка %"] = table_df["Артикул WB"].astype(str).map(revenue_dynamic)
 
-    return table_df[DASHBOARD_COLUMNS].fillna("")
-
-
-def _build_summary(funnel_df, problems_df):
-    nm_column = _first_existing_column(
-        funnel_df, ["nmId", "Артикул WB", "product.nmId"]
-    )
-    revenue_column = _first_existing_column(funnel_df, ["orderSum", "Выручка"])
-    problem_nm_column = _first_existing_column(problems_df, ["nmId", "Артикул WB"])
-
-    total_sku = funnel_df[nm_column].nunique() if nm_column else len(funnel_df)
-    problem_sku = problems_df[problem_nm_column].nunique() if problem_nm_column else 0
-    total_revenue = _numeric_series(funnel_df, revenue_column).sum()
-    order_dynamic_values = list(_metric_dynamic_map(problems_df, "orderCount").values())
-    order_dynamic = (
-        pd.to_numeric(pd.Series(order_dynamic_values), errors="coerce").dropna().mean()
-        if order_dynamic_values
-        else 0
+    return report_df.sort_values("Заказали на сумму, ₽", ascending=False).head(
+        TOP_ROWS_LIMIT
     )
 
-    return {
-        "Всего SKU": _format_number(total_sku),
-        "Проблемных SKU": _format_number(problem_sku),
-        "Общая выручка": _format_number(total_revenue, " ₽"),
-        "Динамика заказов": _format_percent(order_dynamic),
-    }
+
+def _build_total_row(report_df):
+    total_row = {column: pd.NA for column in REPORT_COLUMNS}
+    total_row["Артикул продавца"] = "ИТОГО"
+
+    for column in SUM_REPORT_COLUMNS:
+        total_row[column] = pd.to_numeric(report_df[column], errors="coerce").sum(
+            min_count=1
+        )
+
+    for column in MEAN_REPORT_COLUMNS:
+        total_row[column] = pd.to_numeric(report_df[column], errors="coerce").mean()
+
+    return total_row
 
 
-def _shorten_text(value, limit=28):
-    text = str(value or "")
+def _display_rows(report_df):
+    if report_df.empty:
+        return [["Нет данных", *([EMPTY_VALUE] * (len(REPORT_COLUMNS) - 1))]]
 
-    return text if len(text) <= limit else f"{text[: limit - 1]}…"
-
-
-def _table_cell_text(top_sku_df):
     rows = []
+    for _, row in report_df.iterrows():
+        rows.append([_format_cell(column, row[column]) for column in REPORT_COLUMNS])
 
-    for _, row in top_sku_df.iterrows():
-        rows.append(
-            [
-                _shorten_text(row["Товар"]),
-                str(row["Артикул WB"]),
-                _format_number(row["Переходы"]),
-                _format_number(row["Корзины"]),
-                _format_number(row["Заказы"]),
-                _format_number(row["Выручка"], " ₽"),
-                _format_percent(row["Δ Заказы %"]),
-                _format_percent(row["Δ Выручка %"]),
-            ]
-        )
+    total_row = _build_total_row(report_df)
+    rows.append([_format_cell(column, total_row[column]) for column in REPORT_COLUMNS])
 
-    if rows:
-        return rows
-
-    return [["Нет данных", "", "", "", "", "", "", ""]]
+    return rows
 
 
-def _draw_summary_cards(axis, summary):
-    axis.axis("off")
-    positions = [0.02, 0.265, 0.51, 0.755]
-
-    for (label, value), x_position in zip(summary.items(), positions):
-        card = FancyBboxPatch(
-            (x_position, 0.08),
-            0.22,
-            0.78,
-            boxstyle="round,pad=0.018,rounding_size=0.035",
-            linewidth=1,
-            edgecolor=CARD_EDGE_COLOR,
-            facecolor=CARD_FACE_COLOR,
-        )
-        axis.add_patch(card)
-        axis.text(
-            x_position + 0.025,
-            0.62,
-            label,
-            fontsize=11,
-            color=MUTED_TEXT_COLOR,
-            weight="bold",
-            transform=axis.transAxes,
-        )
-        axis.text(
-            x_position + 0.025,
-            0.28,
-            value,
-            fontsize=17,
-            color=TEXT_COLOR,
-            weight="bold",
-            transform=axis.transAxes,
-        )
-
-
-def _draw_dynamics(axis, top_sku_df):
-    axis.set_title("Динамика TOP SKU", loc="left", fontsize=14, weight="bold")
-
-    if top_sku_df.empty:
-        axis.text(0.5, 0.5, "Нет данных для динамики", ha="center", va="center")
-        axis.axis("off")
-        return
-
-    dynamics = pd.to_numeric(top_sku_df["Δ Заказы %"], errors="coerce").fillna(0)
-    labels = top_sku_df["Артикул WB"].astype(str).tolist()
-    colors = [_dynamic_color(value) for value in dynamics]
-    bars = axis.barh(labels, dynamics, color=colors, edgecolor="#CBD5E1")
-    axis.axvline(0, color="#94A3B8", linewidth=1)
-    axis.grid(axis="x", color="#E5E7EB", linestyle="--", linewidth=0.7)
-    axis.set_xlabel("Δ Заказы, %")
-    axis.invert_yaxis()
-
-    for bar, value in zip(bars, dynamics):
-        axis.text(
-            value + (1 if value >= 0 else -1),
-            bar.get_y() + bar.get_height() / 2,
-            _format_percent(value),
-            va="center",
-            ha="left" if value >= 0 else "right",
-            fontsize=9,
-            color=TEXT_COLOR,
-        )
-
-
-def _draw_top_table(axis, top_sku_df):
-    axis.axis("off")
-    axis.set_title("TOP SKU", loc="left", fontsize=14, weight="bold", pad=12)
-    table = axis.table(
-        cellText=_table_cell_text(top_sku_df),
-        colLabels=DASHBOARD_COLUMNS,
-        colColours=[HEADER_COLOR] * len(DASHBOARD_COLUMNS),
-        colWidths=[0.23, 0.11, 0.1, 0.09, 0.08, 0.13, 0.12, 0.14],
-        cellLoc="center",
-        loc="upper center",
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 1.55)
-
+def _style_table(table, total_row_index=None):
     for (row_index, column_index), cell in table.get_celld().items():
-        cell.set_edgecolor("#E2E8F0")
+        cell.set_edgecolor(GRID_COLOR)
+        cell.set_linewidth(0.6)
+        cell.get_text().set_color(TEXT_COLOR)
+        cell.get_text().set_wrap(True)
 
         if row_index == 0:
-            cell.get_text().set_color("white")
+            cell.set_facecolor(HEADER_COLOR)
             cell.get_text().set_weight("bold")
+            cell.get_text().set_fontsize(7.4)
             continue
 
-        cell.set_facecolor("#FFFFFF" if row_index % 2 else "#F8FAFC")
-
-        if column_index == 0:
-            cell.get_text().set_ha("left")
-
-        if column_index in (6, 7) and not top_sku_df.empty:
-            value = top_sku_df.iloc[row_index - 1, column_index]
-            cell.set_facecolor(_dynamic_color(value))
+        if total_row_index is not None and row_index == total_row_index:
+            cell.set_facecolor(TOTAL_ROW_COLOR)
             cell.get_text().set_weight("bold")
+        else:
+            cell.set_facecolor(ROW_COLOR if row_index % 2 else ALT_ROW_COLOR)
+
+        if column_index in (0, 1):
+            cell.get_text().set_ha("left")
+        else:
+            cell.get_text().set_ha("right")
+
+
+def _column_widths():
+    weights = [
+        0.085,
+        0.06,
+        0.052,
+        0.044,
+        0.044,
+        0.057,
+        0.057,
+        0.062,
+        0.062,
+        0.068,
+        0.066,
+        0.07,
+        0.054,
+        0.07,
+        0.07,
+        0.057,
+        0.074,
+        0.074,
+        0.074,
+    ]
+    total_weight = sum(weights)
+
+    return [weight / total_weight for weight in weights]
 
 
 def generate_dashboard_image(funnel_df, problems_df, output_path):
+    del problems_df
+
     funnel_df = _records_dataframe(funnel_df)
-    problems_df = _records_dataframe(problems_df)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    top_sku_df = _build_top_sku_table(funnel_df, problems_df)
-    summary = _build_summary(funnel_df, problems_df)
+    original_row_count = len(funnel_df)
+    report_df = _build_report_dataframe(funnel_df)
+    cell_text = _display_rows(report_df)
     report_date = datetime.now().strftime("%d.%m.%Y")
+    title_suffix = (
+        "TOP 15 по сумме заказов" if original_row_count > TOP_ROWS_LIMIT else ""
+    )
+    title = f"WB аналитический отчёт · {report_date}"
+
+    if title_suffix:
+        title = f"{title} · {title_suffix}"
 
     plt.rcParams["font.family"] = "DejaVu Sans"
-    figure = plt.figure(figsize=(16, 10), facecolor=BACKGROUND_COLOR)
-    grid = figure.add_gridspec(
-        4,
-        1,
-        height_ratios=[0.9, 1.25, 2.1, 4.2],
-        hspace=0.42,
+    figure_height = max(6.5, 2.4 + 0.42 * len(cell_text))
+    figure, axis = plt.subplots(
+        figsize=(30, figure_height), facecolor=BACKGROUND_COLOR, constrained_layout=True
+    )
+    axis.axis("off")
+    axis.set_title(
+        title, loc="left", fontsize=18, weight="bold", color=TITLE_COLOR, pad=18
     )
 
-    header_axis = figure.add_subplot(grid[0])
-    header_axis.axis("off")
-    header_axis.text(
-        0.02,
-        0.72,
-        "WB Morning Brief",
-        fontsize=28,
-        weight="bold",
-        color=HEADER_COLOR,
-        transform=header_axis.transAxes,
+    table = axis.table(
+        cellText=cell_text,
+        colLabels=REPORT_COLUMNS,
+        colColours=[HEADER_COLOR] * len(REPORT_COLUMNS),
+        colWidths=_column_widths(),
+        cellLoc="center",
+        loc="upper left",
+        bbox=[0, 0, 1, 0.94],
     )
-    header_axis.text(
-        0.02,
-        0.28,
-        f"ИП Череватенко Б.С. · {report_date}",
-        fontsize=14,
-        color=MUTED_TEXT_COLOR,
-        transform=header_axis.transAxes,
-    )
-
-    summary_axis = figure.add_subplot(grid[1])
-    _draw_summary_cards(summary_axis, summary)
-
-    dynamics_axis = figure.add_subplot(grid[2])
-    _draw_dynamics(dynamics_axis, top_sku_df)
-
-    table_axis = figure.add_subplot(grid[3])
-    _draw_top_table(table_axis, top_sku_df)
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.8)
+    table.scale(1, 1.45)
+    total_row_index = len(cell_text) if not report_df.empty else None
+    _style_table(table, total_row_index)
 
     figure.savefig(
         output_path, dpi=180, bbox_inches="tight", facecolor=BACKGROUND_COLOR
