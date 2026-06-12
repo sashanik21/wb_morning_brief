@@ -1,4 +1,6 @@
-from app.analyzers.ads_analyzer import analyze_ads_problems
+import pandas as pd
+
+from app.analyzers.ads_analyzer import _funnel_rows_by_nm_id, analyze_ads_problems
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 
@@ -129,6 +131,32 @@ def _ads_row(**overrides):
 
 def _problem_types(problems):
     return {problem["problemType"] for problem in problems}
+
+
+def test_funnel_rows_by_nm_id_handles_none():
+    assert _funnel_rows_by_nm_id(None) == {}
+
+
+def test_funnel_rows_by_nm_id_handles_empty_list():
+    assert _funnel_rows_by_nm_id([]) == {}
+
+
+def test_funnel_rows_by_nm_id_handles_empty_dataframe():
+    assert _funnel_rows_by_nm_id(pd.DataFrame()) == {}
+
+
+def test_funnel_rows_by_nm_id_maps_dataframe_by_nm_id():
+    dataframe = pd.DataFrame(
+        [
+            {"nmId": 1001, "openCount": 20},
+            {"nmId": 1002, "openCount": 30},
+        ]
+    )
+
+    assert _funnel_rows_by_nm_id(dataframe) == {
+        "1001": {"nmId": 1001, "openCount": 20},
+        "1002": {"nmId": 1002, "openCount": 30},
+    }
 
 
 def test_ads_analyzer_detects_low_ctr():
