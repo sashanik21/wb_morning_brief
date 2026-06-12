@@ -253,14 +253,27 @@ def _google_sheets_configured():
     )
 
 
+def get_google_sheets_configuration_status():
+    credentials_configured = _google_sheets_credentials_configured()
+    spreadsheet_configured = _google_sheets_spreadsheet_configured()
+
+    return {
+        "credentialsConfigured": credentials_configured,
+        "spreadsheetConfigured": spreadsheet_configured,
+        "configured": credentials_configured and spreadsheet_configured,
+    }
+
+
 def log_google_sheets_configuration():
+    status = get_google_sheets_configuration_status()
+
     print(
         "Google Sheets credentials configured: "
-        f"{str(_google_sheets_credentials_configured()).lower()}"
+        f"{str(status['credentialsConfigured']).lower()}"
     )
     print(
         "Google Sheets spreadsheet configured: "
-        f"{str(_google_sheets_spreadsheet_configured()).lower()}"
+        f"{str(status['spreadsheetConfigured']).lower()}"
     )
 
 

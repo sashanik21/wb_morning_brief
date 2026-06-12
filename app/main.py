@@ -27,6 +27,7 @@ from app.reports.telegram_report import send_telegram_morning_brief
 from app.sheets.google_sheets import (
     create_tasks,
     get_change_log,
+    get_google_sheets_configuration_status,
     get_products,
     get_sellers,
     log_google_sheets_configuration,
@@ -87,6 +88,7 @@ def _build_summary_stats(
 
     return {
         "sellerName": seller_name,
+        "googleSheets": get_google_sheets_configuration_status(),
         "totalSkuFromApi": total_sku_from_api,
         "skuInProducts": sku_in_products,
         "skuNotInProducts": sku_not_in_products,
