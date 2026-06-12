@@ -342,7 +342,57 @@ def _build_top_drop_signals_block(summary_stats):
     )
 
 
-def _build_telegram_message(problems, summary_stats=None):
+def _insight_key(insight):
+    nm_id = insight.get("nmId")
+
+    if nm_id not in (None, ""):
+        return ("nmId", str(nm_id))
+
+    return ("title", str(insight.get("title") or "Без названия"))
+
+
+def _build_root_cause_insights_block(root_cause_insights, top_products):
+    if not root_cause_insights or not top_products:
+        return ""
+
+    insights_by_key = {
+        _insight_key(insight): insight
+        for insight in root_cause_insights
+        if isinstance(insight, dict)
+    }
+    formatted_insights = []
+
+    for product in top_products:
+        insight = insights_by_key.get(_problem_group_key(product))
+
+        if not insight:
+            continue
+
+        title = html.escape(
+            str(insight.get("title") or product.get("title") or "Без названия")
+        )
+        zone = html.escape(str(insight.get("rootCauseZone") or "Недостаточно данных"))
+        reason = html.escape(
+            str(insight.get("reason") or "Недостаточно данных для определения причины")
+        )
+        checks = insight.get("whatToCheck") or []
+        checks_text = html.escape(
+            ", ".join(str(check) for check in checks) or "проверить карточку вручную"
+        )
+        formatted_insights.append(
+            f"🏷️ <b>{title}</b>\n"
+            f"Зона проблемы: {zone}\n"
+            f"Почему: {reason}\n"
+            f"Проверить: {checks_text}"
+        )
+
+    if not formatted_insights:
+        return ""
+
+    return "🧠 <b>Возможная причина:</b>\n\n" + "\n\n".join(formatted_insights)
+
+
+def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = _problems_to_records(problems)
     problem_products = _group_problems_by_product(records)
     header = _build_telegram_header(len(records), len(problem_products), summary_stats)
@@ -363,6 +413,9 @@ def _build_telegram_message(problems, summary_stats=None):
         return "\n\n".join(part for part in message_parts if part)
 
     top_products = problem_products[:TELEGRAM_TOP_LIMIT]
+    message_parts.append(
+        _build_root_cause_insights_block(root_cause_insights, top_products)
+    )
     formatted_products = [
         _format_product_item(index, product)
         for index, product in enumerate(top_products, start=1)
@@ -441,7 +494,7 @@ def _send_telegram_dashboard_image(token, chat_id, image_path, caption):
 
 
 def send_telegram_morning_brief(
-    problems, summary_stats=None, dashboard_image_path=None
+    problems, summary_stats=None, dashboard_image_path=None, root_cause_insights=None
 ):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -458,7 +511,11 @@ def send_telegram_morning_brief(
             _build_dashboard_caption(summary_stats),
         )
 
-    message = _build_telegram_message(problems, summary_stats=summary_stats)
+    message = _build_telegram_message(
+        problems,
+        summary_stats=summary_stats,
+        root_cause_insights=root_cause_insights,
+    )
     url = TELEGRAM_API_URL.format(token=token)
     payload = {
         "chat_id": chat_id,
