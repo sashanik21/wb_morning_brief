@@ -221,6 +221,64 @@ def _build_summary_block(summary_stats):
     )
 
 
+def _format_dynamic_value(value):
+    if value in (None, ""):
+        return "n/a"
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return html.escape(str(value))
+
+    return f"{number:.1f}%"
+
+
+def _format_store_dynamic_line(
+    label, selected_value, past_value, dynamic_value, suffix=""
+):
+    return (
+        f"{label}: {_format_number(selected_value)}{suffix} vs "
+        f"{_format_number(past_value)}{suffix} ({_format_dynamic_value(dynamic_value)})"
+    )
+
+
+def _build_store_dynamics_block(summary_stats):
+    if not summary_stats:
+        return ""
+
+    return (
+        "📈 <b>Динамика магазина:</b>\n"
+        + _format_store_dynamic_line(
+            "Переходы",
+            summary_stats.get("selectedOpenCount"),
+            summary_stats.get("pastOpenCount"),
+            summary_stats.get("openCountDynamic"),
+        )
+        + "\n"
+        + _format_store_dynamic_line(
+            "Корзины",
+            summary_stats.get("selectedCartCount"),
+            summary_stats.get("pastCartCount"),
+            summary_stats.get("cartCountDynamic"),
+        )
+        + "\n"
+        + _format_store_dynamic_line(
+            "Заказы",
+            summary_stats.get("selectedOrderCount"),
+            summary_stats.get("pastOrderCount"),
+            summary_stats.get("orderCountDynamic"),
+        )
+        + "\n"
+        + _format_store_dynamic_line(
+            "Сумма заказов",
+            summary_stats.get("selectedOrderSum"),
+            summary_stats.get("pastOrderSum"),
+            summary_stats.get("orderSumDynamic"),
+            suffix=" ₽",
+        )
+    )
+
+
 def _build_control_signals_block(summary_stats):
     if not summary_stats:
         return ""
@@ -238,6 +296,18 @@ def _build_control_signals_block(summary_stats):
 
     if summary_stats.get("totalOrderSum", 0) == 0:
         signals.append("🔴 Сумма заказов 0 ₽")
+
+    if summary_stats.get("orderCountDynamic", 0) <= -10:
+        signals.append("🔴 Заказы по магазину просели")
+
+    if summary_stats.get("orderSumDynamic", 0) <= -10:
+        signals.append("🔴 Сумма заказов по магазину просела")
+
+    if summary_stats.get("openCountDynamic", 0) <= -15:
+        signals.append("🔴 Переходы в карточки просели")
+
+    if summary_stats.get("cartCountDynamic", 0) <= -10:
+        signals.append("🔴 Корзины просели")
 
     if not signals:
         signals.append("✅ Критичных контрольных сигналов нет")
@@ -280,6 +350,7 @@ def _build_telegram_message(problems, summary_stats=None):
     message_parts = [
         header,
         _build_summary_block(summary_stats),
+        _build_store_dynamics_block(summary_stats),
         _build_control_signals_block(summary_stats),
         _build_top_drop_signals_block(summary_stats),
     ]

@@ -650,6 +650,70 @@ def build_top_funnel_drop_signals(funnel_data, limit=5):
     ]
 
 
+def _summary_metric_paths(period, metric):
+    period_aliases = {
+        "selected": ["selectedPeriod", "selected"],
+        "past": ["pastPeriod", "past"],
+    }[period]
+    paths = []
+
+    for period_alias in period_aliases:
+        paths.extend(
+            [
+                f"statistic.{period_alias}.{metric}",
+                f"statistics.{period_alias}.{metric}",
+                f"{period_alias}.{metric}",
+            ]
+        )
+
+    if period == "selected":
+        paths.append(metric)
+
+    return paths
+
+
+def _calculate_summary_dynamic(current_value, past_value):
+    if past_value > 0:
+        return ((current_value - past_value) / past_value) * 100
+
+    if current_value > 0:
+        return 100
+
+    return 0
+
+
+def _sum_summary_metric(records, period, metric):
+    total = 0
+
+    for record in records:
+        value = _first_present(record, _summary_metric_paths(period, metric), default=0)
+        total += _to_number(value) or 0
+
+    return int(total) if float(total).is_integer() else round(float(total), 2)
+
+
+def calculate_funnel_summary_dynamics(funnel_data):
+    records = _extract_problem_records(funnel_data)
+    summary = {}
+    metric_keys = {
+        "openCount": "OpenCount",
+        "cartCount": "CartCount",
+        "orderCount": "OrderCount",
+        "orderSum": "OrderSum",
+    }
+
+    for metric, key_suffix in metric_keys.items():
+        selected_value = _sum_summary_metric(records, "selected", metric)
+        past_value = _sum_summary_metric(records, "past", metric)
+        dynamic_value = _calculate_summary_dynamic(selected_value, past_value)
+
+        summary[f"selected{key_suffix}"] = selected_value
+        summary[f"past{key_suffix}"] = past_value
+        summary[f"{metric}Dynamic"] = round(dynamic_value, 2)
+
+    return summary
+
+
 def analyze_funnel_problems(funnel_data):
     problem_rows = []
     ignored_sku_count = 0

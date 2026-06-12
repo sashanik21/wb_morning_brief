@@ -6,6 +6,7 @@ from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import collect_ads_stats
 from app.collectors.funnel import (
     build_top_funnel_drop_signals,
+    calculate_funnel_summary_dynamics,
     collect_sales_funnel,
     count_sku_ignored_by_abc_filter,
     flatten_sales_funnel_data,
@@ -63,6 +64,7 @@ def _build_summary_stats(
     funnel_data,
 ):
     funnel_report = flatten_sales_funnel_data(funnel_data)
+    funnel_summary_dynamics = calculate_funnel_summary_dynamics(funnel_data)
 
     return {
         "sellerName": seller_name,
@@ -78,6 +80,7 @@ def _build_summary_stats(
         "totalOpenCount": _sum_report_column(funnel_report, "openCount"),
         "totalCartCount": _sum_report_column(funnel_report, "cartCount"),
         "topDropSignals": build_top_funnel_drop_signals(funnel_data),
+        **funnel_summary_dynamics,
     }
 
 
