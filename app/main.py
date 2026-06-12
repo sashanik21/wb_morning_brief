@@ -5,6 +5,7 @@ import pandas as pd
 
 from app.analyzers.ads_analyzer import analyze_ads_problems
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
+from app.analyzers.root_cause_analyzer import analyze_root_causes
 from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import collect_ads_stats
 from app.collectors.funnel import (
@@ -183,6 +184,8 @@ def main():
     ).fillna("")
     funnel_problems = funnel_problems_df.to_dict("records")
     all_problems = funnel_problems + ads_problems + stocks_problems
+    root_cause_insights = analyze_root_causes(funnel_problems, data)
+    print(f"ROOT CAUSE INSIGHTS: {len(root_cause_insights)}")
     summary_stats = _build_summary_stats(
         seller_name=seller_name,
         total_sku_from_api=total_sku_from_api,
@@ -225,6 +228,7 @@ def main():
         all_problems,
         summary_stats=summary_stats,
         dashboard_image_path=dashboard_image_path,
+        root_cause_insights=root_cause_insights,
     )
     print("=" * 50)
 
