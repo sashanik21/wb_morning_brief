@@ -1,3 +1,4 @@
+from app.analyzers.ads_analyzer import analyze_ads_problems
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 
@@ -93,3 +94,62 @@ def test_root_cause_wb_stock_zero_is_stock_zone():
     )
 
     assert insights[0]["rootCauseZone"] == "Остатки WB"
+
+
+def _ads_row(**overrides):
+    row = {
+        "campaignId": 101,
+        "campaignName": "Test campaign",
+        "nmId": 1001,
+        "vendorCode": "vendor-1001",
+        "title": "Тестовый товар",
+        "impressions": 1000,
+        "clicks": 20,
+        "ctr": 2.0,
+        "cpc": 50,
+        "cpm": 1000,
+        "orders": 1,
+        "ordersSum": 1000,
+        "spend": 100,
+        "drr": 10,
+        "previousImpressions": 1000,
+        "previousClicks": 30,
+        "previousCtr": 4.0,
+        "previousCpc": 40,
+        "previousCpm": 900,
+        "previousOrders": 1,
+        "previousOrdersSum": 1000,
+        "previousSpend": 100,
+        "previousDrr": 10,
+        "date": "2026-06-12",
+    }
+    row.update(overrides)
+    return row
+
+
+def _problem_types(problems):
+    return {problem["problemType"] for problem in problems}
+
+
+def test_ads_analyzer_detects_low_ctr():
+    problems = analyze_ads_problems([_ads_row(ctr=2.1, previousCtr=2.1)])
+
+    assert "ads_ctr_low" in _problem_types(problems)
+
+
+def test_ads_analyzer_detects_high_drr():
+    problems = analyze_ads_problems([_ads_row(drr=39, ordersSum=1000, spend=390)])
+
+    assert "ads_drr_growth" in _problem_types(problems)
+
+
+def test_ads_analyzer_detects_spend_without_orders():
+    problems = analyze_ads_problems([_ads_row(spend=250, orders=0)])
+
+    assert "ads_spend_without_orders" in _problem_types(problems)
+
+
+def test_ads_analyzer_detects_cpc_growth():
+    problems = analyze_ads_problems([_ads_row(cpc=47, previousCpc=35)])
+
+    assert "ads_cpc_growth" in _problem_types(problems)

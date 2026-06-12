@@ -131,6 +131,17 @@ INSUFFICIENT_DATA_ZONE = "Недостаточно данных"
 INSUFFICIENT_DATA_REASON = "Недостаточно данных для определения причины"
 INSUFFICIENT_DATA_CHECKS = ["проверить карточку вручную"]
 
+ADS_ROOT_CAUSE_RULE = {
+    "zone": "Реклама",
+    "reason": "Рекламные метрики просели или реклама стала неэффективной",
+    "checks": [
+        "CTR рекламной кампании",
+        "CPC и CPM",
+        "ДРР",
+        "дневной бюджет и статус кампании",
+    ],
+}
+
 ROOT_CAUSE_RULES = [
     {
         "zone": "Остатки WB",
@@ -322,6 +333,45 @@ def _metric_is_falling(metric, product_problems, funnel_record):
     return False
 
 
+def _has_ads_problem(product_problems):
+    ads_problem_types = {
+        "ads_ctr_drop",
+        "ads_cpc_growth",
+        "ads_cpm_growth",
+        "ads_drr_growth",
+        "ads_spend_without_orders",
+        "ads_ctr_low",
+        "ads_ineffective",
+        "ads_stopped",
+        "ads_impressions_drop",
+        "ads_traffic_drop",
+        "ads_reach_expensive",
+    }
+
+    for problem in product_problems:
+        if problem.get("problemCategory") == "ads":
+            return True
+
+        if problem.get("problemType") in ads_problem_types:
+            return True
+
+    return False
+
+
+def _main_ads_problem(product_problems):
+    for problem in product_problems:
+        if problem.get("problemCategory") == "ads" or str(
+            problem.get("problemType") or ""
+        ).startswith("ads_"):
+            return str(
+                problem.get("problemLabel")
+                or problem.get("problemType")
+                or "Проблема рекламы"
+            )
+
+    return "Проблема рекламы"
+
+
 def _wb_stock_is_zero(product_problems, funnel_record):
     for problem in product_problems:
         if _problem_metric(problem) != "wbStocks":
@@ -402,7 +452,17 @@ def analyze_root_causes(problems, funnel_rows):
             "orderSum", product_problems, funnel_record
         )
 
-        if _wb_stock_is_zero(product_problems, funnel_record):
+        if _has_ads_problem(product_problems):
+            insights.append(
+                _build_insight(
+                    product,
+                    ADS_ROOT_CAUSE_RULE["zone"],
+                    ADS_ROOT_CAUSE_RULE["reason"],
+                    ADS_ROOT_CAUSE_RULE["checks"],
+                    _main_ads_problem(product_problems),
+                )
+            )
+        elif _wb_stock_is_zero(product_problems, funnel_record):
             rule = ROOT_CAUSE_RULES[0]
             insights.append(
                 _build_insight(
