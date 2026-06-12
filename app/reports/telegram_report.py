@@ -210,8 +210,16 @@ def _build_summary_block(summary_stats):
     if not summary_stats:
         return ""
 
+    google_sheets = summary_stats.get("googleSheets") or {}
+    google_sheets_status = (
+        "подключены"
+        if google_sheets.get("configured")
+        else "не настроены, используются stubs"
+    )
+
     return (
         "📊 <b>Сводка:</b>\n"
+        f"Google Sheets: {html.escape(google_sheets_status)}\n"
         f"SKU из WB API: {_format_number(summary_stats.get('totalSkuFromApi'))}\n"
         f"SKU есть в PRODUCTS: {_format_number(summary_stats.get('skuInProducts'))}\n"
         f"SKU нет в PRODUCTS: {_format_number(summary_stats.get('skuNotInProducts'))}\n"
@@ -288,6 +296,11 @@ def _build_control_signals_block(summary_stats):
         return ""
 
     signals = []
+
+    google_sheets = summary_stats.get("googleSheets") or {}
+
+    if google_sheets and not google_sheets.get("configured"):
+        signals.append("⚠️ Google Sheets не настроены — используются stub-данные")
 
     if summary_stats.get("skuNotInProducts", 0) > 0:
         signals.append("⚠️ Есть карточки WB, не внесённые в PRODUCTS")
