@@ -942,7 +942,31 @@ def _build_executive_ads_block(records, summary_stats):
     )
 
 
-def _build_executive_stocks_block(records):
+def _supply_pipeline_from_summary(summary_stats):
+    supply_metrics = (summary_stats or {}).get("supplyStockMetrics") or {}
+    return {
+        "incoming": to_number(supply_metrics.get("incomingStock")),
+        "acceptance": to_number(supply_metrics.get("acceptanceStock")),
+        "transit": to_number(supply_metrics.get("transitStock")),
+        "ready": to_number(supply_metrics.get("readyForSaleStock")),
+        "matched": to_number(supply_metrics.get("matchedSkuCount")),
+    }
+
+
+def _format_logistics_pipeline(pipeline):
+    if not pipeline or not any(pipeline.values()):
+        return "📦 Логистика WB: данные поставок недоступны"
+
+    return (
+        "📦 Логистика WB:"
+        f"\n- {_format_number(pipeline['acceptance'])} шт в приемке"
+        f"\n- {_format_number(pipeline['transit'])} шт в разгрузке"
+        f"\n- {_format_number(pipeline['ready'])} шт готовы к продаже"
+        f"\n- {_format_number(pipeline['matched'])} SKU сопоставлено с поставками"
+    )
+
+
+def _build_executive_stocks_block(records, summary_stats=None):
     stock_records = [
         record
         for record in records
@@ -952,21 +976,30 @@ def _build_executive_stocks_block(records):
             or record.get("metric") in ("wbStocks", "realSellableStock", "stocks")
         )
     ]
+    summary_pipeline = _supply_pipeline_from_summary(summary_stats)
 
     if not stock_records:
-        return "📦 <b>Остатки:</b> критичных сигналов нет"
+        logistics_text = _format_logistics_pipeline(summary_pipeline)
+        return f"📦 <b>Остатки:</b> критичных сигналов нет\n{logistics_text}"
 
-    pipeline = {
+    records_pipeline = {
+        "incoming": sum(
+            to_number(record.get("incomingStock")) for record in stock_records
+        ),
         "acceptance": sum(
             to_number(record.get("acceptanceStock")) for record in stock_records
         ),
-        "returning": sum(
-            to_number(record.get("returningStock")) for record in stock_records
+        "transit": sum(
+            to_number(record.get("transitStock")) for record in stock_records
         ),
         "ready": sum(
             to_number(record.get("readyForSaleStock")) for record in stock_records
         ),
+        "matched": len(
+            {str(record.get("nmId")) for record in stock_records if record.get("nmId")}
+        ),
     }
+    pipeline = summary_pipeline if any(summary_pipeline.values()) else records_pipeline
 
     top_record = stock_records[0]
     title = html.escape(str(top_record.get("title") or "SKU без названия"))
@@ -974,20 +1007,11 @@ def _build_executive_stocks_block(records):
         str(top_record.get("recommendation") or "проверить наличие и поставку")
     )
 
-    logistics_text = "📦 Логистика WB: данные поставок недоступны"
-    if any(pipeline.values()):
-        logistics_text = (
-            "📦 Логистика WB: "
-            f"{_format_number(pipeline['acceptance'])} шт в приемке, "
-            f"{_format_number(pipeline['returning'])} шт едут возвратами, "
-            f"{_format_number(pipeline['ready'])} шт готовы к продаже"
-        )
-
     return (
         "📦 <b>Остатки:</b> "
         f"критичных SKU {_format_number(len(stock_records))}. "
         f"Фокус: {title} — {recommendation}"
-        f"\n{logistics_text}"
+        f"\n{_format_logistics_pipeline(pipeline)}"
     )
 
 
@@ -1043,16 +1067,20 @@ def _format_priority_problem_line(problem):
             for key in (
                 "incomingStock",
                 "returningStock",
+                "readyForSaleStock",
                 "acceptanceStock",
                 "transitStock",
             )
-        ):
+        ) or problem.get("stockState"):
+            stock_state = str(problem.get("stockState") or "n/a")
             stock_stop = (
                 "\n⚠️ SKU временно недоступен для продажи"
                 "\nТовар уже находится в логистике WB"
                 f"\n📦 Логистика WB:"
+                f"\n- состояние: {stock_state}"
+                f"\n- {_format_number(problem.get('incomingStock'))} шт в поставках"
                 f"\n- {_format_number(problem.get('acceptanceStock'))} шт в приемке"
-                f"\n- {_format_number(problem.get('returningStock'))} шт едут возвратами"
+                f"\n- {_format_number(problem.get('transitStock'))} шт в разгрузке"
                 f"\n- {_format_number(problem.get('readyForSaleStock'))} шт готовы к продаже"
             )
         else:
@@ -1285,7 +1313,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
                 _build_priority_problems_block(priority_records),
                 _build_no_problem_executive_block(summary_stats),
                 _build_executive_ads_block(priority_records, summary_stats),
-                _build_executive_stocks_block(priority_records),
+                _build_executive_stocks_block(priority_records, summary_stats),
             ]
         )
         return _trim_telegram_message(
@@ -1302,7 +1330,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
                 problem_products, root_cause_insights, summary_stats
             ),
             _build_executive_ads_block(priority_records, summary_stats),
-            _build_executive_stocks_block(priority_records),
+            _build_executive_stocks_block(priority_records, summary_stats),
         ]
     )
 

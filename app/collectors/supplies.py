@@ -221,7 +221,9 @@ def collect_supply_stock_metrics(limit=1000):
             if supply_id:
                 details = (
                     client.request(
-                        "GET", SUPPLY_DETAILS_URL.format(supply_id=supply_id)
+                        "GET",
+                        SUPPLY_DETAILS_URL.format(supply_id=supply_id),
+                        silent_statuses=(404,),
                     )
                     or {}
                 )
@@ -268,7 +270,6 @@ def collect_supply_stock_metrics(limit=1000):
     print(f"supplies skipped status: {skipped_status}")
     print(f"goods rows loaded: {goods_rows_loaded}")
     print(f"matched nmIds: {len(metrics)}")
-    print(f"goods 404 skipped: {goods_404_skipped}")
     if goods_404_skipped:
         print("SUPPLIES GOODS WARNING:")
         print(f"goods endpoint returned 404 for {goods_404_skipped} supplies")

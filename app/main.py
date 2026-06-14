@@ -52,6 +52,15 @@ def _seller_id(seller):
     return seller.get("seller_id") or seller.get("id")
 
 
+def _to_float(value):
+    if value in (None, ""):
+        return 0
+    try:
+        return float(str(value).replace("%", "").replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _sum_report_column(dataframe, column_name):
     if column_name not in dataframe:
         return 0
@@ -80,9 +89,35 @@ def _build_summary_stats(
     below_abc_threshold_problems,
     critical_problems_count,
     funnel_data,
+    supply_stock_metrics_by_nm_id=None,
 ):
     funnel_report = flatten_sales_funnel_data(funnel_data)
     funnel_summary_dynamics = calculate_funnel_summary_dynamics(funnel_data)
+
+    supply_stock_metrics = supply_stock_metrics_by_nm_id or {}
+    supply_totals = {
+        "incomingStock": sum(
+            _to_float(metric.get("incomingStock"))
+            for metric in supply_stock_metrics.values()
+            if isinstance(metric, dict)
+        ),
+        "acceptanceStock": sum(
+            _to_float(metric.get("acceptanceStock"))
+            for metric in supply_stock_metrics.values()
+            if isinstance(metric, dict)
+        ),
+        "transitStock": sum(
+            _to_float(metric.get("transitStock"))
+            for metric in supply_stock_metrics.values()
+            if isinstance(metric, dict)
+        ),
+        "readyForSaleStock": sum(
+            _to_float(metric.get("readyForSaleStock"))
+            for metric in supply_stock_metrics.values()
+            if isinstance(metric, dict)
+        ),
+        "matchedSkuCount": len(supply_stock_metrics),
+    }
 
     return {
         "sellerName": seller_name,
@@ -109,6 +144,7 @@ def _build_summary_stats(
         "topDropSignals": build_top_funnel_drop_signals(funnel_data),
         "evidenceRows": build_evidence_rows(funnel_data, limit=EVIDENCE_LIMIT_TELEGRAM),
         "funnelData": funnel_data,
+        "supplyStockMetrics": supply_totals,
         **funnel_summary_dynamics,
     }
 
@@ -243,6 +279,7 @@ def main():
         below_abc_threshold_problems=count_sku_ignored_by_abc_filter(data),
         critical_problems_count=len(all_problems),
         funnel_data=data,
+        supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
     )
 
     summary_stats["adsSummary"] = ads_summary
