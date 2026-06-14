@@ -32,9 +32,21 @@ def _is_below_abc_threshold(problem):
     return bool(value)
 
 
+def _is_critical_telegram_problem(problem):
+    severity = str(problem.get("severity") or "").lower()
+    return severity == "critical" and not _is_below_abc_threshold(problem)
+
+
 def _is_priority_telegram_problem(problem):
     severity = str(problem.get("severity") or "").lower()
-    return severity in {"critical", "high"} and not _is_below_abc_threshold(problem)
+    return severity in {"critical", "high", "medium"} and not _is_below_abc_threshold(
+        problem
+    )
+
+
+def _is_low_priority_telegram_problem(problem):
+    severity = str(problem.get("severity") or "").lower()
+    return severity == "low" or _is_below_abc_threshold(problem)
 
 
 def _split_long_telegram_line(line, max_length):
@@ -165,7 +177,11 @@ def _format_dynamic_percent(value):
     if value in (None, ""):
         return "n/a"
 
-    return f"{value}%"
+    value_text = str(value).strip()
+    if value_text.endswith("%"):
+        return value_text
+
+    return f"{value_text}%"
 
 
 def _problem_group_key(problem):
@@ -857,12 +873,30 @@ def _build_no_problem_executive_block(summary_stats):
     best, worst = _best_worst_from_evidence(summary_stats)
 
     return (
-        "✅ <b>Критичных проблем не найдено</b>\n"
         f"Лучший SKU: {_format_signal_sku(best)}\n"
         f"Худший SKU: {_format_signal_sku(worst)}\n"
         "Рекомендации: сохранить текущие настройки, точечно проверить худший SKU "
         "и не расширять рекламу без контроля ДРР."
     )
+
+
+def _format_priority_problem_line(problem):
+    nm_id = html.escape(str(problem.get("nmId") or "n/a"))
+    problem_label = html.escape(_human_readable_problem_type(problem))
+    dynamic = html.escape(_format_dynamic_percent(problem.get("dynamicPercent")))
+
+    return f"- WB {nm_id} | {problem_label} | {dynamic}"
+
+
+def _build_priority_problems_block(priority_records):
+    if not priority_records:
+        return "✅ <b>Приоритетных проблем не найдено</b>"
+
+    lines = [
+        _format_priority_problem_line(record)
+        for record in priority_records[:TELEGRAM_TOP_LIMIT]
+    ]
+    return "🔥 <b>Приоритетные проблемы:</b>\n" + "\n".join(lines)
 
 
 def _trim_telegram_message(text, max_length=3500):
@@ -960,19 +994,22 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     priority_records = [
         record for record in records if _is_priority_telegram_problem(record)
     ]
-    low_priority_signals_count = len(records) - len(priority_records)
+    low_priority_signals_count = len(
+        [record for record in records if _is_low_priority_telegram_problem(record)]
+    )
     problem_products = _group_problems_by_product(priority_records)
-    critical_sku_count = len(problem_products)
+    priority_sku_count = len(problem_products)
     message_parts = [
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
-        f"🚨 <b>Критичных SKU:</b> {_format_number(critical_sku_count)}",
+        f"🚨 <b>Приоритетных SKU:</b> {_format_number(priority_sku_count)}",
         f"Низкоприоритетных сигналов: {_format_number(low_priority_signals_count)}",
     ]
 
     if not priority_records:
         message_parts.extend(
             [
+                _build_priority_problems_block(priority_records),
                 _build_no_problem_executive_block(summary_stats),
                 _build_executive_ads_block(priority_records, summary_stats),
                 _build_executive_stocks_block(priority_records),
@@ -984,7 +1021,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
 
     message_parts.extend(
         [
-            _build_executive_top_problems(problem_products, root_cause_insights),
+            _build_priority_problems_block(priority_records),
             _build_executive_insight(
                 problem_products, root_cause_insights, summary_stats
             ),
