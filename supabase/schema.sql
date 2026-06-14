@@ -65,6 +65,8 @@ create table if not exists problems (
     metric text,
     selected_value numeric,
     past_value numeric,
+    baseline_type text,
+    baseline_value numeric,
     dynamic_percent numeric,
     root_cause text,
     root_recommendation text,

@@ -214,6 +214,13 @@ def create_tasks(tasks):
         print(task)
 
 
+def get_funnel_history(seller_id, nm_id, days):
+    print(
+        f"STUB FUNNEL HISTORY: seller_id={seller_id}, nm_id={nm_id}, days={days}, rows=0"
+    )
+    return []
+
+
 def save_funnel_snapshot(rows):
     print(f"STUB SAVE FUNNEL: {len(rows)} rows")
 
