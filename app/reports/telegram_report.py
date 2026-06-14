@@ -329,6 +329,9 @@ def _problem_zone(problem, insights_by_key=None):
 
 
 def _impact_rank(problem):
+    if problem.get("problemType") == "NEW_ACTIVITY_DETECTED":
+        return "NEW ACTIVITY"
+
     score = to_number(problem.get("severityScore"))
     lost_revenue = _problem_lost_revenue(problem)
     abc = str(problem.get("ABC") or "").upper()
@@ -360,6 +363,14 @@ def _format_ads_specifics(problem):
         ("CPC", "previousCpc", "cpc", " ₽"),
         ("ДРР", "previousDrr", "drr", "%"),
     ]
+
+    if problem.get("baselineReliability") == "INSUFFICIENT_HISTORY":
+        for label, _past_key, selected_key, suffix in metrics:
+            selected_value = problem.get(selected_key)
+            if _is_present(selected_value):
+                lines.append(f"{label}: {_format_number(selected_value)}{suffix}")
+        lines.append("новая рекламная активность")
+        return "\n".join(lines)
 
     for label, past_key, selected_key, suffix in metrics:
         selected_value = problem.get(selected_key)
