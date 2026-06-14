@@ -22,6 +22,113 @@ TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 logger = logging.getLogger(__name__)
 
 
+def _split_long_telegram_line(line, max_length):
+    chunks = []
+    start = 0
+
+    while start < len(line):
+        end = min(start + max_length, len(line))
+
+        if end == len(line):
+            chunks.append(line[start:end])
+            break
+
+        split_at = None
+        inside_tag = False
+
+        for index in range(start, end):
+            character = line[index]
+
+            if character == "<":
+                inside_tag = True
+            elif character == ">":
+                inside_tag = False
+            elif character.isspace() and not inside_tag:
+                split_at = index
+
+        if split_at is None or split_at <= start:
+            split_at = end
+            last_open_tag = line.rfind("<", start, split_at)
+            last_close_tag = line.rfind(">", start, split_at)
+
+            if last_open_tag > last_close_tag:
+                split_at = last_open_tag
+
+            if split_at <= start:
+                split_at = end
+
+        chunks.append(line[start:split_at].rstrip())
+        start = split_at
+
+        while start < len(line) and line[start].isspace():
+            start += 1
+
+    return [chunk for chunk in chunks if chunk]
+
+
+def split_telegram_message(text, max_length=3500):
+    if not text:
+        return []
+
+    if len(text) <= max_length:
+        return [text]
+
+    parts = []
+    current_part = ""
+
+    def append_unit(unit):
+        nonlocal current_part
+
+        if not unit:
+            return
+
+        separator = "\n\n" if current_part else ""
+
+        if len(current_part) + len(separator) + len(unit) <= max_length:
+            current_part = f"{current_part}{separator}{unit}"
+            return
+
+        if current_part:
+            parts.append(current_part)
+            current_part = ""
+
+        if len(unit) <= max_length:
+            current_part = unit
+            return
+
+        append_long_unit(unit)
+
+    def append_long_unit(unit):
+        for line in unit.splitlines():
+            if len(line) <= max_length:
+                append_line(line)
+            else:
+                for chunk in _split_long_telegram_line(line, max_length):
+                    append_line(chunk)
+
+    def append_line(line):
+        nonlocal current_part
+
+        separator = "\n" if current_part else ""
+
+        if len(current_part) + len(separator) + len(line) <= max_length:
+            current_part = f"{current_part}{separator}{line}"
+            return
+
+        if current_part:
+            parts.append(current_part)
+
+        current_part = line
+
+    for block in text.split("\n\n"):
+        append_unit(block)
+
+    if current_part:
+        parts.append(current_part)
+
+    return parts
+
+
 def _problems_to_records(problems):
     if problems is None:
         return []
@@ -680,44 +787,84 @@ def send_telegram_morning_brief(
         root_cause_insights=root_cause_insights,
     )
     url = TELEGRAM_API_URL.format(token=token)
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
+    message_parts = split_telegram_message(message)
+    total_parts = len(message_parts)
 
-    try:
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=TELEGRAM_TIMEOUT_SECONDS,
+    for part_index, message_part in enumerate(message_parts, start=1):
+        payload = {
+            "chat_id": chat_id,
+            "text": message_part,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                timeout=TELEGRAM_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as error:
+            logger.error(
+                "Telegram text brief part %s/%s request failed: %s",
+                part_index,
+                total_parts,
+                error,
+            )
+            print(
+                f"Telegram text brief part {part_index}/{total_parts} "
+                f"request failed: {error}"
+            )
+            return False
+
+        if response.status_code != 200:
+            logger.error(
+                "Telegram text brief part %s/%s API error: status=%s text=%s",
+                part_index,
+                total_parts,
+                response.status_code,
+                response.text,
+            )
+            print(
+                f"Telegram text brief part {part_index}/{total_parts} API error: "
+                f"status={response.status_code} text={response.text}"
+            )
+            return False
+
+        try:
+            data = response.json()
+        except ValueError:
+            logger.error(
+                "Telegram text brief part %s/%s returned invalid JSON: %s",
+                part_index,
+                total_parts,
+                response.text,
+            )
+            print(
+                f"Telegram text brief part {part_index}/{total_parts} "
+                "returned invalid JSON"
+            )
+            return False
+
+        if not data.get("ok"):
+            logger.error(
+                "Telegram text brief part %s/%s returned error payload: %s",
+                part_index,
+                total_parts,
+                data,
+            )
+            print(
+                f"Telegram text brief part {part_index}/{total_parts} "
+                f"returned error: {data}"
+            )
+            return False
+
+        logger.info(
+            "Telegram text brief part %s/%s sent successfully",
+            part_index,
+            total_parts,
         )
-    except requests.RequestException as error:
-        logger.error("Telegram API request failed: %s", error)
-        print(f"Telegram API request failed: {error}")
-        return False
-
-    if response.status_code != 200:
-        logger.error(
-            "Telegram API error: status=%s text=%s",
-            response.status_code,
-            response.text,
-        )
-        print(f"Telegram API error: status={response.status_code} text={response.text}")
-        return False
-
-    try:
-        data = response.json()
-    except ValueError:
-        logger.error("Telegram API returned invalid JSON: %s", response.text)
-        print("Telegram API returned invalid JSON")
-        return False
-
-    if not data.get("ok"):
-        logger.error("Telegram API returned error payload: %s", data)
-        print(f"Telegram API returned error: {data}")
-        return False
+        print(f"Telegram text brief part {part_index}/{total_parts} sent successfully")
 
     logger.info("Telegram Morning Brief sent successfully")
     print("Telegram Morning Brief sent successfully")
