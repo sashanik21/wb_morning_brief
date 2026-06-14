@@ -34,11 +34,11 @@ jobs:
           echo "Telegram chat configured: ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
           echo "Supabase configured: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}"
           python -m app.main
-      - name: Upload funnel reports
+      - name: Upload XLSX reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: funnel-reports
-          path: reports/
+          name: xlsx-reports
+          path: reports/*.xlsx
           if-no-files-found: warn
 
