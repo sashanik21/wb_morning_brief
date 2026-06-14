@@ -205,3 +205,11 @@ def create_tasks(tasks):
 
     for task in tasks[:5]:
         print(task)
+
+
+def save_funnel_snapshot(rows):
+    print(f"STUB SAVE FUNNEL: {len(rows)} rows")
+
+
+def save_problems(problems):
+    print(f"STUB SAVE PROBLEMS: {len(problems)} rows")
