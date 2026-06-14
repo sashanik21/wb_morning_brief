@@ -273,8 +273,8 @@ def _format_severity(problem):
 
 
 def _format_loss(problems):
-    lost_orders = sum(to_number(problem.get("lostOrders")) for problem in problems)
-    lost_order_sum = sum(to_number(problem.get("lostOrderSum")) for problem in problems)
+    lost_orders = sum(_problem_lost_orders(problem) for problem in problems)
+    lost_order_sum = sum(_problem_lost_revenue(problem) for problem in problems)
 
     if not lost_orders and not lost_order_sum:
         return ""
@@ -282,6 +282,111 @@ def _format_loss(problems):
     orders_text = _format_number(lost_orders)
     sum_text = _format_number(lost_order_sum)
     return f"Потеря: <b>{orders_text} заказов / {sum_text} ₽</b>"
+
+
+def _problem_lost_orders(problem):
+    return to_number(
+        problem.get("potentialOrdersLoss", problem.get("lostOrders")),
+    )
+
+
+def _problem_lost_revenue(problem):
+    return to_number(
+        problem.get("potentialRevenueLoss", problem.get("lostOrderSum")),
+    )
+
+
+def _problem_zone(problem, insights_by_key=None):
+    metric = str(problem.get("metric") or "")
+    problem_type = str(problem.get("problemType") or "")
+    category = str(problem.get("problemCategory") or "")
+    insight = (insights_by_key or {}).get(_problem_group_key(problem), {})
+    root_zone = str(insight.get("rootCauseZone") or "")
+
+    if category == "ads" or problem_type.startswith("ads_"):
+        return "ADS"
+    if metric in {"wbStocks", "stocks"} or "Остатки" in root_zone:
+        return "STOCKS"
+    if "трафик" in root_zone.lower() or metric in {"openCount"}:
+        return "TRAFFIC"
+    if metric in {"addToCartPercent", "cartCount"} or "Карточка" in root_zone:
+        return "CARD"
+    if metric in {"orderCount", "orderSum", "cartToOrderPercent"}:
+        return "CONVERSION"
+
+    return "CONVERSION"
+
+
+def _impact_rank(problem):
+    score = to_number(problem.get("severityScore"))
+    lost_revenue = _problem_lost_revenue(problem)
+    abc = str(problem.get("ABC") or "").upper()
+
+    if score >= 80 or lost_revenue >= 10000 or (abc == "A" and score >= 50):
+        return "HIGH IMPACT"
+    if score >= 35 or lost_revenue >= 3000 or abc in {"A", "B"}:
+        return "MEDIUM IMPACT"
+    return "LOW IMPACT"
+
+
+def _format_value_change(past_value, selected_value, suffix=""):
+    return (
+        f"{_format_number(past_value)}{suffix} → "
+        f"{_format_number(selected_value)}{suffix}"
+    )
+
+
+def _format_ads_specifics(problem):
+    if not (
+        problem.get("problemCategory") == "ads"
+        or str(problem.get("problemType") or "").startswith("ads_")
+    ):
+        return ""
+
+    lines = []
+    metrics = [
+        ("CTR", "previousCtr", "ctr", "%"),
+        ("CPC", "previousCpc", "cpc", " ₽"),
+        ("ДРР", "previousDrr", "drr", "%"),
+    ]
+
+    for label, past_key, selected_key, suffix in metrics:
+        selected_value = problem.get(selected_key)
+        past_value = problem.get(past_key)
+
+        if _is_present(selected_value) and _is_present(past_value):
+            lines.append(
+                f"{label}: {_format_value_change(past_value, selected_value, suffix)}"
+            )
+
+    return "\n".join(lines)
+
+
+def _format_funnel_specifics(problem):
+    metric = str(problem.get("metric") or "")
+
+    if problem.get("problemCategory") == "ads" or metric == "wbStocks":
+        return ""
+
+    label = get_problem_label(metric)
+    selected_value = problem.get("selectedValue")
+    past_value = problem.get("pastValue")
+
+    if not (_is_present(selected_value) and _is_present(past_value)):
+        return ""
+
+    suffix = " ₽" if metric == "orderSum" else "%"
+    if metric in {"orderCount", "openCount", "cartCount"}:
+        suffix = ""
+
+    return f"{label}: {_format_value_change(past_value, selected_value, suffix)}"
+
+
+def _format_business_impact(problem):
+    return (
+        f"~{_format_number(_problem_lost_revenue(problem))} ₽ потери выручки\n"
+        f"~{_format_number(_problem_lost_orders(problem))} потерянных заказов"
+    )
 
 
 def _format_recent_changes(problems):
@@ -883,9 +988,23 @@ def _build_no_problem_executive_block(summary_stats):
 def _format_priority_problem_line(problem):
     nm_id = html.escape(str(problem.get("nmId") or "n/a"))
     problem_label = html.escape(_human_readable_problem_type(problem))
-    dynamic = html.escape(_format_dynamic_percent(problem.get("dynamicPercent")))
+    impact = html.escape(_impact_rank(problem))
+    zone = html.escape(_problem_zone(problem))
+    stock_stop = ""
+    if (
+        problem.get("metric") == "wbStocks"
+        and to_number(problem.get("selectedValue")) == 0
+    ):
+        stock_stop = "\nПродажи остановлены из-за отсутствия остатков WB"
 
-    return f"- WB {nm_id} | {problem_label} | {dynamic}"
+    specifics = _format_ads_specifics(problem) or _format_funnel_specifics(problem)
+    specifics_block = f"\n{html.escape(specifics)}" if specifics else ""
+
+    return (
+        f"- <b>{impact}</b> | {zone} | WB {nm_id} | {problem_label}"
+        f"{specifics_block}\n{html.escape(_format_business_impact(problem))}"
+        f"{html.escape(stock_stop)}"
+    )
 
 
 def _build_priority_problems_block(priority_records):
@@ -897,6 +1016,87 @@ def _build_priority_problems_block(priority_records):
         for record in priority_records[:TELEGRAM_TOP_LIMIT]
     ]
     return "🔥 <b>Приоритетные проблемы:</b>\n" + "\n".join(lines)
+
+
+def _build_risk_zones_block(priority_records, root_cause_insights):
+    if not priority_records:
+        return ""
+
+    insights_by_key = _build_insights_by_key(root_cause_insights)
+    sku_by_zone = {}
+
+    for record in priority_records:
+        zone = _problem_zone(record, insights_by_key)
+        sku_by_zone.setdefault(zone, set()).add(_problem_group_key(record))
+
+    lines = [
+        f"{zone}: {_format_number(len(skus))} SKU"
+        for zone, skus in sorted(sku_by_zone.items())
+    ]
+    return "🔥 <b>Главные зоны риска:</b>\n" + "\n".join(lines)
+
+
+def _build_daily_losses_block(priority_records):
+    lost_revenue = sum(_problem_lost_revenue(record) for record in priority_records)
+    lost_orders = sum(_problem_lost_orders(record) for record in priority_records)
+
+    return (
+        "💸 <b>Потери за день:</b>\n"
+        f"≈ {_format_number(lost_revenue)} ₽ потенциально потерянной выручки\n"
+        f"≈ {_format_number(lost_orders)} потерянных заказов"
+    )
+
+
+def _check_priority_score(record):
+    stock_bonus = 100 if record.get("metric") == "wbStocks" else 0
+    ads_bonus = 30 if _problem_zone(record) == "ADS" else 0
+    return (
+        to_number(record.get("severityScore"))
+        + _problem_lost_revenue(record) / 1000
+        + stock_bonus
+        + ads_bonus
+    )
+
+
+def _build_first_checks_block(priority_records, root_cause_insights):
+    if not priority_records:
+        return ""
+
+    insights_by_key = _build_insights_by_key(root_cause_insights)
+    checks = []
+    seen = set()
+
+    for record in sorted(priority_records, key=_check_priority_score, reverse=True):
+        insight = insights_by_key.get(_problem_group_key(record), {})
+
+        if (
+            record.get("metric") == "wbStocks"
+            and to_number(record.get("selectedValue")) == 0
+        ):
+            check = (
+                "Восстановить остатки WB: продажи остановлены из-за нулевого склада."
+            )
+        elif _problem_zone(record, insights_by_key) == "ADS":
+            check = "Проверить рекламную эффективность: CTR, CPC, ДРР, бюджет и статус кампании."
+        elif insight.get("reason"):
+            check = f"{insight.get('rootCauseZone')}: {insight.get('reason')}."
+        else:
+            check = (
+                record.get("recommendation")
+                or "Проверить воронку, цену, рекламу и остатки."
+            )
+
+        if check in seen:
+            continue
+
+        seen.add(check)
+        checks.append(html.escape(str(check)))
+
+        if len(checks) == 3:
+            break
+
+    lines = [f"{index}. {check}" for index, check in enumerate(checks, start=1)]
+    return "🎯 <b>Что проверить в первую очередь:</b>\n" + "\n".join(lines)
 
 
 def _trim_telegram_message(text, max_length=3500):
@@ -1021,7 +1221,10 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
 
     message_parts.extend(
         [
+            _build_risk_zones_block(priority_records, root_cause_insights),
+            _build_daily_losses_block(priority_records),
             _build_priority_problems_block(priority_records),
+            _build_first_checks_block(priority_records, root_cause_insights),
             _build_executive_insight(
                 problem_products, root_cause_insights, summary_stats
             ),
