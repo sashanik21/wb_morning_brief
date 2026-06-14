@@ -97,6 +97,11 @@ PROBLEMS_REPORT_COLUMNS = [
     "acceptanceStock",
     "transitStock",
     "stockState",
+    "adsTrafficShare",
+    "organicTrafficShare",
+    "adsOrdersShare",
+    "organicOrdersShare",
+    "declineSource",
 ]
 PROBLEM_RULES = [
     {
@@ -143,6 +148,11 @@ PROBLEM_RULES = [
     },
 ]
 STOCK_PROBLEM_RECOMMENDATION = "проверить остатки и поставку на склады WB"
+
+
+TRAFFIC_STABLE_THRESHOLD = -5
+TRAFFIC_DECLINE_THRESHOLD = -10
+CONVERSION_STABLE_ABS_THRESHOLD = 5
 
 
 def _format_period(start_date, end_date):
@@ -686,6 +696,142 @@ def _selected_metric(record, metric):
     return _first_present(record, _metric_paths("selected", metric), default="")
 
 
+def _safe_share(numerator, denominator):
+    denominator_number = _to_number(denominator)
+
+    if denominator_number in (None, 0):
+        return ""
+
+    return _format_problem_number((_to_number(numerator) or 0) / denominator_number)
+
+
+def _ads_metric(row, metric):
+    value = row.get(metric)
+    if _is_missing(value):
+        value = row.get(f"selected{metric[0].upper()}{metric[1:]}")
+    return _to_number(value) or 0
+
+
+def _ads_previous_metric(row, metric):
+    return _to_number(row.get(f"previous{metric[0].upper()}{metric[1:]}")) or 0
+
+
+def _build_ads_attribution_by_nm_id(ads_rows):
+    attribution_by_nm_id = {}
+
+    for row in ads_rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        nm_id = _normalize_nm_id(row.get("nmId"))
+
+        if not nm_id:
+            continue
+
+        attribution = attribution_by_nm_id.setdefault(
+            nm_id,
+            {
+                "adsClicks": 0,
+                "previousAdsClicks": 0,
+                "adsOrders": 0,
+                "previousAdsOrders": 0,
+            },
+        )
+        attribution["adsClicks"] += _ads_metric(row, "clicks")
+        attribution["previousAdsClicks"] += _ads_previous_metric(row, "clicks")
+        attribution["adsOrders"] += _ads_metric(row, "orders")
+        attribution["previousAdsOrders"] += _ads_previous_metric(row, "orders")
+
+    return attribution_by_nm_id
+
+
+def _metric_current(record, metric):
+    return _to_number(_first_present(record, _metric_paths("selected", metric)))
+
+
+def _metric_past(record, metric):
+    return _to_number(_first_present(record, _metric_paths("past", metric)))
+
+
+def _dynamic_or_none(current_value, past_value):
+    if current_value is None or past_value in (None, 0):
+        return None
+
+    return ((current_value - past_value) / past_value) * 100
+
+
+def _is_declining(dynamic_value, threshold=TRAFFIC_DECLINE_THRESHOLD):
+    return dynamic_value is not None and dynamic_value <= threshold
+
+
+def _is_stable(dynamic_value, threshold=TRAFFIC_STABLE_THRESHOLD):
+    return dynamic_value is not None and dynamic_value >= threshold
+
+
+def _build_attribution_fields(record, attribution):
+    attribution = attribution or {}
+    open_count = _metric_current(record, "openCount")
+    past_open_count = _metric_past(record, "openCount")
+    order_count = _metric_current(record, "orderCount")
+    past_order_count = _metric_past(record, "orderCount")
+    cart_to_order = _metric_current(record, "cartToOrderPercent")
+    past_cart_to_order = _metric_past(record, "cartToOrderPercent")
+    ads_clicks = attribution.get("adsClicks", 0)
+    past_ads_clicks = attribution.get("previousAdsClicks", 0)
+    ads_orders = attribution.get("adsOrders", 0)
+
+    organic_traffic = max((open_count or 0) - ads_clicks, 0)
+    past_organic_traffic = max((past_open_count or 0) - past_ads_clicks, 0)
+    factors = []
+
+    open_dynamic = _dynamic_or_none(open_count, past_open_count)
+    ads_clicks_dynamic = _dynamic_or_none(ads_clicks, past_ads_clicks)
+    organic_dynamic = _dynamic_or_none(organic_traffic, past_organic_traffic)
+    order_dynamic = _dynamic_or_none(order_count, past_order_count)
+    cart_to_order_dynamic = _dynamic_or_none(cart_to_order, past_cart_to_order)
+
+    if _to_number(_problem_product_value(record, "realSellableStock")) == 0:
+        factors.append("STOCK_DECLINE")
+
+    if (
+        _is_declining(ads_clicks_dynamic)
+        and _is_declining(open_dynamic)
+        and _is_stable(organic_dynamic)
+    ):
+        factors.append("ADS_DECLINE")
+
+    if _is_stable(ads_clicks_dynamic) and _is_declining(open_dynamic):
+        factors.append("ORGANIC_DECLINE")
+
+    if (
+        open_dynamic is not None
+        and abs(open_dynamic) <= CONVERSION_STABLE_ABS_THRESHOLD
+        and _is_declining(order_dynamic)
+        and _is_declining(cart_to_order_dynamic)
+    ):
+        factors.append("CONVERSION_DECLINE")
+
+    unique_factors = list(dict.fromkeys(factors))
+    if len(unique_factors) > 1:
+        decline_source = "MIXED_DECLINE"
+    elif unique_factors:
+        decline_source = unique_factors[0]
+    elif open_count in (None, 0) and order_count in (None, 0):
+        decline_source = "INSUFFICIENT_DATA"
+    else:
+        decline_source = "INSUFFICIENT_DATA"
+
+    return {
+        "adsTrafficShare": _safe_share(ads_clicks, open_count),
+        "organicTrafficShare": _safe_share(organic_traffic, open_count),
+        "adsOrdersShare": _safe_share(ads_orders, order_count),
+        "organicOrdersShare": _safe_share(
+            max((order_count or 0) - ads_orders, 0), order_count
+        ),
+        "declineSource": decline_source,
+    }
+
+
 def _build_business_impact(
     record, metric, selected_value, baseline_value, baseline_type
 ):
@@ -983,8 +1129,10 @@ def _build_record_problem_rows(
     recent_changes="",
     history_baselines=None,
     supply_stock_metrics=None,
+    attribution=None,
 ):
     record_problem_rows = []
+    attribution_fields = _build_attribution_fields(record, attribution)
 
     for rule in PROBLEM_RULES:
         selected_value, past_value, dynamic_percent, baseline_type = _metric_baseline(
@@ -994,19 +1142,19 @@ def _build_record_problem_rows(
         if dynamic_percent is None or dynamic_percent > rule["threshold"]:
             continue
 
-        record_problem_rows.append(
-            _build_problem_row(
-                record,
-                rule,
-                selected_value,
-                past_value,
-                dynamic_percent,
-                products_by_nm_id,
-                recent_changes,
-                baseline_type=baseline_type,
-                baseline_value=past_value,
-            )
+        problem_row = _build_problem_row(
+            record,
+            rule,
+            selected_value,
+            past_value,
+            dynamic_percent,
+            products_by_nm_id,
+            recent_changes,
+            baseline_type=baseline_type,
+            baseline_value=past_value,
         )
+        problem_row.update(attribution_fields)
+        record_problem_rows.append(problem_row)
 
     wb_stocks = _to_number(_problem_product_value(record, "wbStocks"))
     stock_metrics = enrich_stock_metrics(
@@ -1028,6 +1176,13 @@ def _build_record_problem_rows(
     real_sellable_stock = _to_number(stock_metrics.get("realSellableStock"))
 
     if real_sellable_stock == 0:
+        stock_attribution_fields = {**attribution_fields}
+        stock_attribution_fields["declineSource"] = (
+            "MIXED_DECLINE"
+            if stock_attribution_fields.get("declineSource")
+            not in ("", "INSUFFICIENT_DATA", "STOCK_DECLINE")
+            else "STOCK_DECLINE"
+        )
         abc = _product_abc(record, products_by_nm_id)
         metric_name = "realSellableStock"
         selected_stock_value = _format_problem_number(real_sellable_stock)
@@ -1071,6 +1226,7 @@ def _build_record_problem_rows(
                 "recentChanges": recent_changes,
                 "rootCause": stock_root_cause(stock_metrics),
                 **stock_metrics,
+                **stock_attribution_fields,
             }
         )
 
@@ -1239,7 +1395,7 @@ def _load_history_baselines(seller_id, records):
 
 
 def analyze_funnel_problems(
-    funnel_data, seller_id=None, supply_stock_metrics_by_nm_id=None
+    funnel_data, seller_id=None, supply_stock_metrics_by_nm_id=None, ads_rows=None
 ):
     problem_rows = []
     below_threshold_problem_count = 0
@@ -1248,6 +1404,7 @@ def analyze_funnel_problems(
 
     records = _extract_problem_records(funnel_data)
     history_baselines_by_nm_id = _load_history_baselines(seller_id, records)
+    ads_attribution_by_nm_id = _build_ads_attribution_by_nm_id(ads_rows)
 
     for record in records:
         recent_changes = _recent_changes(record, recent_changes_by_nm_id)
@@ -1258,6 +1415,7 @@ def analyze_funnel_problems(
             recent_changes,
             history_baselines_by_nm_id.get(nm_id),
             (supply_stock_metrics_by_nm_id or {}).get(nm_id),
+            ads_attribution_by_nm_id.get(nm_id),
         )
 
         if not record_problem_rows:
@@ -1476,7 +1634,7 @@ def _adjust_worksheet_layout(worksheet, dataframe):
 
 
 def save_funnel_problems_report(
-    funnel_data, seller_id=None, supply_stock_metrics_by_nm_id=None
+    funnel_data, seller_id=None, supply_stock_metrics_by_nm_id=None, ads_rows=None
 ):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1486,6 +1644,7 @@ def save_funnel_problems_report(
         funnel_data,
         seller_id=seller_id,
         supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
+        ads_rows=ads_rows,
     )
 
     _print_problems_summary(dataframe)

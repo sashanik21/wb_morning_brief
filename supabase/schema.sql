@@ -102,6 +102,11 @@ create table if not exists problems (
     acceptance_stock numeric,
     transit_stock numeric,
     stock_state text,
+    ads_traffic_share numeric,
+    organic_traffic_share numeric,
+    ads_orders_share numeric,
+    organic_orders_share numeric,
+    decline_source text,
     recommendation text,
     recent_changes text,
     created_at timestamptz default now()

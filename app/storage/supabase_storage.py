@@ -398,6 +398,19 @@ def _normalize_problem(problem):
             _first_present(problem, ["transit_stock", "transitStock"])
         ),
         "stock_state": _first_present(problem, ["stock_state", "stockState"]),
+        "ads_traffic_share": _to_number(
+            _first_present(problem, ["ads_traffic_share", "adsTrafficShare"])
+        ),
+        "organic_traffic_share": _to_number(
+            _first_present(problem, ["organic_traffic_share", "organicTrafficShare"])
+        ),
+        "ads_orders_share": _to_number(
+            _first_present(problem, ["ads_orders_share", "adsOrdersShare"])
+        ),
+        "organic_orders_share": _to_number(
+            _first_present(problem, ["organic_orders_share", "organicOrdersShare"])
+        ),
+        "decline_source": _first_present(problem, ["decline_source", "declineSource"]),
     }
 
 

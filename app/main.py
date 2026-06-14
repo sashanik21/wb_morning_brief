@@ -255,6 +255,7 @@ def main():
         data,
         seller_id=seller_id,
         supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
+        ads_rows=ads_data,
     )
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
     print("=" * 50)
