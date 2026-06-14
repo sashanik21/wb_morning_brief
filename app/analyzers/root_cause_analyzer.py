@@ -148,6 +148,18 @@ ADS_ROOT_CAUSE_RULE = {
     ],
 }
 
+POSITION_ROOT_CAUSE_RULE = {
+    "zone": "Позиции / органическая видимость",
+    "reason": "Просадка связана с потерей позиции в выдаче",
+    "stable_position_reason": "Проблема вероятно связана с карточкой или рекламой",
+    "checks": [
+        "позиции по ключевым запросам",
+        "органическую видимость",
+        "рекламные показы",
+        "CTR карточки",
+    ],
+}
+
 ROOT_CAUSE_RULES = [
     {
         "zone": "Остатки WB",
@@ -364,6 +376,44 @@ def _has_ads_problem(product_problems):
     return False
 
 
+def _position_delta(product_problems, funnel_record):
+    for problem in product_problems:
+        delta = _to_number(problem.get("positionDelta"))
+        if delta is not None:
+            return delta
+
+    if funnel_record:
+        selected = _first_present(
+            funnel_record,
+            ["avgPosition", "selected.avgPosition", "statistic.selected.avgPosition"],
+            default=None,
+        )
+        past = _first_present(
+            funnel_record,
+            [
+                "pastAvgPosition",
+                "previousAvgPosition",
+                "past.avgPosition",
+                "statistic.past.avgPosition",
+            ],
+            default=None,
+        )
+        selected_number = _to_number(selected)
+        past_number = _to_number(past)
+        if selected_number is not None and past_number is not None:
+            return selected_number - past_number
+
+    return None
+
+
+def _has_visibility_risk(product_problems):
+    return any(
+        problem.get("searchVisibilityRisk")
+        in {"POSITION_DROP", "VISIBILITY_DROP", "SEARCH_TRAFFIC_LOSS"}
+        for problem in product_problems
+    )
+
+
 def _main_ads_problem(product_problems):
     for problem in product_problems:
         if problem.get("problemCategory") == "ads" or str(
@@ -473,6 +523,10 @@ def analyze_root_causes(problems, funnel_rows):
         order_sum_falls = _metric_is_falling(
             "orderSum", product_problems, funnel_record
         )
+        ctr_falls = _metric_is_falling("ctr", product_problems, funnel_record)
+        position_delta = _position_delta(product_problems, funnel_record)
+        position_worsens = position_delta is not None and position_delta > 0
+        position_stable = position_delta is not None and position_delta <= 0
 
         if _has_insufficient_history_problem(product_problems):
             insights.append(
@@ -483,6 +537,28 @@ def analyze_root_causes(problems, funnel_rows):
                     INSUFFICIENT_HISTORY_CHECKS,
                     product_problems[0].get("problemLabel")
                     or "новая рекламная активность",
+                )
+            )
+        elif (ctr_falls or open_count_falls) and (
+            position_worsens or _has_visibility_risk(product_problems)
+        ):
+            insights.append(
+                _build_insight(
+                    product,
+                    POSITION_ROOT_CAUSE_RULE["zone"],
+                    POSITION_ROOT_CAUSE_RULE["reason"],
+                    POSITION_ROOT_CAUSE_RULE["checks"],
+                    _main_problem(product_problems, "openCount"),
+                )
+            )
+        elif ctr_falls and position_stable:
+            insights.append(
+                _build_insight(
+                    product,
+                    "Карточка / реклама",
+                    POSITION_ROOT_CAUSE_RULE["stable_position_reason"],
+                    ["главное фото", "цена", "рекламный креатив", "CTR кампании"],
+                    _main_problem(product_problems, "ctr"),
                 )
             )
         elif _has_ads_problem(product_problems):

@@ -350,6 +350,18 @@ def _normalize_problem(problem):
         "lost_order_sum": _to_number(
             _first_present(problem, ["lost_order_sum", "lostOrderSum"])
         ),
+        "avg_position": _to_number(
+            _first_present(problem, ["avg_position", "avgPosition"])
+        ),
+        "position_delta": _to_number(
+            _first_present(problem, ["position_delta", "positionDelta"])
+        ),
+        "visibility_score": _to_number(
+            _first_present(problem, ["visibility_score", "visibilityScore"])
+        ),
+        "search_visibility_risk": _first_present(
+            problem, ["search_visibility_risk", "searchVisibilityRisk"]
+        ),
         "recommendation": problem.get("recommendation"),
         "recent_changes": _first_present(problem, ["recent_changes", "recentChanges"]),
         "real_sellable_stock": _to_int(
