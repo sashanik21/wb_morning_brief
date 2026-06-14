@@ -437,7 +437,14 @@ def _format_visibility_specifics(problem):
     return "\n".join(lines)
 
 
+def _impact_confidence(problem):
+    return str(problem.get("impactConfidence") or "").strip()
+
+
 def _format_business_impact(problem):
+    confidence = _impact_confidence(problem)
+    if confidence == "INSUFFICIENT_HISTORY":
+        return "потери не рассчитаны: недостаточно истории"
     if not _has_problem_loss(problem):
         return "потери не рассчитаны"
 
@@ -445,9 +452,11 @@ def _format_business_impact(problem):
     revenue = _loss_value(problem, "potentialRevenueLoss", "lostOrderSum")
     orders = _loss_value(problem, "potentialOrdersLoss", "lostOrders")
     if revenue is not None and revenue > 0:
-        lines.append(f"~{_format_number(revenue)} ₽ потери выручки")
+        lines.append(f"≈ {_format_number(revenue)} ₽ потери выручки")
     if orders is not None and orders > 0:
-        lines.append(f"~{_format_number(orders)} потерянных заказов")
+        lines.append(f"≈ {_format_number(orders)} потерянных заказов")
+    if confidence:
+        lines.append(f"confidence: {html.escape(confidence)}")
     return "\n".join(lines) or "потери не рассчитаны"
 
 
@@ -1192,6 +1201,18 @@ def _build_risk_zones_block(priority_records, root_cause_insights):
     return "🔥 <b>Главные зоны риска:</b>\n" + "\n".join(lines)
 
 
+def _combined_impact_confidence(records):
+    ranks = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+    confidences = [
+        _impact_confidence(record)
+        for record in records
+        if _impact_confidence(record) in ranks
+    ]
+    if not confidences:
+        return "INSUFFICIENT_HISTORY"
+    return min(confidences, key=lambda confidence: ranks[confidence])
+
+
 def _build_daily_losses_block(priority_records):
     records_with_loss = [
         record for record in priority_records if _has_problem_loss(record)
@@ -1202,16 +1223,36 @@ def _build_daily_losses_block(priority_records):
 
     lost_revenue = sum(_problem_lost_revenue(record) for record in records_with_loss)
     lost_orders = sum(_problem_lost_orders(record) for record in records_with_loss)
+    confidence = _combined_impact_confidence(records_with_loss)
 
     lines = ["💸 <b>Потери за день:</b>"]
     if lost_revenue > 0:
-        lines.append(
-            f"≈ {_format_number(lost_revenue)} ₽ потенциально потерянной выручки"
-        )
+        lines.append(f"≈ {_format_number(lost_revenue)} ₽ потенциальной потери выручки")
     if lost_orders > 0:
         lines.append(f"≈ {_format_number(lost_orders)} потерянных заказов")
+    if confidence != "INSUFFICIENT_HISTORY":
+        lines.append(f"confidence: {confidence}")
     if len(lines) == 1:
         lines.append("недостаточно данных для точного расчёта")
+    return "\n".join(lines)
+
+
+def _build_top_impact_block(priority_records):
+    records = sorted(
+        [record for record in priority_records if _problem_lost_revenue(record) > 0],
+        key=_problem_lost_revenue,
+        reverse=True,
+    )[:3]
+    if not records:
+        return ""
+    lines = ["🔥 <b>TOP потерь:</b>"]
+    for index, record in enumerate(records, start=1):
+        nm_id = html.escape(str(record.get("nmId") or "—"))
+        title = html.escape(str(record.get("title") or "").strip())
+        name = f"WB {nm_id}" + (f" {title}" if title else "")
+        lines.append(
+            f"{index}. {name} — ≈ {_format_number(_problem_lost_revenue(record))} ₽"
+        )
     return "\n".join(lines)
 
 
@@ -1391,6 +1432,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         [
             _build_risk_zones_block(priority_records, root_cause_insights),
             _build_daily_losses_block(priority_records),
+            _build_top_impact_block(priority_records),
             _build_priority_problems_block(priority_records),
             _build_first_checks_block(priority_records, root_cause_insights),
             _build_executive_insight(

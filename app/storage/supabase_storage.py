@@ -350,6 +350,21 @@ def _normalize_problem(problem):
         "lost_order_sum": _to_number(
             _first_present(problem, ["lost_order_sum", "lostOrderSum"])
         ),
+        "potential_revenue_loss": _to_number(
+            _first_present(problem, ["potential_revenue_loss", "potentialRevenueLoss"])
+        ),
+        "potential_orders_loss": _to_number(
+            _first_present(problem, ["potential_orders_loss", "potentialOrdersLoss"])
+        ),
+        "impact_confidence": _first_present(
+            problem, ["impact_confidence", "impactConfidence"]
+        ),
+        "blocked_revenue_per_day": _to_number(
+            _first_present(problem, ["blocked_revenue_per_day", "blockedRevenuePerDay"])
+        ),
+        "blocked_orders_per_day": _to_number(
+            _first_present(problem, ["blocked_orders_per_day", "blockedOrdersPerDay"])
+        ),
         "avg_position": _to_number(
             _first_present(problem, ["avg_position", "avgPosition"])
         ),
