@@ -205,7 +205,6 @@ def main():
         print("status: disabled_or_failed")
         print(f"reason: {error}")
         supply_stock_metrics_by_nm_id = {}
-    print(f"SUPPLIES STOCK METRICS: {len(supply_stock_metrics_by_nm_id)} SKU")
 
     report_path = save_sales_funnel_report(data)
     print(f"XLSX отчёт: {report_path}")

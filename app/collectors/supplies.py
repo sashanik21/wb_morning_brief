@@ -7,7 +7,7 @@ from app.wb_client import WBClient
 
 SUPPLIES_API_BASE_URL = "https://supplies-api.wildberries.ru"
 SUPPLIES_URL = f"{SUPPLIES_API_BASE_URL}/api/v1/supplies"
-SUPPLY_GOODS_URL = f"{SUPPLIES_API_BASE_URL}/api/v3/supplies/{{supply_id}}/goods"
+SUPPLY_GOODS_URL = f"{SUPPLIES_API_BASE_URL}/api/v1/supplies/{{supply_id}}/goods"
 SUPPLY_DETAILS_URL = f"{SUPPLIES_API_BASE_URL}/api/v3/supplies/{{supply_id}}"
 
 ACTIVE_SUPPLY_STATES = {
@@ -72,7 +72,8 @@ def _merge_goods_metrics(metrics, item, state):
     if not item:
         return
 
-    accepted = _quantity(item, ("acceptedQuantity", "accepted", "readyForSaleQuantity"))
+    ready_for_sale = _quantity(item, ("readyForSaleQuantity", "readyForSale"))
+    accepted = _quantity(item, ("acceptedQuantity", "accepted"))
     unloading = _quantity(item, ("unloadingQuantity", "unloading"))
     transit = _quantity(item, ("quantity", "planQuantity", "transitQuantity"))
     returning = _quantity(
@@ -98,10 +99,48 @@ def _merge_goods_metrics(metrics, item, state):
     else:
         metrics["incomingStock"] += accepted + unloading + transit
 
+    metrics["readyForSaleStock"] += ready_for_sale
     if state in {"acceptance", "accepted", "unloading"}:
         metrics["incomingStock"] += unloading + accepted
     metrics["returningStock"] += returning
     metrics["transitStock"] += transit if state in {"in_transit", "on_the_way"} else 0
+
+
+def _supply_goods_request_params(supply, offset, limit):
+    supply_id = supply.get("supplyID") or supply.get("supplyId") or supply.get("id")
+    preorder_id = supply.get("preorderID") or supply.get("preorderId")
+    if supply_id:
+        return supply_id, {"limit": limit, "offset": offset}, ""
+    if preorder_id:
+        return (
+            preorder_id,
+            {"limit": limit, "offset": offset, "isPreorderID": "true"},
+            "",
+        )
+    return "", {}, "no supply id"
+
+
+def _load_supply_goods(client, supply, limit):
+    goods = []
+    offset = 0
+    supply_id = ""
+
+    while True:
+        supply_id, params, reason = _supply_goods_request_params(supply, offset, limit)
+        if reason:
+            return goods, reason
+
+        payload = client.request(
+            "GET", SUPPLY_GOODS_URL.format(supply_id=supply_id), params=params
+        )
+        page = _records(payload)
+        if not page:
+            return goods, "goods endpoint empty" if not goods else ""
+
+        goods.extend(page)
+        if len(page) < limit:
+            return goods, ""
+        offset += limit
 
 
 def _log_supplies_failure(reason):
@@ -142,12 +181,22 @@ def collect_supply_stock_metrics(limit=1000):
         }
     )
 
+    supplies_checked = 0
+    goods_rows_loaded = 0
+    no_supply_id = 0
+    goods_endpoint_empty = 0
+    no_nm_id_in_goods = 0
+
     for supply in supplies:
         if not isinstance(supply, dict):
             continue
-        supply_id = supply.get("id") or supply.get("supplyId")
+        supply_id = supply.get("supplyID") or supply.get("supplyId") or supply.get("id")
         if not supply_id:
+            supply_id = supply.get("preorderID") or supply.get("preorderId")
+        if not supply_id:
+            no_supply_id += 1
             continue
+        supplies_checked += 1
         try:
             details = (
                 client.request("GET", SUPPLY_DETAILS_URL.format(supply_id=supply_id))
@@ -163,25 +212,41 @@ def collect_supply_stock_metrics(limit=1000):
         if state and state not in ACTIVE_SUPPLY_STATES:
             continue
         try:
-            goods = _records(
-                client.request("GET", SUPPLY_GOODS_URL.format(supply_id=supply_id))
-            )
+            goods, reason = _load_supply_goods(client, supply, limit)
         except (
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,
         ) as error:
             print(f"SUPPLIES COLLECTOR WARNING: {error}")
             continue
+        if reason == "goods endpoint empty":
+            goods_endpoint_empty += 1
+        goods_rows_loaded += len(goods)
         for item in goods:
             if not isinstance(item, dict):
                 continue
             nm_id = _nm_id(item)
             if nm_id:
                 _merge_goods_metrics(metrics_by_nm_id[nm_id], item, state)
+            else:
+                no_nm_id_in_goods += 1
 
     metrics = dict(metrics_by_nm_id)
     print("SUPPLIES API:")
     print(f"supplies loaded: {len(supplies)}")
     print(f"stock metrics loaded: {len(metrics)}")
+    print("SUPPLIES GOODS:")
+    print(f"supplies checked: {supplies_checked}")
+    print(f"goods rows loaded: {goods_rows_loaded}")
+    print(f"matched nmIds: {len(metrics)}")
+    if not metrics:
+        if no_supply_id:
+            print(f"reason: no supply id ({no_supply_id})")
+        if goods_endpoint_empty:
+            print(f"reason: goods endpoint empty ({goods_endpoint_empty})")
+        if no_nm_id_in_goods:
+            print(f"reason: no nmID in goods ({no_nm_id_in_goods})")
+        if goods_rows_loaded and not no_nm_id_in_goods:
+            print("reason: no matching nmId")
     print(f"SUPPLIES STOCK METRICS: {len(metrics)} SKU")
     return metrics
