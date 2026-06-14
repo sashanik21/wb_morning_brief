@@ -76,7 +76,12 @@ def _russian_zone(zone):
 
 
 def _format_product_identity(record_or_product):
-    title = html.escape(str(record_or_product.get("title") or "Без названия"))
+    title_value = record_or_product.get("title") or "Без названия"
+    perfume_line = record_or_product.get("perfumeLine")
+    volume_ml = record_or_product.get("volumeMl")
+    if perfume_line:
+        title_value = f"{perfume_line} {volume_ml} мл" if volume_ml else perfume_line
+    title = html.escape(str(title_value))
     nm_id = record_or_product.get("nmId") or record_or_product.get("nm_id")
     if nm_id in (None, ""):
         return title
@@ -1081,7 +1086,12 @@ def _product_primary_problem(product):
 
 
 def _executive_problem_title(product):
-    title = html.escape(str(product.get("title") or "Без названия"))
+    title_value = product.get("title") or "Без названия"
+    perfume_line = product.get("perfumeLine")
+    volume_ml = product.get("volumeMl")
+    if perfume_line:
+        title_value = f"{perfume_line} {volume_ml} мл" if volume_ml else perfume_line
+    title = html.escape(str(title_value))
     nm_id = html.escape(str(product.get("nmId") or "n/a"))
 
     return f"{title} — WB {nm_id}"
@@ -1177,6 +1187,38 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
         return "🧠 <b>Главный инсайт:</b> просадка заказов требует проверки трафика, конверсии и наличия."
 
     return "🧠 <b>Главный инсайт:</b> критичный управленческий сигнал не выявлен."
+
+
+def _build_perfume_intelligence_block(summary_stats):
+    perfume = (summary_stats or {}).get("perfumeIntelligence") or {}
+    insights = [item for item in perfume.get("insights") or [] if item.get("message")]
+    volume_rows = perfume.get("volumeAnalytics") or []
+    if not insights and not volume_rows:
+        return ""
+
+    lines = ["🧴 <b>Perfume intelligence:</b>"]
+    for insight in insights[:3]:
+        lines.append(f"- {html.escape(str(insight.get('message')))}")
+
+    if volume_rows:
+        best_conversion = max(
+            volume_rows, key=lambda row: to_number(row.get("conversion"))
+        )
+        cheapest_cpc = min(
+            volume_rows,
+            key=lambda row: to_number(row.get("cpc")) or 999999,
+        )
+        best_margin = max(volume_rows, key=lambda row: to_number(row.get("margin")))
+        lines.append(
+            "- Объемы: лучшая конверсия у "
+            f"{html.escape(str(best_conversion.get('volumeMl') or 'n/a'))} мл; "
+            "самый дешевый CPC у "
+            f"{html.escape(str(cheapest_cpc.get('volumeMl') or 'n/a'))} мл; "
+            "выше средний чек/маржа у "
+            f"{html.escape(str(best_margin.get('volumeMl') or 'n/a'))} мл."
+        )
+
+    return "\n".join(lines)
 
 
 def _build_executive_ads_block(records, summary_stats):
@@ -1929,6 +1971,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
             [
                 _build_priority_problems_block(priority_records),
                 _build_no_problem_executive_block(summary_stats),
+                _build_perfume_intelligence_block(summary_stats),
                 _build_executive_ads_block(priority_records, summary_stats),
                 _build_executive_stocks_block(priority_records, summary_stats),
             ]
@@ -1942,6 +1985,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
             _build_executive_insight(
                 problem_products, root_cause_insights, summary_stats
             ),
+            _build_perfume_intelligence_block(summary_stats),
             _build_executive_top_problems(problem_products, root_cause_insights),
             _build_first_checks_block(priority_records, root_cause_insights).replace(
                 "🎯 <b>Что проверить в первую очередь:</b>",

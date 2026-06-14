@@ -1,5 +1,7 @@
 from copy import deepcopy
 
+from app.analyzers.perfume_intelligence import parse_perfume_title
+
 UNKNOWN_ABC = "UNKNOWN"
 MISSING_PRODUCT_STATUS = "not_in_products"
 
@@ -143,11 +145,21 @@ def _enrich_product(funnel_product, products_by_nm_id):
             ["vendorCode", "supplierArticle", "article"],
             default=product_fields.get("vendorCode", ""),
         )
+        product_fields.update(
+            parse_perfume_title(
+                product_fields.get("title"), product_fields.get("brandName")
+            )
+        )
         return True
 
     product_fields["ABC"] = UNKNOWN_ABC
     product_fields["productStatus"] = MISSING_PRODUCT_STATUS
     product_fields["productInCatalog"] = False
+    product_fields.update(
+        parse_perfume_title(
+            product_fields.get("title"), product_fields.get("brandName")
+        )
+    )
     return False
 
 

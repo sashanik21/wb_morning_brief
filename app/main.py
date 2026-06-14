@@ -7,6 +7,10 @@ from app.analyzers.ads_analyzer import (
     save_ads_report,
 )
 from app.analyzers.forecast_engine import build_predictive_forecasts
+from app.analyzers.perfume_intelligence import (
+    build_perfume_intelligence,
+    enrich_perfume_records,
+)
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 from app.analyzers.tasks_builder import build_tasks_from_problems
@@ -221,6 +225,8 @@ def main():
     for funnel_row in funnel_rows:
         funnel_row["seller_id"] = seller_id
     ads_problems = analyze_ads_problems(ads_data, funnel_report)
+    perfume_intelligence = build_perfume_intelligence(funnel_rows, ads_data)
+    funnel_rows = perfume_intelligence["rows"]
     ads_summary = build_ads_summary(ads_data, ads_problems)
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("ADS SUMMARY:")
@@ -273,7 +279,9 @@ def main():
         problems_report_path, sheet_name="problems"
     ).fillna("")
     funnel_problems = funnel_problems_df.to_dict("records")
-    all_problems = funnel_problems + ads_problems + stocks_problems
+    all_problems = enrich_perfume_records(
+        funnel_problems + ads_problems + stocks_problems
+    )
     if funnel_rows:
         storage.save_funnel_snapshot(funnel_rows)
     if all_problems:
@@ -293,6 +301,7 @@ def main():
     )
 
     summary_stats["adsSummary"] = ads_summary
+    summary_stats["perfumeIntelligence"] = perfume_intelligence
     _print_summary_stats(summary_stats)
     print("=" * 50)
 
