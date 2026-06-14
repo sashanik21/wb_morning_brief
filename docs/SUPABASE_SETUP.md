@@ -35,3 +35,20 @@ Supabase is not connected in the Python code yet. Google Sheets is being removed
 ## Next step
 
 Implement `app/storage/supabase_storage.py` to read and write WB Morning Brief data through Supabase/PostgreSQL using the schema from `supabase/schema.sql`.
+
+## Seed products for ИП Череватенко Б.С.
+
+Чтобы заполнить `products` активными SKU из WB funnel для `seller_id = 1`:
+
+1. Откройте Supabase Dashboard → **SQL Editor**.
+2. Откройте файл `supabase/seed_products_cherevatenko.sql` в репозитории и скопируйте весь SQL.
+3. Вставьте SQL в новый query в SQL Editor и нажмите **Run**.
+4. Seed можно запускать повторно: `ON CONFLICT (seller_id, nm_id) DO UPDATE` обновит `vendor_code`, `product_name`, `brand`, `abc` и `status` для уже существующих SKU.
+5. После выполнения проверьте результат запросом:
+
+```sql
+select seller_id, count(*) as active_products
+from products
+where seller_id = 1 and status = 'active'
+group by seller_id;
+```
