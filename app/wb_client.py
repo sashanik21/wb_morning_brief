@@ -14,6 +14,7 @@ class WBClient:
         json_data: dict | None = None,
         params: dict | None = None,
         retries: int = 5,
+        silent_statuses: tuple[int, ...] = (),
     ):
         for attempt in range(retries):
             response = requests.request(
@@ -44,6 +45,12 @@ class WBClient:
                 )
                 time.sleep(wait_time)
                 continue
+
+            if response.status_code in silent_statuses:
+                return {
+                    "_wb_status_code": response.status_code,
+                    "_wb_text": response.text,
+                }
 
             print("WB API ERROR")
             print("STATUS:", response.status_code)

@@ -107,10 +107,14 @@ def _merge_goods_metrics(metrics, item, state):
 
 
 def _supply_goods_request_params(supply, offset, limit):
-    supply_id = supply.get("supplyID") or supply.get("supplyId") or supply.get("id")
+    supply_id = supply.get("supplyID") or supply.get("supplyId")
     preorder_id = supply.get("preorderID") or supply.get("preorderId")
     if supply_id:
-        return supply_id, {"limit": limit, "offset": offset}, ""
+        return (
+            supply_id,
+            {"limit": limit, "offset": offset, "isPreorderID": "false"},
+            "",
+        )
     if preorder_id:
         return (
             preorder_id,
@@ -118,6 +122,10 @@ def _supply_goods_request_params(supply, offset, limit):
             "",
         )
     return "", {}, "no supply id"
+
+
+def _status_id(supply):
+    return str(supply.get("statusID") or supply.get("statusId") or "").strip()
 
 
 def _load_supply_goods(client, supply, limit):
@@ -131,8 +139,14 @@ def _load_supply_goods(client, supply, limit):
             return goods, reason
 
         payload = client.request(
-            "GET", SUPPLY_GOODS_URL.format(supply_id=supply_id), params=params
+            "GET",
+            SUPPLY_GOODS_URL.format(supply_id=supply_id),
+            params=params,
+            silent_statuses=(404,),
         )
+        if isinstance(payload, dict) and payload.get("_wb_status_code") == 404:
+            return goods, "goods endpoint 404"
+
         page = _records(payload)
         if not page:
             return goods, "goods endpoint empty" if not goods else ""
@@ -183,25 +197,34 @@ def collect_supply_stock_metrics(limit=1000):
 
     supplies_checked = 0
     goods_rows_loaded = 0
-    no_supply_id = 0
+    skipped_no_id = 0
+    skipped_status = 0
+    goods_404_skipped = 0
     goods_endpoint_empty = 0
     no_nm_id_in_goods = 0
 
     for supply in supplies:
         if not isinstance(supply, dict):
             continue
-        supply_id = supply.get("supplyID") or supply.get("supplyId") or supply.get("id")
-        if not supply_id:
-            supply_id = supply.get("preorderID") or supply.get("preorderId")
-        if not supply_id:
-            no_supply_id += 1
+        supply_id = supply.get("supplyID") or supply.get("supplyId")
+        preorder_id = supply.get("preorderID") or supply.get("preorderId")
+        if not supply_id and _status_id(supply) == "1":
+            skipped_status += 1
             continue
+        if not supply_id and not preorder_id:
+            skipped_no_id += 1
+            continue
+
         supplies_checked += 1
         try:
-            details = (
-                client.request("GET", SUPPLY_DETAILS_URL.format(supply_id=supply_id))
-                or {}
-            )
+            details = {}
+            if supply_id:
+                details = (
+                    client.request(
+                        "GET", SUPPLY_DETAILS_URL.format(supply_id=supply_id)
+                    )
+                    or {}
+                )
         except (
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,
@@ -210,6 +233,7 @@ def collect_supply_stock_metrics(limit=1000):
             continue
         state = _supply_state(supply, details)
         if state and state not in ACTIVE_SUPPLY_STATES:
+            skipped_status += 1
             continue
         try:
             goods, reason = _load_supply_goods(client, supply, limit)
@@ -218,6 +242,9 @@ def collect_supply_stock_metrics(limit=1000):
             requests.exceptions.Timeout,
         ) as error:
             print(f"SUPPLIES COLLECTOR WARNING: {error}")
+            continue
+        if reason == "goods endpoint 404":
+            goods_404_skipped += 1
             continue
         if reason == "goods endpoint empty":
             goods_endpoint_empty += 1
@@ -237,11 +264,17 @@ def collect_supply_stock_metrics(limit=1000):
     print(f"stock metrics loaded: {len(metrics)}")
     print("SUPPLIES GOODS:")
     print(f"supplies checked: {supplies_checked}")
+    print(f"supplies skipped no id: {skipped_no_id}")
+    print(f"supplies skipped status: {skipped_status}")
     print(f"goods rows loaded: {goods_rows_loaded}")
     print(f"matched nmIds: {len(metrics)}")
+    print(f"goods 404 skipped: {goods_404_skipped}")
+    if goods_404_skipped:
+        print("SUPPLIES GOODS WARNING:")
+        print(f"goods endpoint returned 404 for {goods_404_skipped} supplies")
     if not metrics:
-        if no_supply_id:
-            print(f"reason: no supply id ({no_supply_id})")
+        if skipped_no_id:
+            print(f"reason: no supply id ({skipped_no_id})")
         if goods_endpoint_empty:
             print(f"reason: goods endpoint empty ({goods_endpoint_empty})")
         if no_nm_id_in_goods:
