@@ -12,6 +12,7 @@ class WBClient:
         method: str,
         url: str,
         json_data: dict | None = None,
+        params: dict | None = None,
         retries: int = 5,
     ):
         for attempt in range(retries):
@@ -20,6 +21,7 @@ class WBClient:
                 url=url,
                 headers=self.headers,
                 json=json_data,
+                params=params,
                 timeout=60,
             )
 

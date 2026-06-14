@@ -302,10 +302,9 @@ def _problem_lost_revenue(problem):
 
 
 def _has_problem_loss(problem):
-    return (
-        _loss_value(problem, "potentialRevenueLoss", "lostOrderSum") is not None
-        or _loss_value(problem, "potentialOrdersLoss", "lostOrders") is not None
-    )
+    revenue = _loss_value(problem, "potentialRevenueLoss", "lostOrderSum")
+    orders = _loss_value(problem, "potentialOrdersLoss", "lostOrders")
+    return (revenue is not None and revenue > 0) or (orders is not None and orders > 0)
 
 
 def _problem_zone(problem, insights_by_key=None):
@@ -404,9 +403,9 @@ def _format_business_impact(problem):
     lines = []
     revenue = _loss_value(problem, "potentialRevenueLoss", "lostOrderSum")
     orders = _loss_value(problem, "potentialOrdersLoss", "lostOrders")
-    if revenue is not None:
+    if revenue is not None and revenue > 0:
         lines.append(f"~{_format_number(revenue)} ₽ потери выручки")
-    if orders is not None:
+    if orders is not None and orders > 0:
         lines.append(f"~{_format_number(orders)} потерянных заказов")
     return "\n".join(lines) or "потери не рассчитаны"
 
@@ -1109,11 +1108,16 @@ def _build_daily_losses_block(priority_records):
     lost_revenue = sum(_problem_lost_revenue(record) for record in records_with_loss)
     lost_orders = sum(_problem_lost_orders(record) for record in records_with_loss)
 
-    return (
-        "💸 <b>Потери за день:</b>\n"
-        f"≈ {_format_number(lost_revenue)} ₽ потенциально потерянной выручки\n"
-        f"≈ {_format_number(lost_orders)} потерянных заказов"
-    )
+    lines = ["💸 <b>Потери за день:</b>"]
+    if lost_revenue > 0:
+        lines.append(
+            f"≈ {_format_number(lost_revenue)} ₽ потенциально потерянной выручки"
+        )
+    if lost_orders > 0:
+        lines.append(f"≈ {_format_number(lost_orders)} потерянных заказов")
+    if len(lines) == 1:
+        lines.append("недостаточно данных для точного расчёта")
+    return "\n".join(lines)
 
 
 def _check_priority_score(record):
