@@ -196,7 +196,15 @@ def main():
     print("=" * 50)
 
     stocks_problems = []
-    supply_stock_metrics_by_nm_id = collect_supply_stock_metrics()
+    try:
+        supply_stock_metrics_by_nm_id = collect_supply_stock_metrics()
+    except Exception as error:
+        print(f"SUPPLIES COLLECTOR WARNING: {error}")
+        print("SUPPLIES DATA: 0 rows")
+        print("SUPPLIES API:")
+        print("status: disabled_or_failed")
+        print(f"reason: {error}")
+        supply_stock_metrics_by_nm_id = {}
     print(f"SUPPLIES STOCK METRICS: {len(supply_stock_metrics_by_nm_id)} SKU")
 
     report_path = save_sales_funnel_report(data)
