@@ -44,6 +44,13 @@ def _extract_funnel_products(data):
     return []
 
 
+def _seller_id(seller):
+    if not isinstance(seller, dict):
+        return None
+
+    return seller.get("seller_id") or seller.get("id")
+
+
 def _sum_report_column(dataframe, column_name):
     if column_name not in dataframe:
         return 0
@@ -126,7 +133,9 @@ def main():
     print(f"SELLERS LOADED: {len(sellers)}")
     active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
     print(f"Активных продавцов: {len(active_sellers)}")
-    seller_name = active_sellers[0]["seller_name"] if active_sellers else ""
+    current_seller = active_sellers[0] if active_sellers else {}
+    seller_name = current_seller.get("seller_name", "")
+    seller_id = _seller_id(current_seller)
     if active_sellers:
         print(f"Текущий продавец: {seller_name}")
 
@@ -145,7 +154,12 @@ def main():
     print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
     print("=" * 50)
 
-    total_sku_from_api = len(_extract_funnel_products(data))
+    wb_cards = _extract_funnel_products(data)
+    storage.sync_products_from_wb_cards(seller_id, wb_cards)
+    products = storage.get_products()
+    print(f"PRODUCTS LOADED: {len(products)}")
+
+    total_sku_from_api = len(wb_cards)
     data = enrich_funnel_data_with_products(data, products)
     enriched_products = _extract_funnel_products(data)
     sku_in_products = sum(

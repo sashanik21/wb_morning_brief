@@ -144,6 +144,92 @@ def get_products():
     return [_normalize_product(product) for product in products]
 
 
+def _extract_card_product(card):
+    if not isinstance(card, dict):
+        return {}
+
+    product = card.get("product")
+
+    if isinstance(product, dict):
+        return {**card, **product}
+
+    return card
+
+
+def _normalize_wb_card_product(seller_id, card):
+    product = _extract_card_product(card)
+    nm_id = _to_int(_first_present(product, ["nmID", "nmId", "nm_id"]))
+
+    if nm_id is None:
+        return None
+
+    return {
+        "seller_id": _to_int(seller_id),
+        "nm_id": nm_id,
+        "vendor_code": _first_present(product, ["vendorCode", "vendor_code"]),
+        "product_name": _first_present(
+            product, ["title", "productName", "product_name", "name"]
+        ),
+        "brand": _first_present(product, ["brand", "brandName"]),
+        "abc": "UNKNOWN",
+        "status": "active",
+    }
+
+
+def _existing_products_by_nm_id(seller_id, nm_ids):
+    if not nm_ids:
+        return {}
+
+    products = _execute_read(
+        _get_client()
+        .table("products")
+        .select("seller_id,nm_id,abc,status")
+        .eq("seller_id", seller_id)
+        .in_("nm_id", nm_ids),
+        "products",
+    )
+
+    return {product.get("nm_id"): product for product in products}
+
+
+def sync_products_from_wb_cards(seller_id, cards):
+    normalized_by_nm_id = {}
+
+    for card in cards or []:
+        product = _normalize_wb_card_product(seller_id, card)
+
+        if product is not None:
+            normalized_by_nm_id[product["nm_id"]] = product
+
+    products_to_upsert = list(normalized_by_nm_id.values())
+    existing_products = _existing_products_by_nm_id(
+        _to_int(seller_id), list(normalized_by_nm_id.keys())
+    )
+
+    for product in products_to_upsert:
+        existing_product = existing_products.get(product["nm_id"]) or {}
+        existing_abc = existing_product.get("abc")
+        existing_status = existing_product.get("status")
+
+        if existing_abc and existing_abc != "UNKNOWN":
+            product["abc"] = existing_abc
+
+        if existing_status == "inactive":
+            product["status"] = existing_status
+
+    print("SUPABASE SYNC PRODUCTS FROM WB:")
+    print(f"cards: {len(cards or [])}")
+    print(f"upserted: {len(products_to_upsert)}")
+
+    if products_to_upsert:
+        _execute_write(
+            _get_client()
+            .table("products")
+            .upsert(products_to_upsert, on_conflict="seller_id,nm_id"),
+            "products",
+        )
+
+
 def get_change_log():
     return _execute_read(
         _get_client().table("change_log").select("*"),
