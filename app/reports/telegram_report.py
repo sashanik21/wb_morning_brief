@@ -22,6 +22,24 @@ EXECUTIVE_PROBLEMS_LIMIT = 3
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 logger = logging.getLogger(__name__)
 
+DECLINE_SOURCE_TELEGRAM_LABELS = {
+    "ADS_DECLINE": "ADS",
+    "ORGANIC_DECLINE": "ORGANIC",
+    "CONVERSION_DECLINE": "CONVERSION",
+    "STOCK_DECLINE": "STOCK",
+    "MIXED_DECLINE": "MIXED",
+    "INSUFFICIENT_DATA": "INSUFFICIENT_DATA",
+}
+
+DECLINE_SOURCE_PRIORITY_LABELS = {
+    "ADS_DECLINE": "реклама",
+    "ORGANIC_DECLINE": "органика",
+    "CONVERSION_DECLINE": "конверсия",
+    "STOCK_DECLINE": "остатки",
+    "MIXED_DECLINE": "смешанный",
+    "INSUFFICIENT_DATA": "недостаточно данных",
+}
+
 
 def _is_below_abc_threshold(problem):
     value = problem.get("isBelowAbcThreshold")
@@ -441,6 +459,21 @@ def _impact_confidence(problem):
     return str(problem.get("impactConfidence") or "").strip()
 
 
+def _decline_source(problem):
+    return str(
+        problem.get("declineSource") or problem.get("decline_source") or ""
+    ).strip()
+
+
+def _format_decline_source_line(problem, labels):
+    source = _decline_source(problem)
+
+    if not source:
+        return ""
+
+    return labels.get(source, source)
+
+
 def _format_business_impact(problem):
     confidence = _impact_confidence(problem)
     if confidence == "INSUFFICIENT_HISTORY":
@@ -518,6 +551,14 @@ def _format_product_item(_index, product):
     recent_changes = _format_recent_changes(problems)
 
     primary_problem = problems[0] if problems else {}
+    decline_source = _format_decline_source_line(
+        primary_problem, DECLINE_SOURCE_TELEGRAM_LABELS
+    )
+    decline_source_block = (
+        f"\n📊 <b>Источник просадки:</b> {html.escape(decline_source)}"
+        if decline_source
+        else ""
+    )
     loss_line = _format_loss(problems)
     loss_block = f"\n{loss_line}" if loss_line else ""
 
@@ -1164,10 +1205,16 @@ def _format_priority_problem_line(problem):
     ]
     specifics = "\n".join(part for part in specifics_parts if part)
     specifics_block = f"\n{html.escape(specifics)}" if specifics else ""
+    decline_source = _format_decline_source_line(
+        problem, DECLINE_SOURCE_PRIORITY_LABELS
+    )
+    decline_source_block = (
+        f"\nисточник: {html.escape(decline_source)}" if decline_source else ""
+    )
 
     return (
         f"- <b>{impact}</b> | {zone} | WB {nm_id} | {problem_label}"
-        f"{specifics_block}\n{html.escape(_format_business_impact(problem))}"
+        f"{decline_source_block}{specifics_block}\n{html.escape(_format_business_impact(problem))}"
         f"{html.escape(stock_stop)}"
     )
 
