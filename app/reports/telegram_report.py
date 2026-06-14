@@ -15,7 +15,6 @@ from app.reports.evidence import (
 from app.seller_config import SELLER_NAME
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
-TELEGRAM_PHOTO_API_URL = "https://api.telegram.org/bot{token}/sendPhoto"
 TELEGRAM_TIMEOUT_SECONDS = 15
 TELEGRAM_TOP_LIMIT = 5
 EXECUTIVE_PROBLEMS_LIMIT = 3
@@ -928,89 +927,13 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     return _trim_telegram_message("\n\n".join(part for part in message_parts if part))
 
 
-def _build_dashboard_caption(summary_stats=None):
-    summary_stats = summary_stats or {}
-    seller_name = html.escape(str(summary_stats.get("sellerName") or SELLER_NAME))
-
-    return (
-        "📊 <b>WB Morning Brief</b>\n"
-        f"Продавец: <b>{seller_name}</b>\n"
-        "PNG dashboard готов. Подробный текстовый бриф отправлен ниже."
-    )
-
-
-def _send_telegram_dashboard_image(token, chat_id, image_path, caption):
-    if not image_path or not os.path.exists(image_path):
-        return False
-
-    url = TELEGRAM_PHOTO_API_URL.format(token=token)
-    payload = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
-
-    try:
-        with open(image_path, "rb") as image_file:
-            response = requests.post(
-                url,
-                data=payload,
-                files={"photo": image_file},
-                timeout=TELEGRAM_TIMEOUT_SECONDS,
-            )
-    except OSError as error:
-        logger.error("Dashboard image cannot be opened: %s", error)
-        print(f"Dashboard image cannot be opened: {error}")
-        return False
-    except requests.RequestException as error:
-        logger.error("Telegram dashboard image request failed: %s", error)
-        print(f"Telegram dashboard image request failed: {error}")
-        return False
-
-    if response.status_code != 200:
-        logger.error(
-            "Telegram dashboard image error: status=%s text=%s",
-            response.status_code,
-            response.text,
-        )
-        print(
-            "Telegram dashboard image error: "
-            f"status={response.status_code} text={response.text}"
-        )
-        return False
-
-    try:
-        data = response.json()
-    except ValueError:
-        logger.error(
-            "Telegram dashboard image returned invalid JSON: %s", response.text
-        )
-        print("Telegram dashboard image returned invalid JSON")
-        return False
-
-    if not data.get("ok"):
-        logger.error("Telegram dashboard image returned error payload: %s", data)
-        print(f"Telegram dashboard image returned error: {data}")
-        return False
-
-    logger.info("Telegram dashboard image sent successfully")
-    print("Telegram dashboard image sent successfully")
-    return True
-
-
-def send_telegram_morning_brief(
-    problems, summary_stats=None, dashboard_image_path=None, root_cause_insights=None
-):
+def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insights=None):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if not token or not chat_id:
         print("Telegram credentials not configured")
         return False
-
-    if dashboard_image_path:
-        _send_telegram_dashboard_image(
-            token,
-            chat_id,
-            dashboard_image_path,
-            _build_dashboard_caption(summary_stats),
-        )
 
     message = _build_telegram_message(
         problems,

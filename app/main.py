@@ -1,6 +1,3 @@
-from datetime import datetime
-from pathlib import Path
-
 import pandas as pd
 
 from app.analyzers.ads_analyzer import (
@@ -21,7 +18,6 @@ from app.collectors.funnel import (
     save_funnel_problems_report,
     save_sales_funnel_report,
 )
-from app.reports.dashboard_image import generate_dashboard_image
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
 from app.storage.storage_factory import get_storage
@@ -224,28 +220,10 @@ def main():
     print(f"all: {len(all_problems)}")
     print("=" * 50)
 
-    dashboard_image_path = None
-    dashboard_output_path = (
-        Path("reports") / f"dashboard_{datetime.now().date():%Y_%m_%d}.png"
-    )
-
-    try:
-        dashboard_image_path = generate_dashboard_image(
-            data,
-            funnel_problems_df,
-            dashboard_output_path,
-        )
-        print(f"PNG dashboard: {dashboard_image_path}")
-    except Exception as error:
-        print(f"PNG dashboard не создан: {error}")
-
-    print("=" * 50)
-
     print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
     send_telegram_morning_brief(
         all_problems,
         summary_stats=summary_stats,
-        dashboard_image_path=dashboard_image_path,
         root_cause_insights=root_cause_insights,
     )
     print("=" * 50)
