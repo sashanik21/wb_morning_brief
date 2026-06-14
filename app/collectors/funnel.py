@@ -78,6 +78,11 @@ PROBLEMS_REPORT_COLUMNS = [
     "isBelowAbcThreshold",
     "lostOrders",
     "lostOrderSum",
+    "potentialRevenueLoss",
+    "potentialOrdersLoss",
+    "impactConfidence",
+    "blockedRevenuePerDay",
+    "blockedOrdersPerDay",
     "recommendation",
     "recentChanges",
     "avgPosition",
@@ -657,6 +662,129 @@ def _recent_changes(record, recent_changes_by_nm_id):
     return recent_changes_by_nm_id.get(nm_id, "")
 
 
+def _impact_confidence(baseline_type, baseline_value=None):
+    if _to_number(baseline_value) is None:
+        return "INSUFFICIENT_HISTORY"
+    if baseline_type == "avg_7d":
+        return "HIGH"
+    if baseline_type == "avg_3d":
+        return "MEDIUM"
+    if baseline_type == "fallback_previous_day":
+        return "LOW"
+    return "INSUFFICIENT_HISTORY"
+
+
+def _average_check(order_sum, order_count):
+    order_sum_number = _to_number(order_sum)
+    order_count_number = _to_number(order_count)
+    if order_sum_number is None or order_count_number in (None, 0):
+        return None
+    return order_sum_number / order_count_number
+
+
+def _selected_metric(record, metric):
+    return _first_present(record, _metric_paths("selected", metric), default="")
+
+
+def _build_business_impact(
+    record, metric, selected_value, baseline_value, baseline_type
+):
+    selected_number = _to_number(selected_value)
+    baseline_number = _to_number(baseline_value)
+    confidence = _impact_confidence(baseline_type, baseline_value)
+    impact = {
+        "potentialRevenueLoss": "",
+        "potentialOrdersLoss": "",
+        "impactConfidence": confidence,
+        "blockedRevenuePerDay": "",
+        "blockedOrdersPerDay": "",
+    }
+
+    if confidence == "INSUFFICIENT_HISTORY" or selected_number is None:
+        return impact
+
+    order_count = _selected_metric(record, "orderCount")
+    order_sum = _selected_metric(record, "orderSum")
+    avg_check = _average_check(order_sum, order_count)
+
+    if avg_check is None and metric == "orderCount":
+        avg_check = _average_check(_selected_metric(record, "orderSum"), selected_value)
+    if avg_check is None and metric == "orderSum":
+        avg_check = _average_check(
+            selected_value, _selected_metric(record, "orderCount")
+        )
+
+    if metric == "orderCount":
+        orders_loss = max(baseline_number - selected_number, 0)
+        impact["potentialOrdersLoss"] = _format_problem_number(orders_loss)
+        if avg_check is not None:
+            impact["potentialRevenueLoss"] = _format_problem_number(
+                orders_loss * avg_check
+            )
+    elif metric == "orderSum":
+        revenue_loss = max(baseline_number - selected_number, 0)
+        impact["potentialRevenueLoss"] = _format_problem_number(revenue_loss)
+        if avg_check is not None:
+            impact["potentialOrdersLoss"] = _format_problem_number(
+                revenue_loss / avg_check
+            )
+    elif metric == "cartToOrderPercent":
+        traffic = _to_number(_selected_metric(record, "cartCount"))
+        if traffic is not None:
+            expected_orders = traffic * baseline_number / 100
+            actual_orders = traffic * selected_number / 100
+            orders_loss = max(expected_orders - actual_orders, 0)
+            impact["potentialOrdersLoss"] = _format_problem_number(orders_loss)
+            if avg_check is not None:
+                impact["potentialRevenueLoss"] = _format_problem_number(
+                    orders_loss * avg_check
+                )
+    elif metric == "addToCartPercent":
+        traffic = _to_number(_selected_metric(record, "openCount"))
+        cart_to_order = _to_number(_selected_metric(record, "cartToOrderPercent"))
+        if traffic is not None and cart_to_order is not None:
+            expected_carts = traffic * baseline_number / 100
+            actual_carts = traffic * selected_number / 100
+            orders_loss = max(expected_carts - actual_carts, 0) * cart_to_order / 100
+            impact["potentialOrdersLoss"] = _format_problem_number(orders_loss)
+            if avg_check is not None:
+                impact["potentialRevenueLoss"] = _format_problem_number(
+                    orders_loss * avg_check
+                )
+
+    return impact
+
+
+def _build_stock_business_impact(record, history_baselines):
+    order_baseline = (history_baselines or {}).get(
+        f"avg_{HISTORY_BASELINE_KEYS['orderCount']}_{'7d' if (history_baselines or {}).get('baselineType') == 'avg_7d' else '3d'}"
+    )
+    revenue_baseline = (history_baselines or {}).get(
+        f"avg_{HISTORY_BASELINE_KEYS['orderSum']}_{'7d' if (history_baselines or {}).get('baselineType') == 'avg_7d' else '3d'}"
+    )
+    baseline_type = (history_baselines or {}).get("baselineType")
+    confidence = _impact_confidence(baseline_type, order_baseline or revenue_baseline)
+    return {
+        "potentialRevenueLoss": (
+            _format_problem_number(revenue_baseline)
+            if revenue_baseline is not None
+            else ""
+        ),
+        "potentialOrdersLoss": (
+            _format_problem_number(order_baseline) if order_baseline is not None else ""
+        ),
+        "impactConfidence": confidence,
+        "blockedRevenuePerDay": (
+            _format_problem_number(revenue_baseline)
+            if revenue_baseline is not None
+            else ""
+        ),
+        "blockedOrdersPerDay": (
+            _format_problem_number(order_baseline) if order_baseline is not None else ""
+        ),
+    }
+
+
 def _build_problem_row(
     record,
     rule,
@@ -703,6 +831,13 @@ def _build_problem_row(
         ),
         "dynamicPercent": round(dynamic_percent, 2),
         **severity_fields,
+        **_build_business_impact(
+            record,
+            rule["metric"],
+            selected_value,
+            past_value if baseline_value is None else baseline_value,
+            baseline_type,
+        ),
         "recommendation": _recommendation(
             record, products_by_nm_id, rule["recommendation"]
         ),
@@ -929,6 +1064,7 @@ def _build_record_problem_rows(
                 "baselineValue": "",
                 "dynamicPercent": "",
                 **severity_fields,
+                **_build_stock_business_impact(record, history_baselines),
                 "recommendation": _recommendation(
                     record, products_by_nm_id, recommendation
                 ),
