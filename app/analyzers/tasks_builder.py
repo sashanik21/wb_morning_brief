@@ -62,6 +62,7 @@ def build_tasks_from_problems(problems):
 
     for problem in problems:
         problem_type = problem.get("problemType", "")
+        problem_label = problem.get("problemLabel") or problem_type
         tasks.append(
             {
                 "date": current_date,
@@ -70,6 +71,7 @@ def build_tasks_from_problems(problems):
                 "vendorCode": problem.get("vendorCode", ""),
                 "title": problem.get("title", ""),
                 "problemType": problem_type,
+                "problemLabel": problem_label,
                 "priority": _get_task_priority(problem_type),
                 "action": problem.get("recommendation", ""),
                 "status": "Новая",
