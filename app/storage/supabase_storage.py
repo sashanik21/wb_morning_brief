@@ -1,16 +1,37 @@
 import os
 from datetime import date
+from urllib.parse import urlsplit, urlunsplit
 
 from supabase import create_client
 
 _STORAGE_STATUS = {"mode": "supabase", "configured": True}
+_CLIENT = None
+
+
+def _supabase_url():
+    raw_url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    parsed_url = urlsplit(raw_url)
+    return urlunsplit(
+        (
+            parsed_url.scheme,
+            parsed_url.netloc,
+            "",
+            "",
+            "",
+        )
+    )
 
 
 def _get_client():
-    return create_client(
-        os.getenv("SUPABASE_URL"),
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY"),
-    )
+    global _CLIENT
+
+    if _CLIENT is None:
+        _CLIENT = create_client(
+            _supabase_url(),
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY"),
+        )
+
+    return _CLIENT
 
 
 def _execute_read(query, table_name):
@@ -71,8 +92,20 @@ def get_storage_status():
     return _STORAGE_STATUS.copy()
 
 
+def _is_table_accessible(table_name):
+    try:
+        _get_client().table(table_name).select("*").limit(1).execute()
+    except Exception as error:
+        print(f"WARNING: Supabase healthcheck failed for {table_name}: {error}")
+        return False
+
+    return True
+
+
 def log_storage_configuration():
     print("STORAGE MODE: supabase")
+    accessible = str(_is_table_accessible("sellers")).lower()
+    print(f"SUPABASE HEALTHCHECK: sellers table accessible: {accessible}")
 
 
 def get_sellers():
