@@ -1,13 +1,14 @@
 from collections import defaultdict
 
+import requests
+
 from app.config import HEADERS
 from app.wb_client import WBClient
 
-SUPPLIES_URL = "https://suppliers-api.wildberries.ru/api/v3/supplies"
-SUPPLY_GOODS_URL = (
-    "https://suppliers-api.wildberries.ru/api/v3/supplies/{supply_id}/goods"
-)
-SUPPLY_DETAILS_URL = "https://suppliers-api.wildberries.ru/api/v3/supplies/{supply_id}"
+SUPPLIES_API_BASE_URL = "https://supplies-api.wildberries.ru"
+SUPPLIES_URL = f"{SUPPLIES_API_BASE_URL}/api/v1/supplies"
+SUPPLY_GOODS_URL = f"{SUPPLIES_API_BASE_URL}/api/v3/supplies/{{supply_id}}/goods"
+SUPPLY_DETAILS_URL = f"{SUPPLIES_API_BASE_URL}/api/v3/supplies/{{supply_id}}"
 
 ACTIVE_SUPPLY_STATES = {
     "created",
@@ -103,9 +104,26 @@ def _merge_goods_metrics(metrics, item, state):
     metrics["transitStock"] += transit if state in {"in_transit", "on_the_way"} else 0
 
 
+def _log_supplies_failure(reason):
+    print(f"SUPPLIES COLLECTOR WARNING: {reason}")
+    print("SUPPLIES DATA: 0 rows")
+    print("SUPPLIES API:")
+    print("status: disabled_or_failed")
+    print(f"reason: {reason}")
+
+
 def collect_supply_stock_metrics(limit=1000):
     client = WBClient(HEADERS)
-    supplies_payload = client.request("GET", f"{SUPPLIES_URL}?limit={limit}")
+    try:
+        supplies_payload = client.request("GET", f"{SUPPLIES_URL}?limit={limit}")
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as error:
+        _log_supplies_failure(str(error))
+        return {}
+
+    if supplies_payload is None:
+        _log_supplies_failure("supplies list request returned no data")
+        return {}
+
     supplies = _records(supplies_payload)
     metrics_by_nm_id = defaultdict(
         lambda: {
@@ -125,15 +143,30 @@ def collect_supply_stock_metrics(limit=1000):
         supply_id = supply.get("id") or supply.get("supplyId")
         if not supply_id:
             continue
-        details = (
-            client.request("GET", SUPPLY_DETAILS_URL.format(supply_id=supply_id)) or {}
-        )
+        try:
+            details = (
+                client.request("GET", SUPPLY_DETAILS_URL.format(supply_id=supply_id))
+                or {}
+            )
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        ) as error:
+            print(f"SUPPLIES COLLECTOR WARNING: {error}")
+            continue
         state = _supply_state(supply, details)
         if state and state not in ACTIVE_SUPPLY_STATES:
             continue
-        goods = _records(
-            client.request("GET", SUPPLY_GOODS_URL.format(supply_id=supply_id))
-        )
+        try:
+            goods = _records(
+                client.request("GET", SUPPLY_GOODS_URL.format(supply_id=supply_id))
+            )
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        ) as error:
+            print(f"SUPPLIES COLLECTOR WARNING: {error}")
+            continue
         for item in goods:
             if not isinstance(item, dict):
                 continue
@@ -141,4 +174,8 @@ def collect_supply_stock_metrics(limit=1000):
             if nm_id:
                 _merge_goods_metrics(metrics_by_nm_id[nm_id], item, state)
 
-    return dict(metrics_by_nm_id)
+    metrics = dict(metrics_by_nm_id)
+    print("SUPPLIES API:")
+    print(f"supplies loaded: {len(supplies)}")
+    print(f"stock metrics loaded: {len(metrics)}")
+    return metrics
