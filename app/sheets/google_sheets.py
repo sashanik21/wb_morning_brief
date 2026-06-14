@@ -9,13 +9,14 @@ GOOGLE_SHEETS_CREDENTIALS_JSON_ENV = "GOOGLE_SHEETS_CREDENTIALS_JSON"
 GOOGLE_SHEETS_SPREADSHEET_ID_ENV = "GOOGLE_SHEETS_SPREADSHEET_ID"
 
 SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
 SELLERS_WORKSHEET = "SELLERS"
 PRODUCTS_WORKSHEET = "PRODUCTS"
 CHANGE_LOG_WORKSHEET = "CHANGE_LOG"
+TASKS_WORKSHEET = "ЗАДАЧИ"
 
 SELLER_COLUMNS = [
     "seller_id",
@@ -38,6 +39,17 @@ CHANGE_LOG_COLUMNS = [
     "nmId",
     "change_type",
     "description",
+]
+TASK_COLUMNS = [
+    "Дата",
+    "Продавец",
+    "Артикул WB",
+    "Артикул продавца",
+    "Товар",
+    "Проблема",
+    "Приоритет",
+    "Что сделать",
+    "Статус",
 ]
 
 STUB_SELLERS = [
@@ -373,8 +385,151 @@ def get_change_log():
     return _copy_records(_get_change_log_cached())
 
 
-def create_tasks(tasks):
+def _print_stub_tasks(tasks):
     print(f"TASKS TO CREATE: {len(tasks)}")
 
     for task in tasks[:5]:
         print(task)
+
+
+def _get_spreadsheet():
+    client = get_google_client()
+    return client.open_by_key(os.environ[GOOGLE_SHEETS_SPREADSHEET_ID_ENV])
+
+
+def _get_or_create_tasks_worksheet(spreadsheet):
+    try:
+        return spreadsheet.worksheet(TASKS_WORKSHEET)
+    except gspread.WorksheetNotFound:
+        return spreadsheet.add_worksheet(
+            title=TASKS_WORKSHEET,
+            rows=max(100, 1),
+            cols=len(TASK_COLUMNS),
+        )
+
+
+def _normalize_key_value(value):
+    value = _to_int_if_possible(value)
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def _task_dedup_key(row):
+    return (
+        _normalize_key_value(row.get("Дата")),
+        _normalize_key_value(row.get("Артикул WB")),
+        _normalize_key_value(row.get("Проблема")),
+    )
+
+
+def _ensure_tasks_header(worksheet):
+    header = [str(value).strip() for value in worksheet.row_values(1)]
+
+    if not any(header):
+        worksheet.update("A1", [TASK_COLUMNS])
+        return TASK_COLUMNS.copy()
+
+    updated_header = header.copy()
+
+    for column in TASK_COLUMNS:
+        if column not in updated_header:
+            updated_header.append(column)
+
+    if updated_header != header:
+        worksheet.update("A1", [updated_header])
+
+    return updated_header
+
+
+def _task_field(task, *field_names):
+    for field_name in field_names:
+        value = task.get(field_name)
+
+        if value not in (None, ""):
+            return value
+
+    return ""
+
+
+def _task_to_sheet_row(task):
+    return {
+        "Дата": _task_field(task, "date", "Дата"),
+        "Продавец": _task_field(
+            task,
+            "sellerName",
+            "seller_name",
+            "seller",
+            "Продавец",
+        ),
+        "Артикул WB": _task_field(task, "nmId", "nm_id", "Артикул WB"),
+        "Артикул продавца": _task_field(
+            task,
+            "vendorCode",
+            "vendor_code",
+            "Артикул продавца",
+        ),
+        "Товар": _task_field(task, "title", "productName", "product_name", "Товар"),
+        "Проблема": _task_field(
+            task,
+            "problem",
+            "problemLabel",
+            "problemType",
+            "metric",
+            "Проблема",
+        ),
+        "Приоритет": _task_field(task, "priority", "Приоритет"),
+        "Что сделать": _task_field(
+            task,
+            "action",
+            "recommendation",
+            "Что сделать",
+        ),
+        "Статус": "Новая",
+    }
+
+
+def _get_existing_task_keys(worksheet):
+    records = worksheet.get_all_records()
+
+    return {_task_dedup_key(record) for record in records}
+
+
+def create_tasks(tasks):
+    if not _google_sheets_configured():
+        print(f"Google Sheets not configured for {TASKS_WORKSHEET}, using stub data")
+        _print_stub_tasks(tasks)
+        return
+
+    try:
+        spreadsheet = _get_spreadsheet()
+        worksheet = _get_or_create_tasks_worksheet(spreadsheet)
+        header = _ensure_tasks_header(worksheet)
+        existing_keys = _get_existing_task_keys(worksheet)
+        rows_to_append = []
+        skipped_duplicates = 0
+
+        for task in tasks:
+            sheet_row = _task_to_sheet_row(task)
+            dedup_key = _task_dedup_key(sheet_row)
+
+            if dedup_key in existing_keys:
+                skipped_duplicates += 1
+                continue
+
+            rows_to_append.append([sheet_row.get(column, "") for column in header])
+            existing_keys.add(dedup_key)
+
+        if rows_to_append:
+            worksheet.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+
+        print(
+            f"Google Sheets {TASKS_WORKSHEET} tasks write succeeded: "
+            f"created {len(rows_to_append)}, skipped duplicates {skipped_duplicates}"
+        )
+    except Exception as error:
+        print(f"Google Sheets {TASKS_WORKSHEET} write failed, using stub data")
+        print(f"{error.__class__.__name__}: {error}")
+        _print_stub_tasks(tasks)
