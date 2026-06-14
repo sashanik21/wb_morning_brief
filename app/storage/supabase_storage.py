@@ -473,6 +473,7 @@ def save_funnel_snapshot(rows):
 
 def _normalize_ads_metric_row(row):
     return {
+        "date": _report_date(row),
         "report_date": _report_date(row),
         "seller_id": _to_int(row.get("seller_id")),
         "campaign_id": _to_int(_first_present(row, ["campaign_id", "campaignId"])),
@@ -484,7 +485,8 @@ def _normalize_ads_metric_row(row):
         "cpc": _to_number(row.get("cpc")),
         "cpm": _to_number(row.get("cpm")),
         "spend": _to_number(row.get("spend")) or 0,
-        "orders": _to_int(row.get("orders")) or 0,
+        "orders_count": _to_number(row.get("orders")) or 0,
+        "orders": _to_number(row.get("orders")) or 0,
         "revenue": _to_number(
             _first_present(row, ["revenue", "ordersSum", "orders_sum"])
         )

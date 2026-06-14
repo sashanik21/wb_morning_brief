@@ -120,7 +120,7 @@ def _is_critical_telegram_problem(problem):
 
 
 def _is_priority_telegram_problem(problem):
-    if problem.get("isSuppressed"):
+    if problem.get("isSuppressed") or _is_insufficient_history_problem(problem):
         return False
     action_priority = str(problem.get("actionPriority") or "")
     if action_priority in {"NOW", "TODAY", "THIS_WEEK"}:
@@ -930,7 +930,10 @@ def _build_ads_block(records, summary_stats):
     ads_records = [
         record
         for record in records
-        if isinstance(record, dict) and record.get("problemCategory") == "ads"
+        if isinstance(record, dict)
+        and record.get("problemCategory") == "ads"
+        and not _is_insufficient_history_problem(record)
+        and record.get("problemType") != "NEW_ACTIVITY_DETECTED"
     ]
 
     if not ads_summary and not ads_records:
@@ -1309,7 +1312,10 @@ def _build_executive_ads_block(records, summary_stats):
     ads_records = [
         record
         for record in records
-        if isinstance(record, dict) and record.get("problemCategory") == "ads"
+        if isinstance(record, dict)
+        and record.get("problemCategory") == "ads"
+        and not _is_insufficient_history_problem(record)
+        and record.get("problemType") != "NEW_ACTIVITY_DETECTED"
     ]
 
     if not ads_summary and not ads_records:
@@ -1328,28 +1334,59 @@ def _build_executive_ads_block(records, summary_stats):
         )
 
     first_problem = ads_records[0]
-    reason = html.escape(
-        str(
-            first_problem.get("problemLabel")
-            or first_problem.get("problemType")
-            or "проверить эффективность расходов"
-        )
-    )
     score = ads_summary.get("adsEfficiencyScore")
     temperature = ads_summary.get("auctionTemperature") or first_problem.get(
         "auctionTemperature"
     )
-    executive_bits = []
-    if score not in (None, ""):
-        executive_bits.append(f"score {_format_number(score)}")
-    if temperature:
-        executive_bits.append(f"аукцион {html.escape(str(temperature))}")
-    suffix = f" ({', '.join(executive_bits)})" if executive_bits else ""
-    return (
-        f"📢 <b>Реклама:</b> проблем {_format_number(problem_campaigns)}. "
-        f"Активных кампаний {_format_number(active_campaigns)}. "
-        f"Фокус: {reason}{suffix}"
-    )
+    lines = [
+        f"📢 <b>Реклама</b>: проблем {_format_number(problem_campaigns)}, "
+        f"активных кампаний {_format_number(active_campaigns)}."
+    ]
+    if score not in (None, "") or temperature:
+        bits = []
+        if score not in (None, ""):
+            bits.append(f"score {_format_number(score)}")
+        if temperature:
+            bits.append(f"аукцион {html.escape(str(temperature))}")
+        lines.append("Статус: " + ", ".join(bits) + ".")
+
+    for label, key in (("Лучший SKU", "bestSku"), ("Худший SKU", "worstSku")):
+        sku = ads_summary.get(key) or {}
+        if sku:
+            lines.append(
+                f"{label}: {html.escape(str(sku.get('title') or sku.get('nmId') or '—'))} "
+                f"(CTR {_format_number(sku.get('ctr'))}%, CPC {_format_number(sku.get('cpc'))} ₽, "
+                f"ДРР {_format_number(sku.get('drr'))}%)."
+            )
+
+    overheating = [
+        p for p in ads_records if p.get("problemType") == "AUCTION_OVERHEATING"
+    ]
+    cpc_growth = [p for p in ads_records if p.get("problemType") == "ads_cpc_growth"]
+    ctr_drop = [p for p in ads_records if p.get("problemType") == "ads_ctr_drop"]
+    waste = [
+        p
+        for p in ads_records
+        if p.get("problemType") in {"ads_spend_without_orders", "ads_query_waste"}
+        or p.get("budgetWasteRisk")
+    ]
+    if overheating:
+        lines.append(f"Перегретые кампании: {_format_number(len(overheating))}.")
+    if cpc_growth:
+        lines.append(f"Рост CPC: {_format_product_identity(cpc_growth[0])}.")
+    if ctr_drop:
+        lines.append(f"Падение CTR: {_format_product_identity(ctr_drop[0])}.")
+    if waste:
+        lines.append(
+            f"Waste spend: {_format_number(sum(to_number(p.get('spend')) for p in waste))} ₽."
+        )
+
+    specifics = _format_ads_specifics(first_problem)
+    if specifics:
+        lines.append(specifics)
+    if first_problem.get("problemType") == "AUCTION_OVERHEATING":
+        lines.append("Вывод: аукцион перегрет, повышение ставок не дает роста позиций.")
+    return "\n".join(lines)
 
 
 def _supply_pipeline_from_summary(summary_stats):
@@ -1870,7 +1907,17 @@ def _format_forecast_alert(problem):
 
 
 def _build_forecast_risks_block(records):
-    forecast_records = [record for record in records if _is_predictive_problem(record)]
+    forecast_records = [
+        record
+        for record in records
+        if _is_predictive_problem(record)
+        and not _is_insufficient_history_problem(record)
+        and (
+            _forecast_eta_hours(record) is not None
+            or record.get("daysUntilOOS") not in (None, "")
+            or str(record.get("forecastMessage") or "").strip()
+        )
+    ]
     if not forecast_records:
         return ""
 

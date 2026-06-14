@@ -137,6 +137,7 @@ def _ads_baseline(row, metric):
 def _metric_from_history(row, metric):
     aliases = {
         "avgPosition": ["avg_position", "avgPosition", "avgAdPosition"],
+        "orders": ["orders", "orders_count", "ordersCount"],
         "revenue": ["revenue", "ordersSum", "orders_sum"],
     }
     for key in aliases.get(metric, [metric]):
@@ -177,6 +178,7 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
             )
             if previous not in (None, ""):
                 enriched[_metric_key(metric, "previous")] = previous
+                enriched[f"previous_day_{metric}"] = previous
             avg3 = _average(values[:3])
             avg7 = _average(values[:7])
             if avg3 is not None:
@@ -186,9 +188,13 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
         enriched["bidDelta"] = _dynamic_percent(
             enriched.get("bid"), _previous_value(enriched, "bid")
         )
-        enriched["positionDelta"] = _to_number(
-            enriched.get("avgPosition")
-        ) - _to_number(_previous_value(enriched, "avgPosition"))
+        previous_position = _previous_value(enriched, "avgPosition")
+        if previous_position not in (None, ""):
+            enriched["positionDelta"] = _to_number(
+                enriched.get("avgPosition")
+            ) - _to_number(previous_position)
+        else:
+            enriched["positionDelta"] = ""
         enriched_rows.append(enriched)
     if storage and hasattr(storage, "save_daily_ads_metrics"):
         storage.save_daily_ads_metrics(enriched_rows)
@@ -316,12 +322,18 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "previousOrdersSum": _previous_value(row, "ordersSum"),
         "drr": row.get("drr", 0),
         "previousDrr": _previous_value(row, "drr"),
+        "spendDelta": _dynamic_percent(row.get("spend"), _previous_value(row, "spend"))
+        or "",
+        "ctrDelta": _dynamic_percent(row.get("ctr"), _previous_value(row, "ctr")) or "",
+        "cpcDelta": _dynamic_percent(row.get("cpc"), _previous_value(row, "cpc")) or "",
+        "drrDelta": _dynamic_percent(row.get("drr"), _previous_value(row, "drr")) or "",
         "bid": row.get("bid", 0),
         "previousBid": _previous_value(row, "bid"),
         "bidDelta": row.get("bidDelta")
         or _dynamic_percent(row.get("bid"), _previous_value(row, "bid"))
         or "",
         "avgPosition": row.get("avgPosition") or row.get("avgAdPosition") or 0,
+        "avgAdPosition": row.get("avgPosition") or row.get("avgAdPosition") or 0,
         "previousAvgPosition": _previous_value(row, "avgPosition"),
         "positionDelta": row.get("positionDelta") or "",
         "adsEfficiencyScore": _ads_efficiency_score(row),
@@ -627,6 +639,22 @@ def build_ads_summary(ads_rows, ads_problems):
 
     first_row = next((row for row in ads_rows or [] if isinstance(row, dict)), {})
 
+    best_sku = max(
+        ads_rows or [],
+        key=lambda row: (_to_number(row.get("orders")), -_to_number(row.get("drr"))),
+        default={},
+    )
+    worst_sku = max(
+        ads_rows or [],
+        key=lambda row: (_to_number(row.get("spend")), _to_number(row.get("drr"))),
+        default={},
+    )
+    overheating = [
+        problem
+        for problem in ads_problems or []
+        if problem.get("problemType") == "AUCTION_OVERHEATING"
+    ]
+
     return {
         "activeCampaigns": len(campaign_ids),
         "adsRows": len(ads_rows or []),
@@ -646,6 +674,9 @@ def build_ads_summary(ads_rows, ads_problems):
             [_auction_temperature(row) for row in ads_rows or []] or ["NORMAL"],
             key={"NORMAL": 0, "HOT": 1, "OVERHEATED": 2}.get,
         ),
+        "bestSku": best_sku,
+        "worstSku": worst_sku,
+        "overheatedCampaigns": len(overheating),
     }
 
 
