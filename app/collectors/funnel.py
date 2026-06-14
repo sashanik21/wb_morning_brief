@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.analyzers.severity import calculate_problem_severity
 from app.collectors.cards import get_cards_list
 from app.config import ABC_RULES, HEADERS
 from app.constants.problem_labels import get_problem_label
@@ -51,6 +52,10 @@ PROBLEMS_REPORT_COLUMNS = [
     "baselineType",
     "baselineValue",
     "dynamicPercent",
+    "severity",
+    "severityScore",
+    "lostOrders",
+    "lostOrderSum",
     "recommendation",
     "recentChanges",
 ]
@@ -514,13 +519,18 @@ def _build_problem_row(
     baseline_type="fallback_previous_day",
     baseline_value=None,
 ):
+    abc = _product_abc(record, products_by_nm_id)
+    severity_fields = calculate_problem_severity(
+        rule["metric"], selected_value, past_value, dynamic_percent, abc
+    )
+
     return {
         "sellerName": SELLER_NAME,
         "nmId": _problem_product_value(record, "nmId"),
         "vendorCode": _problem_product_value(record, "vendorCode"),
         "brandName": _problem_product_value(record, "brandName"),
         "title": _problem_product_value(record, "title"),
-        "ABC": _product_abc(record, products_by_nm_id),
+        "ABC": abc,
         "productInCatalog": _product_in_catalog(record, products_by_nm_id),
         "productStatus": _product_status(record, products_by_nm_id),
         "problemType": rule["problem_type"],
@@ -533,6 +543,7 @@ def _build_problem_row(
             past_value if baseline_value is None else baseline_value
         ),
         "dynamicPercent": round(dynamic_percent, 2),
+        **severity_fields,
         "recommendation": _recommendation(
             record, products_by_nm_id, rule["recommendation"]
         ),
@@ -668,6 +679,8 @@ def _build_record_problem_rows(
     wb_stocks = _to_number(_problem_product_value(record, "wbStocks"))
 
     if wb_stocks == 0:
+        abc = _product_abc(record, products_by_nm_id)
+        severity_fields = calculate_problem_severity("wbStocks", 0, "", "", abc)
         record_problem_rows.append(
             {
                 "sellerName": SELLER_NAME,
@@ -675,7 +688,7 @@ def _build_record_problem_rows(
                 "vendorCode": _problem_product_value(record, "vendorCode"),
                 "brandName": _problem_product_value(record, "brandName"),
                 "title": _problem_product_value(record, "title"),
-                "ABC": _product_abc(record, products_by_nm_id),
+                "ABC": abc,
                 "productInCatalog": _product_in_catalog(record, products_by_nm_id),
                 "productStatus": _product_status(record, products_by_nm_id),
                 "problemType": "wbStocks == 0",
@@ -686,6 +699,7 @@ def _build_record_problem_rows(
                 "baselineType": "stock_check",
                 "baselineValue": "",
                 "dynamicPercent": "",
+                **severity_fields,
                 "recommendation": _recommendation(
                     record, products_by_nm_id, STOCK_PROBLEM_RECOMMENDATION
                 ),

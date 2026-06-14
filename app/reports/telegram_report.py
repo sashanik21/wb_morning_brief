@@ -4,6 +4,7 @@ import os
 
 import requests
 
+from app.analyzers.severity import SEVERITY_LABELS, to_number
 from app.constants.problem_labels import get_problem_label
 from app.reports.evidence import (
     EVIDENCE_LIMIT_TELEGRAM,
@@ -181,9 +182,15 @@ def _group_problems_by_product(records):
 
         grouped_products[group_key]["problems"].append(problem)
 
+    for product in grouped_products.values():
+        product["problems"].sort(key=lambda item: -to_number(item.get("severityScore")))
+        product["severityScore"] = to_number(
+            product["problems"][0].get("severityScore") if product["problems"] else 0
+        )
+
     return sorted(
         grouped_products.values(),
-        key=lambda product: (-len(product["problems"]), product["first_index"]),
+        key=lambda product: (-product["severityScore"], product["first_index"]),
     )
 
 
@@ -221,6 +228,30 @@ def _format_problem_line(problem):
         )
 
     return f"— {problem_type}: {problem_value}"
+
+
+def _format_severity(problem):
+    severity = str(problem.get("severity") or "low").lower()
+    emoji = {
+        "critical": "🔴",
+        "high": "🟠",
+        "medium": "🟡",
+        "low": "🟢",
+    }.get(severity, "🟢")
+    label = SEVERITY_LABELS.get(severity, severity.title())
+    return f"{emoji} <b>{html.escape(label)}</b>"
+
+
+def _format_loss(problems):
+    lost_orders = sum(to_number(problem.get("lostOrders")) for problem in problems)
+    lost_order_sum = sum(to_number(problem.get("lostOrderSum")) for problem in problems)
+
+    if not lost_orders and not lost_order_sum:
+        return ""
+
+    orders_text = _format_number(lost_orders)
+    sum_text = _format_number(lost_order_sum)
+    return f"Потеря: <b>{orders_text} заказов / {sum_text} ₽</b>"
 
 
 def _format_recent_changes(problems):
@@ -280,12 +311,19 @@ def _format_product_item(_index, product):
     recommendations = _format_recommendations(problems)
     recent_changes = _format_recent_changes(problems)
 
+    primary_problem = problems[0] if problems else {}
+    loss_line = _format_loss(problems)
+    loss_block = f"\n{loss_line}" if loss_line else ""
+
     return (
+        f"{_format_severity(primary_problem)}\n"
         f"🏷️ <b>{title}</b>\n\n"
         f"Артикул продавца: {vendor_code}\n"
         f"Артикул WB: {nm_id}\n"
         f"ABC: {abc}\n\n"
-        f"Проблем: <b>{len(problems)}</b>\n\n"
+        f"Проблем: <b>{len(problems)}</b>"
+        + loss_block
+        + "\n\n"
         + "\n".join(problem_lines)
         + recent_changes
         + f"\n\n💡 <b>Что проверить:</b>\n{recommendations}"

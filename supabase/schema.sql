@@ -70,7 +70,10 @@ create table if not exists problems (
     dynamic_percent numeric,
     root_cause text,
     root_recommendation text,
+    severity text,
     severity_score numeric,
+    lost_orders numeric,
+    lost_order_sum numeric,
     recommendation text,
     recent_changes text,
     created_at timestamptz default now()

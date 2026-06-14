@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.analyzers.severity import calculate_problem_severity
 from app.seller_config import SELLER_NAME
 
 REPORTS_DIR = Path("reports")
@@ -90,6 +91,10 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
     dynamic_percent = _dynamic_percent(selected_value, past_value)
     label = ADS_PROBLEM_LABELS[problem_type]
 
+    severity_fields = calculate_problem_severity(
+        metric, selected_value, past_value, dynamic_percent, row.get("ABC")
+    )
+
     return {
         "sellerName": row.get("sellerName") or SELLER_NAME,
         "problemCategory": "ads",
@@ -104,6 +109,7 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "selectedValue": selected_value,
         "pastValue": past_value if past_value not in (None, "") else "",
         "dynamicPercent": dynamic_percent if dynamic_percent is not None else "",
+        **severity_fields,
         "ctr": row.get("ctr", 0),
         "cpc": row.get("cpc", 0),
         "cpm": row.get("cpm", 0),
