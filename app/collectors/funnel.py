@@ -552,18 +552,36 @@ def _build_problem_row(
     }
 
 
+HISTORY_METRIC_ALIASES = {
+    "openCount": ["openCount", "open_count"],
+    "cartCount": ["cartCount", "cart_count"],
+    "orderCount": ["orderCount", "order_count"],
+    "orderSum": ["orderSum", "order_sum"],
+    "addToCartPercent": [
+        "addToCartPercent",
+        "add_to_cart_percent",
+        "addToCartConversion",
+        "add_to_cart_conversion",
+    ],
+    "cartToOrderPercent": [
+        "cartToOrderPercent",
+        "cart_to_order_percent",
+        "cartToOrderConversion",
+        "cart_to_order_conversion",
+    ],
+}
+
+HISTORY_BASELINE_METRICS = list(HISTORY_METRIC_ALIASES.keys())
+
+HISTORY_BASELINE_KEYS = {
+    metric: HISTORY_METRIC_ALIASES[metric][1] for metric in HISTORY_BASELINE_METRICS
+}
+
+
 def _history_metric_value(row, metric):
     return _first_present(
         row,
-        [
-            metric,
-            {
-                "openCount": "open_count",
-                "cartCount": "cart_count",
-                "orderCount": "order_count",
-                "orderSum": "order_sum",
-            }.get(metric, metric),
-        ],
+        HISTORY_METRIC_ALIASES.get(metric, [metric]),
         default=None,
     )
 
@@ -582,51 +600,55 @@ def _average_history_metric(history_rows, metric):
 
 
 def _history_baselines(history_rows):
-    metrics = ["openCount", "cartCount", "orderCount", "orderSum"]
-    history_3d = (history_rows or [])[:3]
-    history_7d = (history_rows or [])[:7]
-    baselines = {"rowsLoaded": len(history_rows or [])}
+    history_rows = history_rows or []
+    history_3d = history_rows[:3]
+    history_7d = history_rows[:7]
+    rows_loaded = len(history_rows)
+    baselines = {
+        "rowsLoaded": rows_loaded,
+        "baselineType": _baseline_type_for_rows_loaded(rows_loaded),
+    }
 
-    for metric in metrics:
-        snake_metric = {
-            "openCount": "open_count",
-            "cartCount": "cart_count",
-            "orderCount": "order_count",
-            "orderSum": "order_sum",
-        }[metric]
-        baselines[f"avg_{snake_metric}_3d"] = _average_history_metric(
+    for metric in HISTORY_BASELINE_METRICS:
+        baseline_key = HISTORY_BASELINE_KEYS[metric]
+        baselines[f"avg_{baseline_key}_3d"] = _average_history_metric(
             history_3d, metric
         )
-        baselines[f"avg_{snake_metric}_7d"] = _average_history_metric(
+        baselines[f"avg_{baseline_key}_7d"] = _average_history_metric(
             history_7d, metric
         )
 
     return baselines
 
 
+def _baseline_type_for_rows_loaded(rows_loaded):
+    if rows_loaded >= 7:
+        return "avg_7d"
+
+    if rows_loaded >= 3:
+        return "avg_3d"
+
+    return "fallback_previous_day"
+
+
 def _metric_baseline(record, rule, history_baselines=None):
     metric = rule["metric"]
+    selected_value = _first_present(
+        record, _metric_paths("selected", metric), default=""
+    )
+    rows_loaded = (history_baselines or {}).get("rowsLoaded", 0)
 
-    if metric in {"openCount", "cartCount", "orderCount", "orderSum"}:
-        snake_metric = {
-            "openCount": "open_count",
-            "cartCount": "cart_count",
-            "orderCount": "order_count",
-            "orderSum": "order_sum",
-        }[metric]
-        baseline_value = (history_baselines or {}).get(f"avg_{snake_metric}_3d")
+    if metric in HISTORY_BASELINE_KEYS and rows_loaded >= 3:
+        baseline_type = _baseline_type_for_rows_loaded(rows_loaded)
+        baseline_days = "7d" if baseline_type == "avg_7d" else "3d"
+        baseline_key = HISTORY_BASELINE_KEYS[metric]
+        baseline_value = (history_baselines or {}).get(
+            f"avg_{baseline_key}_{baseline_days}"
+        )
+        dynamic_percent = _calculate_dynamic_percent(selected_value, baseline_value)
+        return selected_value, baseline_value, dynamic_percent, baseline_type
 
-        if (
-            baseline_value is not None
-            and (history_baselines or {}).get("rowsLoaded", 0) >= 3
-        ):
-            selected_value = _first_present(
-                record, _metric_paths("selected", metric), default=""
-            )
-            dynamic_percent = _calculate_dynamic_percent(selected_value, baseline_value)
-            return selected_value, baseline_value, dynamic_percent, "avg_3d"
-
-    selected_value, past_value, dynamic_percent = _metric_dynamic_percent(record, rule)
+    _, past_value, dynamic_percent = _metric_dynamic_percent(record, rule)
     return selected_value, past_value, dynamic_percent, "fallback_previous_day"
 
 
@@ -852,7 +874,11 @@ def _load_history_baselines(seller_id, records):
 
     baselines_by_nm_id = {}
     total_rows_loaded = 0
-    baseline_modes = set()
+    baseline_type_counts = {
+        "avg_7d": 0,
+        "avg_3d": 0,
+        "fallback_previous_day": 0,
+    }
 
     for record in records:
         nm_id = _normalize_nm_id(_problem_product_value(record, "nmId"))
@@ -864,19 +890,15 @@ def _load_history_baselines(seller_id, records):
         baselines = _history_baselines(history_rows)
         baselines_by_nm_id[nm_id] = baselines
         total_rows_loaded += baselines["rowsLoaded"]
-        baseline_modes.add(
-            "avg_3d" if baselines["rowsLoaded"] >= 3 else "fallback_previous_day"
-        )
+        baseline_type_counts[baselines["baselineType"]] += 1
 
     print("HISTORICAL ANALYTICS:")
     print(f"history rows loaded: {total_rows_loaded}")
+    print(f"baseline avg_7d SKU: {baseline_type_counts['avg_7d']}")
+    print(f"baseline avg_3d SKU: {baseline_type_counts['avg_3d']}")
     print(
-        "baseline mode: "
-        + (
-            " / ".join(sorted(baseline_modes))
-            if baseline_modes
-            else "fallback_previous_day"
-        )
+        "baseline fallback_previous_day SKU: "
+        f"{baseline_type_counts['fallback_previous_day']}"
     )
 
     return baselines_by_nm_id
