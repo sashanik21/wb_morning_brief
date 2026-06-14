@@ -68,8 +68,18 @@ def build_tasks_from_problems(problems):
     tasks = []
 
     for problem in problems:
+        if problem.get("isSuppressed") or problem.get("actionPriority") == "IGNORE":
+            continue
+
         problem_type = problem.get("problemType", "")
         problem_label = problem.get("problemLabel") or problem_type
+        action_priority = problem.get("actionPriority")
+        task_priority = {
+            "NOW": "high",
+            "TODAY": "high",
+            "THIS_WEEK": "medium",
+            "MONITOR": "low",
+        }.get(action_priority)
         tasks.append(
             {
                 "date": current_date,
@@ -82,7 +92,8 @@ def build_tasks_from_problems(problems):
                 "priority": (
                     "low"
                     if problem.get("isBelowAbcThreshold")
-                    else task_priority_from_severity(problem.get("severity"))
+                    else task_priority
+                    or task_priority_from_severity(problem.get("severity"))
                     or _get_task_priority(problem_type)
                 ),
                 "action": problem.get("recommendation", ""),
