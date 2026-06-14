@@ -264,6 +264,16 @@ def _normalize_funnel_row(row):
         ),
         "wb_stocks": _to_int(_first_present(row, ["wb_stocks", "wbStocks"])),
         "mp_stocks": _to_int(_first_present(row, ["mp_stocks", "mpStocks"])),
+        "real_sellable_stock": _to_int(
+            _first_present(row, ["real_sellable_stock", "realSellableStock"])
+        ),
+        "incoming_stock": _to_int(
+            _first_present(row, ["incoming_stock", "incomingStock"])
+        ),
+        "returning_stock": _to_int(
+            _first_present(row, ["returning_stock", "returningStock"])
+        ),
+        "stock_state": _first_present(row, ["stock_state", "stockState"]),
         "raw_json": row,
     }
 
@@ -333,6 +343,16 @@ def _normalize_problem(problem):
         ),
         "recommendation": problem.get("recommendation"),
         "recent_changes": _first_present(problem, ["recent_changes", "recentChanges"]),
+        "real_sellable_stock": _to_int(
+            _first_present(problem, ["real_sellable_stock", "realSellableStock"])
+        ),
+        "incoming_stock": _to_int(
+            _first_present(problem, ["incoming_stock", "incomingStock"])
+        ),
+        "returning_stock": _to_int(
+            _first_present(problem, ["returning_stock", "returningStock"])
+        ),
+        "stock_state": _first_present(problem, ["stock_state", "stockState"]),
     }
 
 

@@ -49,7 +49,7 @@ def calculate_problem_severity(
         base += lost_orders * 5
     elif metric == "orderSum":
         base += lost_order_sum / 1000
-    elif metric == "wbStocks":
+    elif metric in {"wbStocks", "realSellableStock"}:
         base += 50
 
     abc_multiplier = {

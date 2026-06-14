@@ -4,6 +4,13 @@ from pathlib import Path
 import pandas as pd
 
 from app.analyzers.severity import calculate_problem_severity, downgrade_severity
+from app.analyzers.stock_states import (
+    TEMPORARILY_UNAVAILABLE_LABEL,
+    TEMPORARILY_UNAVAILABLE_REASON,
+    enrich_stock_metrics,
+    has_wb_logistics_stock,
+    stock_root_cause,
+)
 from app.collectors.cards import get_cards_list
 from app.config import ABC_RULES, HEADERS
 from app.constants.problem_labels import get_problem_label
@@ -33,6 +40,13 @@ FUNNEL_REPORT_COLUMNS = [
     "localizationPercent",
     "wbStocks",
     "mpStocks",
+    "realSellableStock",
+    "incomingStock",
+    "returningStock",
+    "readyForSaleStock",
+    "acceptanceStock",
+    "transitStock",
+    "stockState",
 ]
 
 PROBLEMS_REPORT_COLUMNS = [
@@ -59,6 +73,13 @@ PROBLEMS_REPORT_COLUMNS = [
     "lostOrderSum",
     "recommendation",
     "recentChanges",
+    "realSellableStock",
+    "incomingStock",
+    "returningStock",
+    "readyForSaleStock",
+    "acceptanceStock",
+    "transitStock",
+    "stockState",
 ]
 PROBLEM_RULES = [
     {
@@ -341,6 +362,33 @@ def _problem_product_value(record, key):
         "orderCount": _metric_paths("selected", "orderCount") + ["orderCount"],
         "orderSum": _metric_paths("selected", "orderSum") + ["orderSum"],
         "wbStocks": ["product.stocks.wb", "stocks.wb", "wbStocks"],
+        "realSellableStock": [
+            "realSellableStock",
+            "product.stocks.realSellable",
+            "stocks.realSellable",
+        ],
+        "incomingStock": [
+            "incomingStock",
+            "product.stocks.incoming",
+            "stocks.incoming",
+        ],
+        "returningStock": [
+            "returningStock",
+            "product.stocks.returning",
+            "stocks.returning",
+        ],
+        "readyForSaleStock": [
+            "readyForSaleStock",
+            "product.stocks.readyForSale",
+            "stocks.readyForSale",
+        ],
+        "acceptanceStock": [
+            "acceptanceStock",
+            "product.stocks.acceptance",
+            "stocks.acceptance",
+        ],
+        "transitStock": ["transitStock", "product.stocks.transit", "stocks.transit"],
+        "stockState": ["stockState", "product.stocks.state", "stocks.state"],
     }
 
     return _first_present(record, paths[key], default="")
@@ -683,7 +731,11 @@ def _apply_abc_priority(problem_rows, is_below_abc_threshold):
 
 
 def _build_record_problem_rows(
-    record, products_by_nm_id, recent_changes="", history_baselines=None
+    record,
+    products_by_nm_id,
+    recent_changes="",
+    history_baselines=None,
+    supply_stock_metrics=None,
 ):
     record_problem_rows = []
 
@@ -710,10 +762,38 @@ def _build_record_problem_rows(
         )
 
     wb_stocks = _to_number(_problem_product_value(record, "wbStocks"))
+    stock_metrics = enrich_stock_metrics(
+        {
+            key: _problem_product_value(record, key)
+            for key in (
+                "wbStocks",
+                "realSellableStock",
+                "incomingStock",
+                "returningStock",
+                "readyForSaleStock",
+                "acceptanceStock",
+                "transitStock",
+                "stockState",
+            )
+        },
+        supply_stock_metrics,
+    )
+    real_sellable_stock = _to_number(stock_metrics.get("realSellableStock"))
 
-    if wb_stocks == 0:
+    if real_sellable_stock == 0:
         abc = _product_abc(record, products_by_nm_id)
-        severity_fields = calculate_problem_severity("wbStocks", 0, "", "", abc)
+        metric_name = "realSellableStock"
+        selected_stock_value = _format_problem_number(real_sellable_stock)
+        is_logistics_gap = wb_stocks == 0 and has_wb_logistics_stock(stock_metrics)
+        problem_type = "sellableOutOfStock"
+        problem_label = get_problem_label(metric_name)
+        recommendation = STOCK_PROBLEM_RECOMMENDATION
+        severity_fields = calculate_problem_severity(metric_name, 0, "", "", abc)
+        if is_logistics_gap:
+            problem_type = stock_metrics.get("stockRiskType") or "acceptanceDelay"
+            problem_label = TEMPORARILY_UNAVAILABLE_LABEL
+            recommendation = TEMPORARILY_UNAVAILABLE_REASON
+            severity_fields["severity"] = "medium"
         record_problem_rows.append(
             {
                 "sellerName": SELLER_NAME,
@@ -724,19 +804,21 @@ def _build_record_problem_rows(
                 "ABC": abc,
                 "productInCatalog": _product_in_catalog(record, products_by_nm_id),
                 "productStatus": _product_status(record, products_by_nm_id),
-                "problemType": "wbStocks == 0",
-                "metric": "wbStocks",
-                "problemLabel": get_problem_label("wbStocks"),
-                "selectedValue": 0,
+                "problemType": problem_type,
+                "metric": metric_name,
+                "problemLabel": problem_label,
+                "selectedValue": selected_stock_value,
                 "pastValue": "",
                 "baselineType": "stock_check",
                 "baselineValue": "",
                 "dynamicPercent": "",
                 **severity_fields,
                 "recommendation": _recommendation(
-                    record, products_by_nm_id, STOCK_PROBLEM_RECOMMENDATION
+                    record, products_by_nm_id, recommendation
                 ),
                 "recentChanges": recent_changes,
+                "rootCause": stock_root_cause(stock_metrics),
+                **stock_metrics,
             }
         )
 
@@ -904,7 +986,9 @@ def _load_history_baselines(seller_id, records):
     return baselines_by_nm_id
 
 
-def analyze_funnel_problems(funnel_data, seller_id=None):
+def analyze_funnel_problems(
+    funnel_data, seller_id=None, supply_stock_metrics_by_nm_id=None
+):
     problem_rows = []
     below_threshold_problem_count = 0
     products_by_nm_id = _build_products_by_nm_id()
@@ -921,6 +1005,7 @@ def analyze_funnel_problems(funnel_data, seller_id=None):
             products_by_nm_id,
             recent_changes,
             history_baselines_by_nm_id.get(nm_id),
+            (supply_stock_metrics_by_nm_id or {}).get(nm_id),
         )
 
         if not record_problem_rows:
@@ -1067,6 +1152,27 @@ def flatten_sales_funnel_data(funnel_data):
                 ),
                 "wbStocks": _first_present(record, ["product.stocks.wb", "stocks.wb"]),
                 "mpStocks": _first_present(record, ["product.stocks.mp", "stocks.mp"]),
+                "realSellableStock": _first_present(
+                    record, ["realSellableStock", "product.stocks.realSellable"]
+                ),
+                "incomingStock": _first_present(
+                    record, ["incomingStock", "product.stocks.incoming"]
+                ),
+                "returningStock": _first_present(
+                    record, ["returningStock", "product.stocks.returning"]
+                ),
+                "readyForSaleStock": _first_present(
+                    record, ["readyForSaleStock", "product.stocks.readyForSale"]
+                ),
+                "acceptanceStock": _first_present(
+                    record, ["acceptanceStock", "product.stocks.acceptance"]
+                ),
+                "transitStock": _first_present(
+                    record, ["transitStock", "product.stocks.transit"]
+                ),
+                "stockState": _first_present(
+                    record, ["stockState", "product.stocks.state"]
+                ),
             }
         )
 
@@ -1090,12 +1196,18 @@ def _adjust_worksheet_layout(worksheet, dataframe):
         ].width = adjusted_width
 
 
-def save_funnel_problems_report(funnel_data, seller_id=None):
+def save_funnel_problems_report(
+    funnel_data, seller_id=None, supply_stock_metrics_by_nm_id=None
+):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     report_date = datetime.now().date().strftime("%Y_%m_%d")
     report_path = REPORTS_DIR / f"problems_{report_date}.xlsx"
-    dataframe = analyze_funnel_problems(funnel_data, seller_id=seller_id)
+    dataframe = analyze_funnel_problems(
+        funnel_data,
+        seller_id=seller_id,
+        supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
+    )
 
     _print_problems_summary(dataframe)
 

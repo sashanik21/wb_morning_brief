@@ -18,6 +18,7 @@ from app.collectors.funnel import (
     save_funnel_problems_report,
     save_sales_funnel_report,
 )
+from app.collectors.supplies import collect_supply_stock_metrics
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
 from app.storage.storage_factory import get_storage
@@ -195,6 +196,8 @@ def main():
     print("=" * 50)
 
     stocks_problems = []
+    supply_stock_metrics_by_nm_id = collect_supply_stock_metrics()
+    print(f"SUPPLIES STOCK METRICS: {len(supply_stock_metrics_by_nm_id)} SKU")
 
     report_path = save_sales_funnel_report(data)
     print(f"XLSX отчёт: {report_path}")
@@ -205,7 +208,11 @@ def main():
     print("=" * 50)
 
     # TODO: switch problems XLSX generation to all_problems after ads/stocks problems are enabled
-    problems_report_path = save_funnel_problems_report(data, seller_id=seller_id)
+    problems_report_path = save_funnel_problems_report(
+        data,
+        seller_id=seller_id,
+        supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
+    )
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
     print("=" * 50)
 

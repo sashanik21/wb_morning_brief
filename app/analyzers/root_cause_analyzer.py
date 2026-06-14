@@ -145,7 +145,7 @@ ADS_ROOT_CAUSE_RULE = {
 ROOT_CAUSE_RULES = [
     {
         "zone": "Остатки WB",
-        "reason": "На WB остаток равен нулю",
+        "reason": "Товар отсутствует в sellable stock",
         "checks": [
             "поставку",
             "распределение по складам",
@@ -374,7 +374,7 @@ def _main_ads_problem(product_problems):
 
 def _wb_stock_is_zero(product_problems, funnel_record):
     for problem in product_problems:
-        if _problem_metric(problem) != "wbStocks":
+        if _problem_metric(problem) not in {"wbStocks", "realSellableStock"}:
             continue
 
         selected_value = _to_number(problem.get("selectedValue"))
@@ -387,7 +387,15 @@ def _wb_stock_is_zero(product_problems, funnel_record):
 
     stock_value = _to_number(
         _first_present(
-            funnel_record, ["product.stocks.wb", "stocks.wb", "wbStocks"], default=None
+            funnel_record,
+            [
+                "realSellableStock",
+                "product.stocks.realSellable",
+                "product.stocks.wb",
+                "stocks.wb",
+                "wbStocks",
+            ],
+            default=None,
         )
     )
 
@@ -468,9 +476,9 @@ def analyze_root_causes(problems, funnel_rows):
                 _build_insight(
                     product,
                     rule["zone"],
-                    rule["reason"],
+                    product_problems[0].get("rootCause") or rule["reason"],
                     rule["checks"],
-                    _main_problem(product_problems, "wbStocks"),
+                    _main_problem(product_problems, "realSellableStock"),
                 )
             )
         elif order_count_falls and open_count_falls:
