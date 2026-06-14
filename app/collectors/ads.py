@@ -200,17 +200,31 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date):
 
     for row in current_rows:
         row["date"] = current_date
+        row["selectedPeriod"] = current_date
+        row["pastPeriod"] = previous_date
 
     return _merge_previous_period(current_rows, previous_rows)
 
 
 def collect_ads_stats(report_date=None):
-    report_date = report_date or datetime.now().date()
-    token = os.getenv("WB_ADS_API_TOKEN") or os.getenv("WB_API_TOKEN_TEST")
+    report_date = report_date or (datetime.now().date() - timedelta(days=1))
+    ads_token = os.getenv("WB_ADS_API_TOKEN")
+    fallback_token = os.getenv("WB_API_TOKEN_TEST")
+    token = ads_token or fallback_token
     campaign_ids = _parse_campaign_ids(os.getenv("WB_ADS_CAMPAIGN_IDS"))
 
-    if not token or not campaign_ids:
-        print("Ads collector пока работает в stub mode")
+    if not ads_token and fallback_token:
+        print("ADS TOKEN: fallback WB_API_TOKEN_TEST")
+
+    if not campaign_ids:
+        print("ADS CAMPAIGN IDS: not configured")
+        print("Ads collector работает в stub mode")
+        print("Ads rows: 0")
+        return []
+
+    if not token:
+        print("ADS TOKEN: not configured")
+        print("Ads collector работает в stub mode")
         print("Ads rows: 0")
         return []
 

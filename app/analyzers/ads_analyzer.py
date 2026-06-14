@@ -320,10 +320,17 @@ def build_ads_summary(ads_rows, ads_problems):
         if problem.get("campaignId") not in (None, "")
     }
 
+    first_row = next((row for row in ads_rows or [] if isinstance(row, dict)), {})
+
     return {
         "activeCampaigns": len(campaign_ids),
+        "adsRows": len(ads_rows or []),
         "problemCampaigns": len(problem_campaign_ids),
         "problems": len(ads_problems or []),
+        "selectedPeriod": first_row.get("selectedPeriod")
+        or first_row.get("date")
+        or "",
+        "pastPeriod": first_row.get("pastPeriod") or "",
     }
 
 
