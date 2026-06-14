@@ -5,6 +5,7 @@ from app.analyzers.ads_analyzer import (
     build_ads_summary,
     save_ads_report,
 )
+from app.analyzers.forecast_engine import build_predictive_forecasts
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 from app.analyzers.tasks_builder import build_tasks_from_problems
@@ -246,6 +247,11 @@ def main():
     print(f"XLSX отчёт: {report_path}")
     print("=" * 50)
 
+    predictive_forecasts = build_predictive_forecasts(
+        funnel_rows, ads_rows=ads_data, storage=storage, seller_id=seller_id
+    )
+    print(f"PREDICTIVE FORECASTS: {len(predictive_forecasts)}")
+
     ads_report_path = save_ads_report(ads_data, ads_problems)
     print(f"XLSX отчёт по рекламе: {ads_report_path}")
     print("=" * 50)
@@ -256,6 +262,7 @@ def main():
         seller_id=seller_id,
         supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
         ads_rows=ads_data,
+        predictive_forecasts=predictive_forecasts,
     )
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
     print("=" * 50)

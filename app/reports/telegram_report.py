@@ -1521,6 +1521,72 @@ def _build_first_checks_block(priority_records, root_cause_insights):
     )
 
 
+def _is_predictive_problem(problem):
+    return problem.get("forecastType") or str(
+        problem.get("problemType") or ""
+    ).endswith("_FORECAST")
+
+
+def _format_forecast_alert(problem):
+    nm_id = html.escape(str(problem.get("nmId") or problem.get("nm_id") or "n/a"))
+    forecast_type = str(problem.get("forecastType") or "").upper()
+    message = str(problem.get("forecastMessage") or "").strip()
+
+    if message:
+        message = message.replace("⚠️ ", "")
+        if "nmID" in message or "SKU" in message:
+            return f"- {html.escape(message)}"
+
+    if forecast_type == "OOS" or problem.get("daysUntilOOS") not in (None, ""):
+        days = _format_number(problem.get("daysUntilOOS"))
+        return f"- nmID {nm_id} → OOS через ~{days} дня"
+    if forecast_type == "ADS":
+        return f"- nmID {nm_id} → риск роста ДРР"
+    if forecast_type == "ORGANIC":
+        return f"- nmID {nm_id} → риск падения органики"
+    return f"- nmID {nm_id} → прогнозный риск"
+
+
+def _build_forecast_risks_block(records):
+    forecast_records = [record for record in records if _is_predictive_problem(record)]
+    if not forecast_records:
+        return ""
+
+    forecast_records = sorted(
+        forecast_records,
+        key=lambda item: (
+            item.get("daysUntilOOS") in (None, ""),
+            to_number(item.get("daysUntilOOS")) or 999,
+        ),
+    )
+    lines = [
+        _format_forecast_alert(record)
+        for record in forecast_records[:TELEGRAM_TOP_LIMIT]
+    ]
+    return "🔮 <b>Прогноз рисков:</b>\n" + "\n".join(lines)
+
+
+def _build_stock_eta_block(records):
+    stock_forecasts = [
+        record
+        for record in records
+        if record.get("daysUntilOOS") not in (None, "")
+        or str(record.get("forecastType") or "").upper() == "OOS"
+    ]
+    if not stock_forecasts:
+        return ""
+
+    stock_forecasts = sorted(
+        stock_forecasts, key=lambda item: to_number(item.get("daysUntilOOS")) or 999
+    )
+    lines = []
+    for record in stock_forecasts[:TELEGRAM_TOP_LIMIT]:
+        nm_id = html.escape(str(record.get("nmId") or record.get("nm_id") or "n/a"))
+        days = _format_number(record.get("daysUntilOOS"))
+        lines.append(f"- nmID {nm_id} → ~{days} дня")
+    return "📦 <b>Прогноз остатков:</b>\n" + "\n".join(lines)
+
+
 def _trim_telegram_message(text, max_length=3500):
     if len(text) <= max_length:
         return text
@@ -1658,6 +1724,8 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         _build_executive_store_dynamics(summary_stats),
         f"🚨 <b>Приоритетных SKU:</b> {_format_number(priority_sku_count)}",
         _build_low_priority_signals_block(records),
+        _build_forecast_risks_block(records),
+        _build_stock_eta_block(records),
     ]
 
     if not priority_records:
