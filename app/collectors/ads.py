@@ -3,17 +3,33 @@ from datetime import datetime, timedelta
 
 import requests
 
+ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
 ADS_TIMEOUT_SECONDS = 60
 ADS_CAMPAIGN_BATCH_SIZE = 50
 
 
-def _parse_campaign_ids(raw_value):
-    return [
-        campaign_id.strip()
-        for campaign_id in str(raw_value or "").split(",")
-        if campaign_id.strip()
-    ]
+def _extract_campaign_ids(payload):
+    campaign_ids = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in ("advertId", "campaignId", "id") and item not in (None, ""):
+                    campaign_ids.append(str(item))
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+
+    return list(dict.fromkeys(campaign_ids))
+
+
+def _is_stub_status(status_code):
+    return status_code in (401, 403, 429)
 
 
 def _chunked(items, size):
@@ -47,6 +63,28 @@ def _safe_ratio(numerator, denominator):
         return 0
 
     return round(_to_number(numerator) / denominator, 2)
+
+
+def _request_ads_campaign_ids(token):
+    response = requests.get(
+        ADS_PROMOTION_COUNT_URL,
+        headers={"Authorization": token},
+        timeout=ADS_TIMEOUT_SECONDS,
+    )
+
+    if response.status_code != 200:
+        print("WB Ads campaigns API error")
+        print("STATUS:", response.status_code)
+        print("TEXT:", response.text)
+        return None, response.status_code
+
+    try:
+        payload = response.json()
+    except ValueError:
+        print("WB Ads campaigns API returned invalid JSON")
+        return None, response.status_code
+
+    return _extract_campaign_ids(payload), response.status_code
 
 
 def _request_ads_fullstats(token, campaign_ids, begin_date, end_date):
@@ -211,19 +249,30 @@ def collect_ads_stats(report_date=None):
     ads_token = os.getenv("WB_ADS_API_TOKEN")
     fallback_token = os.getenv("WB_API_TOKEN_TEST")
     token = ads_token or fallback_token
-    campaign_ids = _parse_campaign_ids(os.getenv("WB_ADS_CAMPAIGN_IDS"))
+    token_source = "WB_ADS_API_TOKEN" if ads_token else "WB_API_TOKEN_TEST"
 
-    if not ads_token and fallback_token:
-        print("ADS TOKEN: fallback WB_API_TOKEN_TEST")
-
-    if not campaign_ids:
-        print("ADS CAMPAIGN IDS: not configured")
+    if token:
+        print(f"ADS TOKEN SOURCE: {token_source}")
+    else:
+        print("ADS TOKEN: not configured")
         print("Ads collector работает в stub mode")
         print("Ads rows: 0")
         return []
 
-    if not token:
-        print("ADS TOKEN: not configured")
+    campaign_ids, campaign_status = _request_ads_campaign_ids(token)
+
+    if campaign_ids is None:
+        if _is_stub_status(campaign_status):
+            print("Ads collector работает в stub mode")
+        else:
+            print("Ads collector fallback to stub mode")
+        print("Ads rows: 0")
+        return []
+
+    print("ADS CAMPAIGN IDS SOURCE: api")
+    print(f"ADS CAMPAIGNS FOUND: {len(campaign_ids)}")
+
+    if not campaign_ids:
         print("Ads collector работает в stub mode")
         print("Ads rows: 0")
         return []
