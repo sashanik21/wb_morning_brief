@@ -114,14 +114,19 @@ def _log_supplies_failure(reason):
 
 def collect_supply_stock_metrics(limit=1000):
     client = WBClient(HEADERS)
+    payload = {"dates": [], "statusIDs": [1, 2, 3, 4, 5, 6]}
     try:
-        supplies_payload = client.request("GET", f"{SUPPLIES_URL}?limit={limit}")
+        supplies_payload = client.request("POST", SUPPLIES_URL, json_data=payload)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as error:
         _log_supplies_failure(str(error))
+        print("SUPPLIES STOCK METRICS: 0 SKU")
         return {}
 
     if supplies_payload is None:
-        _log_supplies_failure("supplies list request returned no data")
+        _log_supplies_failure(
+            "supplies list request returned no data or unavailable status"
+        )
+        print("SUPPLIES STOCK METRICS: 0 SKU")
         return {}
 
     supplies = _records(supplies_payload)
@@ -178,4 +183,5 @@ def collect_supply_stock_metrics(limit=1000):
     print("SUPPLIES API:")
     print(f"supplies loaded: {len(supplies)}")
     print(f"stock metrics loaded: {len(metrics)}")
+    print(f"SUPPLIES STOCK METRICS: {len(metrics)} SKU")
     return metrics

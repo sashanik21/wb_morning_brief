@@ -284,15 +284,27 @@ def _format_loss(problems):
     return f"Потеря: <b>{orders_text} заказов / {sum_text} ₽</b>"
 
 
+def _loss_value(problem, primary_key, fallback_key):
+    value = problem.get(primary_key)
+    if not _is_present(value):
+        value = problem.get(fallback_key)
+    if not _is_present(value):
+        return None
+    return to_number(value)
+
+
 def _problem_lost_orders(problem):
-    return to_number(
-        problem.get("potentialOrdersLoss", problem.get("lostOrders")),
-    )
+    return _loss_value(problem, "potentialOrdersLoss", "lostOrders") or 0
 
 
 def _problem_lost_revenue(problem):
-    return to_number(
-        problem.get("potentialRevenueLoss", problem.get("lostOrderSum")),
+    return _loss_value(problem, "potentialRevenueLoss", "lostOrderSum") or 0
+
+
+def _has_problem_loss(problem):
+    return (
+        _loss_value(problem, "potentialRevenueLoss", "lostOrderSum") is not None
+        or _loss_value(problem, "potentialOrdersLoss", "lostOrders") is not None
     )
 
 
@@ -386,10 +398,17 @@ def _format_funnel_specifics(problem):
 
 
 def _format_business_impact(problem):
-    return (
-        f"~{_format_number(_problem_lost_revenue(problem))} ₽ потери выручки\n"
-        f"~{_format_number(_problem_lost_orders(problem))} потерянных заказов"
-    )
+    if not _has_problem_loss(problem):
+        return "потери не рассчитаны"
+
+    lines = []
+    revenue = _loss_value(problem, "potentialRevenueLoss", "lostOrderSum")
+    orders = _loss_value(problem, "potentialOrdersLoss", "lostOrders")
+    if revenue is not None:
+        lines.append(f"~{_format_number(revenue)} ₽ потери выручки")
+    if orders is not None:
+        lines.append(f"~{_format_number(orders)} потерянных заказов")
+    return "\n".join(lines) or "потери не рассчитаны"
 
 
 def _format_recent_changes(problems):
@@ -956,14 +975,20 @@ def _build_executive_stocks_block(records):
         str(top_record.get("recommendation") or "проверить наличие и поставку")
     )
 
+    logistics_text = "📦 Логистика WB: данные поставок недоступны"
+    if any(pipeline.values()):
+        logistics_text = (
+            "📦 Логистика WB: "
+            f"{_format_number(pipeline['acceptance'])} шт в приемке, "
+            f"{_format_number(pipeline['returning'])} шт едут возвратами, "
+            f"{_format_number(pipeline['ready'])} шт готовы к продаже"
+        )
+
     return (
         "📦 <b>Остатки:</b> "
         f"критичных SKU {_format_number(len(stock_records))}. "
         f"Фокус: {title} — {recommendation}"
-        f"\n📦 Логистика WB: "
-        f"{_format_number(pipeline['acceptance'])} шт в приемке, "
-        f"{_format_number(pipeline['returning'])} шт едут возвратами, "
-        f"{_format_number(pipeline['ready'])} шт готовы к продаже"
+        f"\n{logistics_text}"
     )
 
 
@@ -1074,8 +1099,15 @@ def _build_risk_zones_block(priority_records, root_cause_insights):
 
 
 def _build_daily_losses_block(priority_records):
-    lost_revenue = sum(_problem_lost_revenue(record) for record in priority_records)
-    lost_orders = sum(_problem_lost_orders(record) for record in priority_records)
+    records_with_loss = [
+        record for record in priority_records if _has_problem_loss(record)
+    ]
+
+    if not records_with_loss:
+        return "💸 <b>Потери за день:</b>\n" "недостаточно данных для точного расчёта"
+
+    lost_revenue = sum(_problem_lost_revenue(record) for record in records_with_loss)
+    lost_orders = sum(_problem_lost_orders(record) for record in records_with_loss)
 
     return (
         "💸 <b>Потери за день:</b>\n"

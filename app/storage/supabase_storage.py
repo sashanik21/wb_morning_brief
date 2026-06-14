@@ -273,6 +273,15 @@ def _normalize_funnel_row(row):
         "returning_stock": _to_int(
             _first_present(row, ["returning_stock", "returningStock"])
         ),
+        "ready_for_sale_stock": _to_int(
+            _first_present(row, ["ready_for_sale_stock", "readyForSaleStock"])
+        ),
+        "acceptance_stock": _to_int(
+            _first_present(row, ["acceptance_stock", "acceptanceStock"])
+        ),
+        "transit_stock": _to_int(
+            _first_present(row, ["transit_stock", "transitStock"])
+        ),
         "stock_state": _first_present(row, ["stock_state", "stockState"]),
         "raw_json": row,
     }
@@ -351,6 +360,15 @@ def _normalize_problem(problem):
         ),
         "returning_stock": _to_int(
             _first_present(problem, ["returning_stock", "returningStock"])
+        ),
+        "ready_for_sale_stock": _to_int(
+            _first_present(problem, ["ready_for_sale_stock", "readyForSaleStock"])
+        ),
+        "acceptance_stock": _to_int(
+            _first_present(problem, ["acceptance_stock", "acceptanceStock"])
+        ),
+        "transit_stock": _to_int(
+            _first_present(problem, ["transit_stock", "transitStock"])
         ),
         "stock_state": _first_present(problem, ["stock_state", "stockState"]),
     }
