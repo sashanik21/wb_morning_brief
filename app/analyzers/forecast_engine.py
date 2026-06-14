@@ -4,7 +4,7 @@ import pandas as pd
 
 from app.seller_config import SELLER_NAME
 
-FORECAST_ALERT_LIMIT = 5
+FORECAST_ALERT_LIMIT = 3
 
 
 def _to_number(value, default=None):
@@ -39,6 +39,37 @@ def _forecast_confidence(history_count):
     if history_count >= 3:
         return "MEDIUM"
     return "LOW"
+
+
+def _confidence_reason(confidence, history_count, baseline_type=None):
+    if confidence != "LOW":
+        return confidence
+    if baseline_type in {"previous_day", "prev_day"}:
+        return "LOW — baseline только по previous day"
+    if history_count < 7:
+        return "LOW — <7 дней истории"
+    return "LOW — недостаточно заказов"
+
+
+def _forecast_eta_hours(days_until_oos):
+    value = _to_number(days_until_oos)
+    if value is None:
+        return None
+    return round(value * 24, 1)
+
+
+def _format_eta(days_until_oos):
+    hours = _forecast_eta_hours(days_until_oos)
+    if hours is None:
+        return ""
+    if hours < 1:
+        return "сегодня"
+    if hours < 24:
+        return f"≈{round(hours)} ч"
+    days = hours / 24
+    if days <= 2:
+        return f"≈{round(days)} {'день' if round(days) == 1 else 'дня'}"
+    return f"≈{round(days, 1)} дня"
 
 
 def _positive_values(rows, keys):
@@ -113,6 +144,7 @@ def _base_problem(
         "forecastConfidence": confidence,
         "forecastType": forecast_type,
         "forecastMessage": message,
+        "forecastConfidenceReason": _confidence_reason(confidence, 0),
         "recommendation": "Проверить прогнозный риск и принять превентивное действие.",
     }
 
@@ -148,13 +180,18 @@ def build_predictive_forecasts(
         if avg_orders and sellable_stock is not None:
             days_until_oos = round(sellable_stock / avg_orders, 1)
             if days_until_oos <= 3:
-                message = f"⚠️ SKU может уйти в OOS через {round(days_until_oos)} дня"
+                eta = _format_eta(days_until_oos)
+                message = f"⚠️ SKU может уйти в OOS {eta}"
                 problem = _base_problem(
                     row, "STOCK_FORECAST", "OOS", message, confidence, seller_id
                 )
                 problem.update(
                     {
                         "daysUntilOOS": days_until_oos,
+                        "forecastEtaHours": _forecast_eta_hours(days_until_oos),
+                        "forecastConfidenceReason": _confidence_reason(
+                            confidence, len(history_rows), baseline_type
+                        ),
                         "selectedValue": sellable_stock,
                         "baselineType": baseline_type,
                         "baselineValue": round(avg_orders, 2),
@@ -188,6 +225,9 @@ def build_predictive_forecasts(
                         seller_id,
                     )
                 )
+                forecasts[-1]["forecastConfidenceReason"] = _confidence_reason(
+                    confidence, len(history_rows)
+                )
 
     funnel_by_nm_id = {
         _normalize_nm_id(_first_present(row, ["nmId", "nm_id", "nmID"])): row
@@ -213,6 +253,9 @@ def build_predictive_forecasts(
                     _forecast_confidence(len(ctr_series)),
                     seller_id,
                 )
+            )
+            forecasts[-1]["forecastConfidenceReason"] = _confidence_reason(
+                forecasts[-1].get("forecastConfidence"), len(ctr_series)
             )
 
     return sorted(
