@@ -562,3 +562,47 @@ def create_tasks(tasks):
             ),
             "tasks",
         )
+
+
+def _normalize_qbiki_metric_row(row):
+    return {
+        "date": _report_date(row),
+        "seller_name": _first_present(row, ["seller_name", "sellerName"]),
+        "nm_id": _to_int(_first_present(row, ["nm_id", "nmId", "nmID"])),
+        "vendor_code": _first_present(row, ["vendor_code", "vendorCode"]),
+        "title": row.get("title"),
+        "orders_per_1000_impressions": _to_number(row.get("ordersPer1000Impressions")),
+        "organic_cr": _to_number(row.get("organicCR")),
+        "ads_cr": _to_number(row.get("adsCR")),
+        "ads_orders": _to_number(row.get("adsOrders")),
+        "ads_impressions": _to_number(row.get("adsImpressions")),
+        "ads_ctr": _to_number(row.get("adsCTR")),
+        "ads_clicks": _to_number(row.get("adsClicks")),
+        "cart_conversion": _to_number(row.get("cartConversion")),
+        "order_conversion": _to_number(row.get("orderConversion")),
+        "avg_ad_bid": _to_number(row.get("avgAdBid")),
+        "ad_profit_per_order": _to_number(row.get("adProfitPerOrder")),
+        "cpo": _to_number(row.get("CPO")),
+        "drr": _to_number(row.get("DRR")),
+        "clean_drr": _to_number(row.get("cleanDRR")),
+        "clean_margin": _to_number(row.get("cleanMargin")),
+        "clean_margin_organic": _to_number(row.get("cleanMarginOrganic")),
+        "clean_margin_ads": _to_number(row.get("cleanMarginAds")),
+        "roi": _to_number(row.get("ROI")),
+        "wb_stock": _to_number(row.get("wbStock")),
+        "days_of_stock": _to_number(row.get("daysOfStock")),
+    }
+
+
+def save_daily_qbiki_metrics(rows):
+    normalized_rows = _drop_empty_required(
+        [_normalize_qbiki_metric_row(row) for row in rows],
+        ["date", "nm_id"],
+    )
+    print(f"SUPABASE SAVE DAILY QBIKI METRICS: {len(normalized_rows)} rows")
+
+    if normalized_rows:
+        _execute_write(
+            _get_client().table("daily_qbiki_metrics").insert(normalized_rows),
+            "daily_qbiki_metrics",
+        )

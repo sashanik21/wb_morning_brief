@@ -925,7 +925,98 @@ def _format_money(value):
     return f"{_format_number(value)} ₽"
 
 
+def _qbiki_status_rank(row):
+    return {
+        "PROFITABLE_ADS": 0,
+        "ADS_NEEDS_CONTROL": 1,
+        "UNPROFITABLE_ADS": 2,
+        "ADS_PAUSE_IF_OOS": 3,
+    }.get(str(row.get("adsProfitabilityStatus") or ""), 9)
+
+
+def _format_qbiki_conclusion(row):
+    status = str(row.get("adsProfitabilityStatus") or "")
+    if status == "PROFITABLE_ADS":
+        return "реклама прибыльная"
+    if status == "ADS_NEEDS_CONTROL":
+        if to_number(row.get("wbStock")) == 0:
+            return "остановить рекламу до восстановления остатков"
+        return (
+            "реклама прибыльная, но остатка хватит примерно на "
+            + _format_number(row.get("daysOfStock"))
+            + " день"
+        )
+    if status == "UNPROFITABLE_ADS":
+        return "реклама убыточная — проверить ставку, стоимость заказа и кампании"
+    if status == "ADS_PAUSE_IF_OOS":
+        return "товара нет на WB — остановить рекламу до восстановления остатков"
+    return "нужно проверить экономику рекламы"
+
+
+def _format_qbiki_product_line(index, row):
+    return (
+        f"{index}. <b>{_format_product_identity(row)}</b>\n"
+        f"   CTR рекламы: {_format_dynamic_value(row.get('adsCTR'))}\n"
+        f"   Стоимость заказа из рекламы: {_format_money(row.get('CPO'))}\n"
+        f"   ДРР: {_format_dynamic_value(row.get('DRR'))}\n"
+        f"   Чистый ДРР: {_format_dynamic_value(row.get('cleanDRR'))}\n"
+        f"   Окупаемость рекламы: {_format_dynamic_value(row.get('ROI'))}\n"
+        f"   Вывод: {_format_qbiki_conclusion(row)}."
+    )
+
+
+def _build_qbiki_ads_profitability_block(summary_stats):
+    rows = [
+        row
+        for row in (summary_stats or {}).get("qbikiMetrics") or []
+        if isinstance(row, dict) and row.get("adsProfitabilityStatus")
+    ]
+    if not rows:
+        return ""
+
+    profitable = [
+        row
+        for row in rows
+        if row.get("adsProfitabilityStatus") in {"PROFITABLE_ADS", "ADS_NEEDS_CONTROL"}
+    ]
+    problematic = [
+        row
+        for row in rows
+        if row.get("adsProfitabilityStatus") in {"UNPROFITABLE_ADS", "ADS_PAUSE_IF_OOS"}
+    ]
+    profitable.sort(
+        key=lambda row: (
+            -to_number(row.get("ROI")),
+            to_number(row.get("daysOfStock")) or 999999,
+        )
+    )
+    problematic.sort(
+        key=lambda row: (_qbiki_status_rank(row), to_number(row.get("cleanMarginAds")))
+    )
+
+    lines = ["📢 <b>Реклама и прибыльность</b>"]
+    if profitable:
+        lines.append("\nЛучшие товары по рекламе:")
+        lines.extend(
+            _format_qbiki_product_line(index, row)
+            for index, row in enumerate(profitable[:3], start=1)
+        )
+    if problematic:
+        lines.append("\nПроблемные товары:")
+        lines.extend(
+            _format_qbiki_product_line(index, row)
+            for index, row in enumerate(problematic[:3], start=1)
+        )
+    if len(lines) == 1:
+        lines.append("данных для вывода по прибыльности рекламы недостаточно")
+    return "\n".join(lines)
+
+
 def _build_ads_block(records, summary_stats):
+    qbiki_block = _build_qbiki_ads_profitability_block(summary_stats)
+    if qbiki_block:
+        return qbiki_block
+
     ads_summary = (summary_stats or {}).get("adsSummary") or {}
     ads_records = [
         record
@@ -1308,6 +1399,10 @@ def _build_perfume_intelligence_block(summary_stats):
 
 
 def _build_executive_ads_block(records, summary_stats):
+    qbiki_block = _build_qbiki_ads_profitability_block(summary_stats)
+    if qbiki_block:
+        return qbiki_block
+
     ads_summary = (summary_stats or {}).get("adsSummary") or {}
     ads_records = [
         record
