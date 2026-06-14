@@ -24,14 +24,7 @@ from app.collectors.funnel import (
 from app.reports.dashboard_image import generate_dashboard_image
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
-from app.storage.stub_storage import (
-    create_tasks,
-    get_change_log,
-    get_products,
-    get_sellers,
-    get_storage_status,
-    log_storage_configuration,
-)
+from app.storage.storage_factory import get_storage
 
 
 def _extract_funnel_products(data):
@@ -75,6 +68,7 @@ def _summary_total(summary_dynamics, summary_key, fallback_report, fallback_colu
 
 
 def _build_summary_stats(
+    storage_status,
     seller_name,
     total_sku_from_api,
     sku_in_products,
@@ -88,7 +82,7 @@ def _build_summary_stats(
 
     return {
         "sellerName": seller_name,
-        "storage": get_storage_status(),
+        "storage": storage_status,
         "totalSkuFromApi": total_sku_from_api,
         "skuInProducts": sku_in_products,
         "skuNotInProducts": sku_not_in_products,
@@ -129,10 +123,10 @@ def main():
     print("=" * 50)
     print("WB MORNING BRIEF")
     print("=" * 50)
-    log_storage_configuration()
+    storage = get_storage()
     print("=" * 50)
 
-    sellers = get_sellers()
+    sellers = storage.get_sellers()
     print(f"SELLERS LOADED: {len(sellers)}")
     active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
     print(f"Активных продавцов: {len(active_sellers)}")
@@ -140,10 +134,10 @@ def main():
     if active_sellers:
         print(f"Текущий продавец: {seller_name}")
 
-    products = get_products()
+    products = storage.get_products()
     print(f"PRODUCTS LOADED: {len(products)}")
 
-    change_log = get_change_log()
+    change_log = storage.get_change_log()
     print(f"CHANGE_LOG LOADED: {len(change_log)}")
 
     data = collect_sales_funnel()
@@ -173,6 +167,9 @@ def main():
 
     ads_data = collect_ads_stats()
     funnel_report = flatten_sales_funnel_data(data)
+    funnel_rows = funnel_report.to_dict("records")
+    if funnel_rows:
+        storage.save_funnel_snapshot(funnel_rows)
     ads_problems = analyze_ads_problems(ads_data, funnel_report)
     ads_summary = build_ads_summary(ads_data, ads_problems)
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
@@ -201,9 +198,12 @@ def main():
     ).fillna("")
     funnel_problems = funnel_problems_df.to_dict("records")
     all_problems = funnel_problems + ads_problems + stocks_problems
+    if all_problems:
+        storage.save_problems(all_problems)
     root_cause_insights = analyze_root_causes(all_problems, data)
     print(f"ROOT CAUSE INSIGHTS: {len(root_cause_insights)}")
     summary_stats = _build_summary_stats(
+        storage_status=storage.get_storage_status(),
         seller_name=seller_name,
         total_sku_from_api=total_sku_from_api,
         sku_in_products=sku_in_products,
@@ -251,7 +251,7 @@ def main():
     print("=" * 50)
 
     tasks = build_tasks_from_problems(all_problems)
-    create_tasks(tasks)
+    storage.create_tasks(tasks)
     print("=" * 50)
 
     print("WB Morning Brief completed successfully")
