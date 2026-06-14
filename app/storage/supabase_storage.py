@@ -261,6 +261,26 @@ def _normalize_funnel_row(row):
     }
 
 
+def get_funnel_history(seller_id, nm_id, days):
+    normalized_seller_id = _to_int(seller_id)
+    normalized_nm_id = _to_int(nm_id)
+    normalized_days = _to_int(days) or 0
+
+    if normalized_seller_id is None or normalized_nm_id is None or normalized_days <= 0:
+        return []
+
+    return _execute_read(
+        _get_client()
+        .table("daily_funnel")
+        .select("*")
+        .eq("seller_id", normalized_seller_id)
+        .eq("nm_id", normalized_nm_id)
+        .order("report_date", desc=True)
+        .limit(normalized_days),
+        "daily_funnel",
+    )
+
+
 def _normalize_problem(problem):
     return {
         "report_date": _report_date(problem),
@@ -268,7 +288,7 @@ def _normalize_problem(problem):
         "nm_id": _to_int(_first_present(problem, ["nm_id", "nmId", "nmID"])),
         "vendor_code": _first_present(problem, ["vendor_code", "vendorCode"]),
         "title": problem.get("title"),
-        "abc": problem.get("abc"),
+        "abc": _first_present(problem, ["abc", "ABC"]),
         "problem_type": _first_present(problem, ["problem_type", "problemType"]),
         "problem_label": _first_present(problem, ["problem_label", "problemLabel"]),
         "metric": problem.get("metric"),
@@ -276,6 +296,10 @@ def _normalize_problem(problem):
             _first_present(problem, ["selected_value", "selectedValue"])
         ),
         "past_value": _to_number(_first_present(problem, ["past_value", "pastValue"])),
+        "baseline_type": _first_present(problem, ["baseline_type", "baselineType"]),
+        "baseline_value": _to_number(
+            _first_present(problem, ["baseline_value", "baselineValue"])
+        ),
         "dynamic_percent": _to_number(
             _first_present(problem, ["dynamic_percent", "dynamicPercent"])
         ),

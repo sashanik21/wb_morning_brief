@@ -208,6 +208,13 @@ def _format_problem_line(problem):
         problem.get("selectedValue")
     ):
         problem_value = html.escape(str(problem.get("selectedValue")))
+    elif problem.get("baselineType") == "avg_3d" and _is_present(
+        problem.get("baselineValue")
+    ):
+        selected_value = html.escape(str(problem.get("selectedValue") or "0"))
+        baseline_value = html.escape(str(problem.get("baselineValue") or "0"))
+        dynamic = html.escape(_format_dynamic_percent(problem.get("dynamicPercent")))
+        problem_value = f"{selected_value} vs avg3d {baseline_value} ({dynamic})"
     else:
         problem_value = html.escape(
             _format_dynamic_percent(problem.get("dynamicPercent"))
@@ -445,10 +452,15 @@ def _format_drop_signal(signal):
     selected_value = html.escape(str(signal.get("selectedValue") or "0"))
     past_value = html.escape(str(signal.get("pastValue") or "0"))
 
-    return (
-        f"— {title} (WB {nm_id}): {metric} {dynamic} "
-        f"({selected_value} vs {past_value})"
-    )
+    baseline_type = signal.get("baselineType")
+    baseline_label = "avg3d" if baseline_type == "avg_3d" else "baseline"
+
+    if baseline_type == "avg_3d":
+        comparison = f"{selected_value} vs {baseline_label} {past_value}"
+    else:
+        comparison = f"{selected_value} vs {past_value}"
+
+    return f"— {title} (WB {nm_id}): {metric} {dynamic} ({comparison})"
 
 
 def _build_top_drop_signals_block(summary_stats):

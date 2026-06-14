@@ -48,6 +48,8 @@ PROBLEMS_REPORT_COLUMNS = [
     "problemLabel",
     "selectedValue",
     "pastValue",
+    "baselineType",
+    "baselineValue",
     "dynamicPercent",
     "recommendation",
     "recentChanges",
@@ -509,6 +511,8 @@ def _build_problem_row(
     dynamic_percent,
     products_by_nm_id,
     recent_changes,
+    baseline_type="fallback_previous_day",
+    baseline_value=None,
 ):
     return {
         "sellerName": SELLER_NAME,
@@ -524,12 +528,94 @@ def _build_problem_row(
         "problemLabel": get_problem_label(rule["metric"]),
         "selectedValue": _format_problem_number(selected_value),
         "pastValue": _format_problem_number(past_value),
+        "baselineType": baseline_type,
+        "baselineValue": _format_problem_number(
+            past_value if baseline_value is None else baseline_value
+        ),
         "dynamicPercent": round(dynamic_percent, 2),
         "recommendation": _recommendation(
             record, products_by_nm_id, rule["recommendation"]
         ),
         "recentChanges": recent_changes,
     }
+
+
+def _history_metric_value(row, metric):
+    return _first_present(
+        row,
+        [
+            metric,
+            {
+                "openCount": "open_count",
+                "cartCount": "cart_count",
+                "orderCount": "order_count",
+                "orderSum": "order_sum",
+            }.get(metric, metric),
+        ],
+        default=None,
+    )
+
+
+def _average_history_metric(history_rows, metric):
+    values = [
+        _to_number(_history_metric_value(row, metric))
+        for row in history_rows
+        if _to_number(_history_metric_value(row, metric)) is not None
+    ]
+
+    if not values:
+        return None
+
+    return sum(values) / len(values)
+
+
+def _history_baselines(history_rows):
+    metrics = ["openCount", "cartCount", "orderCount", "orderSum"]
+    history_3d = (history_rows or [])[:3]
+    history_7d = (history_rows or [])[:7]
+    baselines = {"rowsLoaded": len(history_rows or [])}
+
+    for metric in metrics:
+        snake_metric = {
+            "openCount": "open_count",
+            "cartCount": "cart_count",
+            "orderCount": "order_count",
+            "orderSum": "order_sum",
+        }[metric]
+        baselines[f"avg_{snake_metric}_3d"] = _average_history_metric(
+            history_3d, metric
+        )
+        baselines[f"avg_{snake_metric}_7d"] = _average_history_metric(
+            history_7d, metric
+        )
+
+    return baselines
+
+
+def _metric_baseline(record, rule, history_baselines=None):
+    metric = rule["metric"]
+
+    if metric in {"openCount", "cartCount", "orderCount", "orderSum"}:
+        snake_metric = {
+            "openCount": "open_count",
+            "cartCount": "cart_count",
+            "orderCount": "order_count",
+            "orderSum": "order_sum",
+        }[metric]
+        baseline_value = (history_baselines or {}).get(f"avg_{snake_metric}_3d")
+
+        if (
+            baseline_value is not None
+            and (history_baselines or {}).get("rowsLoaded", 0) >= 3
+        ):
+            selected_value = _first_present(
+                record, _metric_paths("selected", metric), default=""
+            )
+            dynamic_percent = _calculate_dynamic_percent(selected_value, baseline_value)
+            return selected_value, baseline_value, dynamic_percent, "avg_3d"
+
+    selected_value, past_value, dynamic_percent = _metric_dynamic_percent(record, rule)
+    return selected_value, past_value, dynamic_percent, "fallback_previous_day"
 
 
 def _metric_dynamic_percent(record, rule):
@@ -552,12 +638,14 @@ def _metric_dynamic_percent(record, rule):
     return selected_value, past_value, dynamic_percent
 
 
-def _build_record_problem_rows(record, products_by_nm_id, recent_changes=""):
+def _build_record_problem_rows(
+    record, products_by_nm_id, recent_changes="", history_baselines=None
+):
     record_problem_rows = []
 
     for rule in PROBLEM_RULES:
-        selected_value, past_value, dynamic_percent = _metric_dynamic_percent(
-            record, rule
+        selected_value, past_value, dynamic_percent, baseline_type = _metric_baseline(
+            record, rule, history_baselines
         )
 
         if dynamic_percent is None or dynamic_percent > rule["threshold"]:
@@ -572,6 +660,8 @@ def _build_record_problem_rows(record, products_by_nm_id, recent_changes=""):
                 dynamic_percent,
                 products_by_nm_id,
                 recent_changes,
+                baseline_type=baseline_type,
+                baseline_value=past_value,
             )
         )
 
@@ -593,6 +683,8 @@ def _build_record_problem_rows(record, products_by_nm_id, recent_changes=""):
                 "problemLabel": get_problem_label("wbStocks"),
                 "selectedValue": 0,
                 "pastValue": "",
+                "baselineType": "stock_check",
+                "baselineValue": "",
                 "dynamicPercent": "",
                 "recommendation": _recommendation(
                     record, products_by_nm_id, STOCK_PROBLEM_RECOMMENDATION
@@ -719,16 +811,69 @@ def calculate_funnel_summary_dynamics(funnel_data):
     return summary
 
 
-def analyze_funnel_problems(funnel_data):
+def _load_history_baselines(seller_id, records):
+    try:
+        from app.storage.storage_factory import get_storage
+    except ImportError:
+        return {}
+
+    if seller_id in (None, ""):
+        return {}
+
+    storage = get_storage()
+
+    if not hasattr(storage, "get_funnel_history"):
+        return {}
+
+    baselines_by_nm_id = {}
+    total_rows_loaded = 0
+    baseline_modes = set()
+
+    for record in records:
+        nm_id = _normalize_nm_id(_problem_product_value(record, "nmId"))
+
+        if not nm_id or nm_id in baselines_by_nm_id:
+            continue
+
+        history_rows = storage.get_funnel_history(seller_id, nm_id, 7)
+        baselines = _history_baselines(history_rows)
+        baselines_by_nm_id[nm_id] = baselines
+        total_rows_loaded += baselines["rowsLoaded"]
+        baseline_modes.add(
+            "avg_3d" if baselines["rowsLoaded"] >= 3 else "fallback_previous_day"
+        )
+
+    print("HISTORICAL ANALYTICS:")
+    print(f"history rows loaded: {total_rows_loaded}")
+    print(
+        "baseline mode: "
+        + (
+            " / ".join(sorted(baseline_modes))
+            if baseline_modes
+            else "fallback_previous_day"
+        )
+    )
+
+    return baselines_by_nm_id
+
+
+def analyze_funnel_problems(funnel_data, seller_id=None):
     problem_rows = []
     ignored_sku_count = 0
     products_by_nm_id = _build_products_by_nm_id()
     recent_changes_by_nm_id = _build_recent_changes_by_nm_id()
 
-    for record in _extract_problem_records(funnel_data):
+    records = _extract_problem_records(funnel_data)
+    history_baselines_by_nm_id = _load_history_baselines(seller_id, records)
+
+    for record in records:
         recent_changes = _recent_changes(record, recent_changes_by_nm_id)
+        nm_id = _normalize_nm_id(_problem_product_value(record, "nmId"))
         record_problem_rows = _build_record_problem_rows(
-            record, products_by_nm_id, recent_changes
+            record,
+            products_by_nm_id,
+            recent_changes,
+            history_baselines_by_nm_id.get(nm_id),
         )
 
         if not record_problem_rows:
@@ -893,12 +1038,12 @@ def _adjust_worksheet_layout(worksheet, dataframe):
         ].width = adjusted_width
 
 
-def save_funnel_problems_report(funnel_data):
+def save_funnel_problems_report(funnel_data, seller_id=None):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     report_date = datetime.now().date().strftime("%Y_%m_%d")
     report_path = REPORTS_DIR / f"problems_{report_date}.xlsx"
-    dataframe = analyze_funnel_problems(funnel_data)
+    dataframe = analyze_funnel_problems(funnel_data, seller_id=seller_id)
 
     _print_problems_summary(dataframe)
 

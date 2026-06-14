@@ -178,8 +178,8 @@ def main():
     ads_data = collect_ads_stats()
     funnel_report = flatten_sales_funnel_data(data)
     funnel_rows = funnel_report.to_dict("records")
-    if funnel_rows:
-        storage.save_funnel_snapshot(funnel_rows)
+    for funnel_row in funnel_rows:
+        funnel_row["seller_id"] = seller_id
     ads_problems = analyze_ads_problems(ads_data, funnel_report)
     ads_summary = build_ads_summary(ads_data, ads_problems)
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
@@ -199,7 +199,7 @@ def main():
     print("=" * 50)
 
     # TODO: switch problems XLSX generation to all_problems after ads/stocks problems are enabled
-    problems_report_path = save_funnel_problems_report(data)
+    problems_report_path = save_funnel_problems_report(data, seller_id=seller_id)
     print(f"XLSX отчёт по проблемам: {problems_report_path}")
     print("=" * 50)
 
@@ -208,6 +208,8 @@ def main():
     ).fillna("")
     funnel_problems = funnel_problems_df.to_dict("records")
     all_problems = funnel_problems + ads_problems + stocks_problems
+    if funnel_rows:
+        storage.save_funnel_snapshot(funnel_rows)
     if all_problems:
         storage.save_problems(all_problems)
     root_cause_insights = analyze_root_causes(all_problems, data)
