@@ -5,9 +5,12 @@ import pandas as pd
 
 from app.analyzers.severity import calculate_problem_severity, downgrade_severity
 from app.analyzers.stock_states import (
+    NO_VISIBLE_SUPPLY_REASON,
+    SUPPLY_READY_MISMATCH_REASON,
     TEMPORARILY_UNAVAILABLE_LABEL,
     TEMPORARILY_UNAVAILABLE_REASON,
     enrich_stock_metrics,
+    has_supply_ready_mismatch,
     has_wb_logistics_stock,
     stock_root_cause,
 )
@@ -794,6 +797,10 @@ def _build_record_problem_rows(
             problem_label = TEMPORARILY_UNAVAILABLE_LABEL
             recommendation = TEMPORARILY_UNAVAILABLE_REASON
             severity_fields["severity"] = "medium"
+        elif has_supply_ready_mismatch(stock_metrics):
+            recommendation = SUPPLY_READY_MISMATCH_REASON
+        elif stock_metrics.get("stockState") == "BLOCKED":
+            recommendation = NO_VISIBLE_SUPPLY_REASON
         record_problem_rows.append(
             {
                 "sellerName": SELLER_NAME,
