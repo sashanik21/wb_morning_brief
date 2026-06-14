@@ -411,6 +411,17 @@ def _normalize_problem(problem):
             _first_present(problem, ["organic_orders_share", "organicOrdersShare"])
         ),
         "decline_source": _first_present(problem, ["decline_source", "declineSource"]),
+        "budget_waste_risk": _to_bool(
+            _first_present(
+                problem, ["budget_waste_risk", "budgetWasteRisk"], default=False
+            )
+        ),
+        "report_trust_score": _first_present(
+            problem, ["report_trust_score", "reportTrustScore"]
+        ),
+        "forecast_eta_hours": _to_number(
+            _first_present(problem, ["forecast_eta_hours", "forecastEtaHours"])
+        ),
         "days_until_oos": _to_number(
             _first_present(problem, ["days_until_oos", "daysUntilOOS"])
         ),

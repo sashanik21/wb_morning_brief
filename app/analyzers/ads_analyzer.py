@@ -195,6 +195,8 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "previousCpm": _previous_value(row, "cpm"),
         "spend": row.get("spend", 0),
         "previousSpend": _previous_value(row, "spend"),
+        "clicks": row.get("clicks", 0),
+        "previousClicks": _previous_value(row, "clicks"),
         "orders": row.get("orders", 0),
         "previousOrders": _previous_value(row, "orders"),
         "ordersSum": row.get("ordersSum", 0),
@@ -306,6 +308,28 @@ def _append_ads_funnel_links(problems, ads_row, funnel_row):
         )
 
 
+def _enrich_budget_waste_risk(problem, funnel_row):
+    if not funnel_row:
+        return problem
+    sellable = _to_number(
+        funnel_row.get("realSellableStock")
+        or funnel_row.get("readyForSaleStock")
+        or funnel_row.get("wbStocks")
+    )
+    spend = _to_number(problem.get("spend"))
+    clicks = _to_number(problem.get("clicks"))
+    if sellable == 0 and (spend > 0 or clicks > 0):
+        problem["budgetWasteRisk"] = True
+        problem["realSellableStock"] = sellable
+        problem["stockState"] = funnel_row.get("stockState") or problem.get(
+            "stockState"
+        )
+        problem["recommendation"] = (
+            "Приостановить или сократить рекламу до восстановления остатков."
+        )
+    return problem
+
+
 def analyze_ads_problems(ads_rows, funnel_rows=None):
     problems = []
     funnel_by_nm_id = _funnel_rows_by_nm_id(funnel_rows)
@@ -412,9 +436,11 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
                 )
             )
 
-        _append_ads_funnel_links(
-            problems, row, funnel_by_nm_id.get(str(row.get("nmId")))
-        )
+        funnel_row = funnel_by_nm_id.get(str(row.get("nmId")))
+        _append_ads_funnel_links(problems, row, funnel_row)
+        for problem in problems:
+            if str(problem.get("nmId")) == str(row.get("nmId")):
+                _enrich_budget_waste_risk(problem, funnel_row)
 
     print(f"Ads problems found: {len(problems)}")
     return problems

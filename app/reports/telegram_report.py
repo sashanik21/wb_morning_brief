@@ -18,6 +18,8 @@ from app.seller_config import SELLER_NAME
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_TIMEOUT_SECONDS = 15
 TELEGRAM_TOP_LIMIT = 5
+FORECAST_ALERT_LIMIT = 3
+LOW_PRIORITY_SIGNAL_THRESHOLD = 10
 EXECUTIVE_PROBLEMS_LIMIT = 3
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 logger = logging.getLogger(__name__)
@@ -412,8 +414,15 @@ def _impact_rank(problem):
     score = to_number(problem.get("severityScore"))
     lost_revenue = _problem_lost_revenue(problem)
     abc = str(problem.get("ABC") or "").upper()
+    confidence = _impact_confidence(problem)
+    has_loss = _has_problem_loss(problem)
+    weak_confidence = confidence in {"LOW", "INSUFFICIENT_HISTORY"}
 
-    if score >= 80 or lost_revenue >= 10000 or (abc == "A" and score >= 50):
+    if not has_loss and weak_confidence:
+        return "IMPACT TBD"
+    if (
+        score >= 80 or lost_revenue >= 10000 or (abc == "A" and score >= 50)
+    ) and not weak_confidence:
         return "HIGH IMPACT"
     if score >= 35 or lost_revenue >= 3000 or abc in {"A", "B"}:
         return "MEDIUM IMPACT"
@@ -1290,11 +1299,83 @@ def _format_stock_stop_block(problem):
         "\n📦 Логистика по SKU:"
         f"\n- Состояние: {stock_state}"
         f"\n- Готово к продаже: {_format_number(sellable)}"
-        f"\n- В поставках: {_format_number(problem.get('readyForSaleStock'))}"
+        f"\n- Готово к продаже на складах WB: {_format_number(problem.get('readyForSaleStock'))}"
         f"\n- Ожидается поставка: {_format_number(problem.get('incomingStock'))}"
         f"\n- В приемке: {_format_number(problem.get('acceptanceStock'))}"
         f"\n- В транзите: {_format_number(problem.get('transitStock'))}"
     )
+
+
+def _is_ads_active(problem):
+    status = str(
+        problem.get("campaignStatus") or problem.get("adsStatus") or ""
+    ).lower()
+    has_campaign = bool(
+        problem.get("campaignId")
+        or problem.get("advertId")
+        or problem.get("adsCampaignId")
+    )
+    clicks = to_number(problem.get("clicks") or problem.get("adsClicks"))
+    spend = to_number(
+        problem.get("spend") or problem.get("adsSpend") or problem.get("sum")
+    )
+    return (
+        has_campaign
+        or status in {"active", "running", "активна"}
+        or clicks > 0
+        or spend > 0
+    )
+
+
+def _has_budget_waste_risk(problem):
+    if str(problem.get("budgetWasteRisk") or "").lower() in {"true", "1", "yes", "да"}:
+        return True
+    sellable = problem.get("realSellableStock")
+    if sellable in (None, ""):
+        sellable = problem.get("selectedValue")
+    return to_number(sellable) == 0 and _is_ads_active(problem)
+
+
+def _forecast_eta_hours(problem):
+    value = problem.get("forecastEtaHours")
+    if value in (None, "") and problem.get("daysUntilOOS") not in (None, ""):
+        value = to_number(problem.get("daysUntilOOS")) * 24
+    return to_number(value)
+
+
+def _format_forecast_eta(problem):
+    hours = _forecast_eta_hours(problem)
+    if hours is None:
+        return ""
+    if hours < 1:
+        return "сегодня"
+    if hours < 24:
+        return f"≈{round(hours)} ч"
+    days = hours / 24
+    if days <= 2:
+        rounded = round(days)
+        return f"≈{rounded} {'день' if rounded == 1 else 'дня'}"
+    return f"≈{round(days, 1)} дня"
+
+
+def _report_trust_score(records):
+    if not records:
+        return "MEDIUM"
+    confidence_rank = {"LOW": 1, "INSUFFICIENT_HISTORY": 1, "MEDIUM": 2, "HIGH": 3}
+    ranks = []
+    complete = 0
+    for record in records:
+        confidence = _impact_confidence(record) or record.get("forecastConfidence")
+        ranks.append(confidence_rank.get(str(confidence or "").upper(), 2))
+        if record.get("selectedValue") not in (None, "") and record.get("metric"):
+            complete += 1
+    avg_rank = sum(ranks) / len(ranks) if ranks else 2
+    completeness = complete / len(records)
+    if avg_rank >= 2.6 and completeness >= 0.8:
+        return "HIGH"
+    if avg_rank <= 1.4 or completeness < 0.5:
+        return "LOW"
+    return "MEDIUM"
 
 
 def _format_priority_problem_line(problem):
@@ -1322,10 +1403,17 @@ def _format_priority_problem_line(problem):
         f"\nисточник: {html.escape(decline_source)}" if decline_source else ""
     )
 
+    budget_waste = ""
+    if _has_budget_waste_risk(problem):
+        budget_waste = (
+            "\n⚠️ Реклама активна на OOS SKU → возможен слив бюджета."
+            "\nРекомендация: Приостановить или сократить рекламу до восстановления остатков."
+        )
+
     return (
         f"- <b>{impact}</b> | {zone} | nmID {nm_id} | {problem_label}"
         f"{decline_source_block}{specifics_block}\n{html.escape(_format_business_impact(problem))}"
-        f"{html.escape(stock_stop)}"
+        f"{html.escape(stock_stop)}{html.escape(budget_waste)}"
     )
 
 
@@ -1355,7 +1443,11 @@ def _build_risk_zones_block(priority_records, root_cause_insights):
         f"{zone}: {_format_number(len(skus))} SKU"
         for zone, skus in sorted(sku_by_zone.items())
     ]
-    return "🔥 <b>Главные зоны риска:</b>\n" + "\n".join(lines)
+    return (
+        "🔥 <b>Главные зоны риска (типы сигналов):</b>\n"
+        + "\n".join(lines)
+        + "\nℹ️ SKU могут входить в несколько категорий."
+    )
 
 
 def _combined_impact_confidence(records):
@@ -1538,8 +1630,11 @@ def _format_forecast_alert(problem):
             return f"- {html.escape(message)}"
 
     if forecast_type == "OOS" or problem.get("daysUntilOOS") not in (None, ""):
-        days = _format_number(problem.get("daysUntilOOS"))
-        return f"- nmID {nm_id} → OOS через ~{days} дня"
+        eta = (
+            _format_forecast_eta(problem)
+            or f"≈{_format_number(problem.get('daysUntilOOS'))} дня"
+        )
+        return f"- nmID {nm_id} → OOS {eta}"
     if forecast_type == "ADS":
         return f"- nmID {nm_id} → риск роста ДРР"
     if forecast_type == "ORGANIC":
@@ -1555,13 +1650,14 @@ def _build_forecast_risks_block(records):
     forecast_records = sorted(
         forecast_records,
         key=lambda item: (
-            item.get("daysUntilOOS") in (None, ""),
-            to_number(item.get("daysUntilOOS")) or 999,
+            _forecast_eta_hours(item) is None,
+            _forecast_eta_hours(item) or 9999,
+            -_problem_impact_value(item),
         ),
     )
     lines = [
         _format_forecast_alert(record)
-        for record in forecast_records[:TELEGRAM_TOP_LIMIT]
+        for record in forecast_records[:FORECAST_ALERT_LIMIT]
     ]
     return "🔮 <b>Прогноз рисков:</b>\n" + "\n".join(lines)
 
@@ -1577,13 +1673,16 @@ def _build_stock_eta_block(records):
         return ""
 
     stock_forecasts = sorted(
-        stock_forecasts, key=lambda item: to_number(item.get("daysUntilOOS")) or 999
+        stock_forecasts, key=lambda item: _forecast_eta_hours(item) or 9999
     )
     lines = []
-    for record in stock_forecasts[:TELEGRAM_TOP_LIMIT]:
+    for record in stock_forecasts[:FORECAST_ALERT_LIMIT]:
         nm_id = html.escape(str(record.get("nmId") or record.get("nm_id") or "n/a"))
-        days = _format_number(record.get("daysUntilOOS"))
-        lines.append(f"- nmID {nm_id} → ~{days} дня")
+        eta = (
+            _format_forecast_eta(record)
+            or f"≈{_format_number(record.get('daysUntilOOS'))} дня"
+        )
+        lines.append(f"- nmID {nm_id} → {eta}")
     return "📦 <b>Прогноз остатков:</b>\n" + "\n".join(lines)
 
 
@@ -1695,7 +1794,7 @@ def _build_low_priority_signals_block(records):
         record for record in records if _is_low_priority_telegram_problem(record)
     ]
     if not low_priority_records:
-        return "Низкоприоритетные сигналы: 0"
+        return ""
 
     buckets = {"реклама": 0, "позиции": 0, "остатки": 0, "конверсия": 0}
     for record in low_priority_records:
@@ -1703,13 +1802,14 @@ def _build_low_priority_signals_block(records):
         if bucket in buckets:
             buckets[bucket] += 1
 
-    lines = ["Низкоприоритетные сигналы:"]
-    lines.extend(
-        f"- {bucket}: {_format_number(count)}"
+    noisy_buckets = [
+        bucket
         for bucket, count in buckets.items()
-        if count
-    )
-    return "\n".join(lines) if len(lines) > 1 else ""
+        if count > LOW_PRIORITY_SIGNAL_THRESHOLD
+    ]
+    if not noisy_buckets:
+        return ""
+    return "ℹ️ Есть низкоприоритетные сигналы по " + ", ".join(noisy_buckets) + "."
 
 
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
@@ -1719,9 +1819,11 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     ]
     problem_products = _group_problems_by_product(priority_records)
     priority_sku_count = len(problem_products)
+    trust_score = _report_trust_score(records)
     message_parts = [
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
+        f"Надежность отчета: {html.escape(trust_score)}",
         f"🚨 <b>Приоритетных SKU:</b> {_format_number(priority_sku_count)}",
         _build_low_priority_signals_block(records),
         _build_forecast_risks_block(records),
@@ -1747,7 +1849,10 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
             _build_daily_losses_block(priority_records),
             _build_top_impact_block(priority_records),
             _build_priority_problems_block(priority_records),
-            _build_first_checks_block(priority_records, root_cause_insights),
+            _build_first_checks_block(priority_records, root_cause_insights).replace(
+                "🎯 <b>Что проверить в первую очередь:</b>",
+                "✅ <b>Что сделать сегодня</b>",
+            ),
             _build_executive_insight(
                 problem_products, root_cause_insights, summary_stats
             ),
