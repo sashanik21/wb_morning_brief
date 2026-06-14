@@ -959,10 +959,10 @@ def _format_logistics_pipeline(pipeline):
 
     return (
         "📦 Логистика WB:"
-        f"\n- {_format_number(pipeline['acceptance'])} шт в приемке"
-        f"\n- {_format_number(pipeline['transit'])} шт в разгрузке"
-        f"\n- {_format_number(pipeline['ready'])} шт готовы к продаже"
-        f"\n- {_format_number(pipeline['matched'])} SKU сопоставлено с поставками"
+        f"\n- SKU с supply goods: {_format_number(pipeline['matched'])}"
+        f"\n- readyForSale в поставках: {_format_number(pipeline['ready'])} шт"
+        f"\n- в приемке: {_format_number(pipeline['acceptance'])} шт"
+        f"\n- в разгрузке: {_format_number(pipeline['transit'])} шт"
     )
 
 
@@ -1052,6 +1052,50 @@ def _build_no_problem_executive_block(summary_stats):
     )
 
 
+def _stock_stop_reason(problem):
+    incoming = to_number(problem.get("incomingStock"))
+    acceptance = to_number(problem.get("acceptanceStock"))
+    transit = to_number(problem.get("transitStock"))
+    supply_ready = to_number(problem.get("readyForSaleStock"))
+    sellable = to_number(
+        problem.get("realSellableStock")
+        if problem.get("realSellableStock") not in (None, "")
+        else problem.get("selectedValue")
+    )
+
+    if supply_ready > 0 and sellable == 0:
+        return (
+            "Товар есть в supply goods как readyForSale, но не отражается "
+            "в sellable stock. Проверить расхождение WB stocks vs supplies."
+        )
+    if incoming > 0 or acceptance > 0 or transit > 0:
+        return "Товар уже находится в логистике WB"
+
+    return (
+        "Товар отсутствует в sellable stock. "
+        "Данных о поставке или возврате в логистике WB нет."
+    )
+
+
+def _format_stock_stop_block(problem):
+    stock_state = str(problem.get("stockState") or "n/a")
+    sellable = problem.get("realSellableStock")
+    if sellable in (None, ""):
+        sellable = problem.get("selectedValue")
+
+    return (
+        "\n⚠️ SKU временно недоступен для продажи"
+        f"\n{_stock_stop_reason(problem)}"
+        "\n📦 Логистика WB:"
+        f"\n- состояние: {stock_state}"
+        f"\n- sellable stock: {_format_number(sellable)}"
+        f"\n- supply readyForSale: {_format_number(problem.get('readyForSaleStock'))}"
+        f"\n- incoming: {_format_number(problem.get('incomingStock'))}"
+        f"\n- acceptance: {_format_number(problem.get('acceptanceStock'))}"
+        f"\n- transit: {_format_number(problem.get('transitStock'))}"
+    )
+
+
 def _format_priority_problem_line(problem):
     nm_id = html.escape(str(problem.get("nmId") or "n/a"))
     problem_label = html.escape(_human_readable_problem_type(problem))
@@ -1062,29 +1106,7 @@ def _format_priority_problem_line(problem):
         problem.get("metric") in {"wbStocks", "realSellableStock"}
         and to_number(problem.get("selectedValue")) == 0
     ):
-        if any(
-            to_number(problem.get(key)) > 0
-            for key in (
-                "incomingStock",
-                "returningStock",
-                "readyForSaleStock",
-                "acceptanceStock",
-                "transitStock",
-            )
-        ) or problem.get("stockState"):
-            stock_state = str(problem.get("stockState") or "n/a")
-            stock_stop = (
-                "\n⚠️ SKU временно недоступен для продажи"
-                "\nТовар уже находится в логистике WB"
-                f"\n📦 Логистика WB:"
-                f"\n- состояние: {stock_state}"
-                f"\n- {_format_number(problem.get('incomingStock'))} шт в поставках"
-                f"\n- {_format_number(problem.get('acceptanceStock'))} шт в приемке"
-                f"\n- {_format_number(problem.get('transitStock'))} шт в разгрузке"
-                f"\n- {_format_number(problem.get('readyForSaleStock'))} шт готовы к продаже"
-            )
-        else:
-            stock_stop = "\nПродажи остановлены из-за отсутствия sellable stock"
+        stock_stop = _format_stock_stop_block(problem)
 
     specifics = _format_ads_specifics(problem) or _format_funnel_specifics(problem)
     specifics_block = f"\n{html.escape(specifics)}" if specifics else ""
