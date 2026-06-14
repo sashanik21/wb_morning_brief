@@ -54,6 +54,10 @@ create table if not exists daily_funnel (
     acceptance_stock numeric,
     transit_stock numeric,
     stock_state text,
+    avg_position numeric,
+    position_delta numeric,
+    visibility_score numeric,
+    search_visibility_risk text,
     raw_json jsonb,
     created_at timestamptz default now(),
     unique(report_date, seller_id, nm_id)
