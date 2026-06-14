@@ -364,6 +364,9 @@ def _has_ads_problem(product_problems):
         "ads_impressions_drop",
         "ads_traffic_drop",
         "ads_reach_expensive",
+        "AUCTION_OVERHEATING",
+        "ads_position_drop",
+        "ads_query_waste",
     }
 
     for problem in product_problems:

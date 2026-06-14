@@ -471,6 +471,68 @@ def save_funnel_snapshot(rows):
         )
 
 
+def _normalize_ads_metric_row(row):
+    return {
+        "report_date": _report_date(row),
+        "seller_id": _to_int(row.get("seller_id")),
+        "campaign_id": _to_int(_first_present(row, ["campaign_id", "campaignId"])),
+        "campaign_name": _first_present(row, ["campaign_name", "campaignName"]),
+        "nm_id": _to_int(_first_present(row, ["nm_id", "nmId", "nm"])),
+        "impressions": _to_int(row.get("impressions")) or 0,
+        "clicks": _to_int(row.get("clicks")) or 0,
+        "ctr": _to_number(row.get("ctr")),
+        "cpc": _to_number(row.get("cpc")),
+        "cpm": _to_number(row.get("cpm")),
+        "spend": _to_number(row.get("spend")) or 0,
+        "orders": _to_int(row.get("orders")) or 0,
+        "revenue": _to_number(
+            _first_present(row, ["revenue", "ordersSum", "orders_sum"])
+        )
+        or 0,
+        "drr": _to_number(row.get("drr")),
+        "bid": _to_number(row.get("bid")),
+        "avg_position": _to_number(
+            _first_present(row, ["avg_position", "avgPosition", "avgAdPosition"])
+        ),
+        "raw_json": row,
+    }
+
+
+def get_ads_history(seller_id, campaign_id, nm_id=None, days=7):
+    query = (
+        _get_client()
+        .table("daily_ads_metrics")
+        .select("*")
+        .eq("seller_id", _to_int(seller_id))
+        .eq("campaign_id", _to_int(campaign_id))
+        .order("report_date", desc=True)
+        .limit(_to_int(days) or 7)
+    )
+    normalized_nm_id = _to_int(nm_id)
+    if normalized_nm_id is not None:
+        query = query.eq("nm_id", normalized_nm_id)
+    return _execute_read(query, "daily_ads_metrics")
+
+
+def save_daily_ads_metrics(rows):
+    normalized_rows = _drop_empty_required(
+        [_normalize_ads_metric_row(row) for row in rows],
+        ["report_date", "campaign_id"],
+    )
+    print(f"SUPABASE SAVE DAILY ADS METRICS: {len(normalized_rows)} rows")
+
+    if normalized_rows:
+        _execute_write(
+            _get_client()
+            .table("daily_ads_metrics")
+            .upsert(
+                normalized_rows,
+                on_conflict="report_date,seller_id,campaign_id,nm_id",
+            ),
+            "daily_ads_metrics",
+        )
+
+
 def save_problems(problems):
     normalized_problems = [_normalize_problem(problem) for problem in problems]
     print(f"SUPABASE SAVE PROBLEMS: {len(normalized_problems)} rows")

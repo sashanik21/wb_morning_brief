@@ -26,6 +26,13 @@ ADS_REPORT_COLUMNS = [
     "problemType",
     "recommendation",
     "baselineReliability",
+    "bid",
+    "avgPosition",
+    "bidDelta",
+    "positionDelta",
+    "adsRootCause",
+    "adsEfficiencyScore",
+    "auctionTemperature",
 ]
 
 CTR_LOW_THRESHOLD = 3
@@ -48,6 +55,9 @@ ADS_PROBLEM_LABELS = {
     "ads_traffic_drop": "просадка рекламного трафика",
     "ads_reach_expensive": "реклама стала дороже, охват снизился",
     "NEW_ACTIVITY_DETECTED": "новая рекламная активность",
+    "AUCTION_OVERHEATING": "перегрев рекламного аукциона",
+    "ads_position_drop": "ухудшение рекламных позиций",
+    "ads_query_waste": "waste spend по поисковому запросу",
 }
 
 
@@ -64,6 +74,9 @@ ADS_RECOMMENDATIONS = {
     "ads_traffic_drop": "Проверить охват рекламной кампании: падение CTR совпало с падением переходов.",
     "ads_reach_expensive": "Оптимизировать ставки: CPC вырос, расход/охват снизились и переходы просели.",
     "NEW_ACTIVITY_DETECTED": "Наблюдать за новой рекламной активностью до накопления истории.",
+    "AUCTION_OVERHEATING": "Остановить рост ставок: CPC и ставка растут, CTR падает, позиция не улучшается.",
+    "ads_position_drop": "Проверить ставку, релевантность и конкурентов: рекламная позиция ухудшилась.",
+    "ads_query_waste": "Отключить или занизить ставку по запросам с расходом без заказов.",
 }
 
 
@@ -119,6 +132,109 @@ def _ads_baseline(row, metric):
             return value, baseline_type, reliability
 
     return None, "insufficient_history", "INSUFFICIENT_HISTORY"
+
+
+def _metric_from_history(row, metric):
+    aliases = {
+        "avgPosition": ["avg_position", "avgPosition", "avgAdPosition"],
+        "revenue": ["revenue", "ordersSum", "orders_sum"],
+    }
+    for key in aliases.get(metric, [metric]):
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _average(values):
+    numbers = [_to_number(value, None) for value in values if value not in (None, "")]
+    numbers = [value for value in numbers if value is not None]
+    if not numbers:
+        return None
+    return round(sum(numbers) / len(numbers), 2)
+
+
+def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
+    enriched_rows = []
+    metrics = ("ctr", "cpc", "drr", "bid", "avgPosition")
+    for row in ads_rows or []:
+        enriched = row.copy()
+        if seller_id is not None:
+            enriched["seller_id"] = seller_id
+        history = []
+        if (
+            storage
+            and hasattr(storage, "get_ads_history")
+            and row.get("campaignId") not in (None, "")
+        ):
+            history = storage.get_ads_history(
+                seller_id, row.get("campaignId"), row.get("nmId"), 7
+            )
+        for metric in metrics:
+            values = [_metric_from_history(item, metric) for item in history]
+            previous = (
+                values[0] if values else enriched.get(_metric_key(metric, "previous"))
+            )
+            if previous not in (None, ""):
+                enriched[_metric_key(metric, "previous")] = previous
+            avg3 = _average(values[:3])
+            avg7 = _average(values[:7])
+            if avg3 is not None:
+                enriched[f"avg_{metric}_3d"] = avg3
+            if avg7 is not None:
+                enriched[f"avg_{metric}_7d"] = avg7
+        enriched["bidDelta"] = _dynamic_percent(
+            enriched.get("bid"), _previous_value(enriched, "bid")
+        )
+        enriched["positionDelta"] = _to_number(
+            enriched.get("avgPosition")
+        ) - _to_number(_previous_value(enriched, "avgPosition"))
+        enriched_rows.append(enriched)
+    if storage and hasattr(storage, "save_daily_ads_metrics"):
+        storage.save_daily_ads_metrics(enriched_rows)
+    return enriched_rows
+
+
+def _ads_root_cause(problem_type, baseline_reliability):
+    mapping = {
+        "ads_ctr_drop": "CTR_DROP",
+        "ads_cpc_growth": "CPC_OVERHEATING",
+        "AUCTION_OVERHEATING": "CPC_OVERHEATING",
+        "ads_position_drop": "POSITION_DROP",
+        "ads_ineffective": "LOW_CONVERSION",
+        "ads_spend_without_orders": "LOW_CONVERSION",
+        "ads_query_waste": "QUERY_WASTE",
+    }
+    return mapping.get(problem_type) or (
+        "INSUFFICIENT_DATA"
+        if baseline_reliability == "INSUFFICIENT_HISTORY"
+        else "BID_OVERPAY"
+    )
+
+
+def _auction_temperature(row):
+    cpc_delta = _dynamic_percent(row.get("cpc"), _previous_value(row, "cpc")) or 0
+    bid_delta = (
+        row.get("bidDelta")
+        or _dynamic_percent(row.get("bid"), _previous_value(row, "bid"))
+        or 0
+    )
+    if cpc_delta > 50 or (cpc_delta > 20 and bid_delta > 20):
+        return "OVERHEATED"
+    if cpc_delta > 15 or bid_delta > 15:
+        return "HOT"
+    return "NORMAL"
+
+
+def _ads_efficiency_score(row):
+    score = 100
+    score -= max((_to_number(row.get("drr")) - DRR_HIGH_THRESHOLD) * 1.5, 0)
+    score -= max((CTR_LOW_THRESHOLD - _to_number(row.get("ctr"))) * 8, 0)
+    score -= max(
+        (_dynamic_percent(row.get("cpc"), _previous_value(row, "cpc")) or 0) * 0.5, 0
+    )
+    score -= max(_to_number(row.get("positionDelta")) * 2, 0)
+    return round(max(min(score, 100), 0), 1)
 
 
 def _has_activity(row):
@@ -180,11 +296,8 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "baselineType": baseline_type,
         "baselineValue": baseline_value if baseline_value not in (None, "") else "",
         "baselineReliability": baseline_reliability,
-        "rootCause": (
-            "INSUFFICIENT_HISTORY"
-            if baseline_reliability == "INSUFFICIENT_HISTORY"
-            else "ADS"
-        ),
+        "rootCause": _ads_root_cause(problem_type, baseline_reliability),
+        "adsRootCause": _ads_root_cause(problem_type, baseline_reliability),
         "dynamicPercent": dynamic_percent if dynamic_percent is not None else "",
         **severity_fields,
         "ctr": row.get("ctr", 0),
@@ -203,6 +316,16 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "previousOrdersSum": _previous_value(row, "ordersSum"),
         "drr": row.get("drr", 0),
         "previousDrr": _previous_value(row, "drr"),
+        "bid": row.get("bid", 0),
+        "previousBid": _previous_value(row, "bid"),
+        "bidDelta": row.get("bidDelta")
+        or _dynamic_percent(row.get("bid"), _previous_value(row, "bid"))
+        or "",
+        "avgPosition": row.get("avgPosition") or row.get("avgAdPosition") or 0,
+        "previousAvgPosition": _previous_value(row, "avgPosition"),
+        "positionDelta": row.get("positionDelta") or "",
+        "adsEfficiencyScore": _ads_efficiency_score(row),
+        "auctionTemperature": _auction_temperature(row),
         "recommendation": ADS_RECOMMENDATIONS[problem_type],
     }
 
@@ -357,6 +480,50 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
         )
         cpm_dynamic = _dynamic_percent(cpm, cpm_baseline)
         impressions_dynamic = _dynamic_percent(impressions, impressions_baseline)
+        bid_dynamic = row.get("bidDelta") or _dynamic_percent(
+            row.get("bid"), _previous_value(row, "bid")
+        )
+        position_delta = _to_number(row.get("positionDelta"))
+
+        if (
+            bid_dynamic is not None
+            and bid_dynamic > 0
+            and (cpc_dynamic or 0) > 0
+            and (ctr_dynamic or 0) < 0
+            and position_delta >= 0
+        ):
+            problems.append(
+                _ads_problem(
+                    row, "AUCTION_OVERHEATING", "cpc", cpc, _previous_value(row, "cpc")
+                )
+            )
+
+        if position_delta > 3:
+            problems.append(
+                _ads_problem(
+                    row,
+                    "ads_position_drop",
+                    "avgPosition",
+                    row.get("avgPosition"),
+                    _previous_value(row, "avgPosition"),
+                )
+            )
+
+        for query in row.get("searchQueries") or []:
+            if (
+                _to_number(query.get("spend")) > 0
+                and _to_number(query.get("orders")) == 0
+            ):
+                query_row = {
+                    **row,
+                    **query,
+                    "campaignName": f"{row.get('campaignName', '')} / {query.get('query', '')}",
+                }
+                problems.append(
+                    _ads_problem(
+                        query_row, "ads_query_waste", "spend", query.get("spend"), ""
+                    )
+                )
 
         if _has_activity(row) and _is_insufficient_ads_baseline(row, "ctr", "cpc"):
             problems.append(
@@ -469,6 +636,16 @@ def build_ads_summary(ads_rows, ads_problems):
         or first_row.get("date")
         or "",
         "pastPeriod": first_row.get("pastPeriod") or "",
+        "adsEfficiencyScore": _average(
+            [
+                row.get("adsEfficiencyScore") or _ads_efficiency_score(row)
+                for row in ads_rows or []
+            ]
+        ),
+        "auctionTemperature": max(
+            [_auction_temperature(row) for row in ads_rows or []] or ["NORMAL"],
+            key={"NORMAL": 0, "HOT": 1, "OVERHEATED": 2}.get,
+        ),
     }
 
 
@@ -507,6 +684,15 @@ def build_ads_report_rows(ads_rows, ads_problems):
                 "ordersSum": row.get("ordersSum", 0),
                 "spend": row.get("spend", 0),
                 "drr": row.get("drr", 0),
+                "bid": row.get("bid", 0),
+                "avgPosition": row.get("avgPosition", 0),
+                "bidDelta": row.get("bidDelta", ""),
+                "positionDelta": row.get("positionDelta", ""),
+                "adsRootCause": problem.get("adsRootCause") or "",
+                "adsEfficiencyScore": row.get("adsEfficiencyScore")
+                or _ads_efficiency_score(row),
+                "auctionTemperature": row.get("auctionTemperature")
+                or _auction_temperature(row),
                 "problemType": problem.get("problemLabel") or "",
                 "recommendation": problem.get("recommendation") or "",
                 "baselineReliability": problem.get("baselineReliability") or "",
