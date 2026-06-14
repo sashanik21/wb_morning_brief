@@ -18,6 +18,7 @@ TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_PHOTO_API_URL = "https://api.telegram.org/bot{token}/sendPhoto"
 TELEGRAM_TIMEOUT_SECONDS = 15
 TELEGRAM_TOP_LIMIT = 5
+EXECUTIVE_PROBLEMS_LIMIT = 3
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 logger = logging.getLogger(__name__)
 
@@ -578,6 +579,237 @@ def _build_root_cause_insights_block(root_cause_insights, top_products):
     return "🧠 <b>Возможная причина:</b>\n\n" + "\n\n".join(formatted_insights)
 
 
+def _format_compact_dynamic(label, selected_value, dynamic_value, suffix=""):
+    return (
+        f"{label}: <b>{_format_number(selected_value)}{suffix}</b> "
+        f"({_format_dynamic_value(dynamic_value)})"
+    )
+
+
+def _build_executive_header(summary_stats):
+    summary_stats = summary_stats or {}
+    seller_name = html.escape(str(summary_stats.get("sellerName") or SELLER_NAME))
+
+    return f"📊 <b>WB Morning Brief — Executive Summary</b>\nПродавец: <b>{seller_name}</b>"
+
+
+def _build_executive_store_dynamics(summary_stats):
+    summary_stats = summary_stats or {}
+
+    return (
+        "📈 <b>Динамика магазина</b>\n"
+        + _format_compact_dynamic(
+            "Заказы",
+            summary_stats.get("selectedOrderCount") or summary_stats.get("totalOrders"),
+            summary_stats.get("orderCountDynamic"),
+        )
+        + "\n"
+        + _format_compact_dynamic(
+            "Выручка",
+            summary_stats.get("selectedOrderSum") or summary_stats.get("totalOrderSum"),
+            summary_stats.get("orderSumDynamic"),
+            suffix=" ₽",
+        )
+    )
+
+
+def _build_insights_by_key(root_cause_insights):
+    return {
+        _insight_key(insight): insight
+        for insight in root_cause_insights or []
+        if isinstance(insight, dict)
+    }
+
+
+def _product_primary_problem(product):
+    problems = product.get("problems") or []
+
+    if not problems:
+        return {}
+
+    return problems[0]
+
+
+def _executive_problem_title(product):
+    title = html.escape(str(product.get("title") or "Без названия"))
+    nm_id = html.escape(str(product.get("nmId") or "n/a"))
+
+    return f"{title} (WB {nm_id})"
+
+
+def _executive_problem_line(index, product, insights_by_key):
+    primary_problem = _product_primary_problem(product)
+    insight = insights_by_key.get(_problem_group_key(product)) or {}
+    problem = html.escape(_human_readable_problem_type(primary_problem))
+    dynamic = html.escape(
+        _format_dynamic_percent(primary_problem.get("dynamicPercent"))
+    )
+    consequence = html.escape(
+        str(
+            insight.get("reason")
+            or primary_problem.get("problemLabel")
+            or "есть риск потери заказов и выручки"
+        )
+    )
+    action = html.escape(
+        str(
+            primary_problem.get("recommendation")
+            or ", ".join(str(item) for item in insight.get("whatToCheck") or [])
+            or "проверить карточку, цену, рекламу и остатки"
+        )
+    )
+
+    return (
+        f"{index}. <b>{_executive_problem_title(product)}</b>\n"
+        f"Проблема: {problem} {dynamic}\n"
+        f"↓\nПоследствие: {consequence}\n"
+        f"↓\nЧто делать: {action}"
+    )
+
+
+def _build_executive_top_problems(problem_products, root_cause_insights):
+    if not problem_products:
+        return ""
+
+    insights_by_key = _build_insights_by_key(root_cause_insights)
+    top_products = problem_products[:EXECUTIVE_PROBLEMS_LIMIT]
+    lines = [
+        _executive_problem_line(index, product, insights_by_key)
+        for index, product in enumerate(top_products, start=1)
+    ]
+
+    return "🔴 <b>Главные проблемы</b>\n" + "\n\n".join(lines)
+
+
+def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
+    insights_by_key = _build_insights_by_key(root_cause_insights)
+
+    for product in problem_products:
+        insight = insights_by_key.get(_problem_group_key(product))
+
+        if insight and insight.get("reason"):
+            zone = html.escape(str(insight.get("rootCauseZone") or "причина"))
+            reason = html.escape(str(insight.get("reason")))
+            return f"🧠 <b>Главный инсайт:</b> {zone}: {reason}"
+
+    if (summary_stats or {}).get("orderCountDynamic", 0) < 0:
+        return "🧠 <b>Главный инсайт:</b> просадка заказов требует проверки трафика, конверсии и наличия."
+
+    return "🧠 <b>Главный инсайт:</b> критичный управленческий сигнал не выявлен."
+
+
+def _build_executive_ads_block(records, summary_stats):
+    ads_summary = (summary_stats or {}).get("adsSummary") or {}
+    ads_records = [
+        record
+        for record in records
+        if isinstance(record, dict) and record.get("problemCategory") == "ads"
+    ]
+
+    if not ads_summary and not ads_records:
+        return "📢 <b>Реклама:</b> данных для сигнала нет"
+
+    active_campaigns = ads_summary.get("activeCampaigns", 0)
+    problem_campaigns = ads_summary.get(
+        "problemCampaigns", ads_summary.get("problems", len(ads_records))
+    )
+
+    if not ads_records:
+        return (
+            "📢 <b>Реклама:</b> "
+            f"активных кампаний {_format_number(active_campaigns)}, "
+            "критичных проблем нет"
+        )
+
+    first_problem = ads_records[0]
+    reason = html.escape(
+        str(
+            first_problem.get("problemLabel")
+            or first_problem.get("problemType")
+            or "проверить эффективность расходов"
+        )
+    )
+    return (
+        "📢 <b>Реклама:</b> "
+        f"активных кампаний {_format_number(active_campaigns)}, "
+        f"проблемных {_format_number(problem_campaigns)}. "
+        f"Фокус: {reason}"
+    )
+
+
+def _build_executive_stocks_block(records):
+    stock_records = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and (
+            record.get("problemCategory") == "stocks"
+            or record.get("metric") in ("wbStocks", "stocks")
+        )
+    ]
+
+    if not stock_records:
+        return "📦 <b>Остатки:</b> критичных сигналов нет"
+
+    top_record = stock_records[0]
+    title = html.escape(str(top_record.get("title") or "SKU без названия"))
+    recommendation = html.escape(
+        str(top_record.get("recommendation") or "проверить наличие и поставку")
+    )
+
+    return (
+        "📦 <b>Остатки:</b> "
+        f"критичных SKU {_format_number(len(stock_records))}. "
+        f"Фокус: {title} — {recommendation}"
+    )
+
+
+def _best_worst_from_evidence(summary_stats):
+    rows = [
+        row
+        for row in (summary_stats or {}).get("evidenceRows") or []
+        if isinstance(row, dict)
+    ]
+
+    if not rows:
+        return None, None
+
+    best = max(rows, key=lambda row: row.get("orderSum_delta") or 0)
+    worst = min(rows, key=lambda row: row.get("orderSum_delta") or 0)
+    return best, worst
+
+
+def _format_signal_sku(row):
+    if not row:
+        return "n/a"
+
+    title = html.escape(str(row.get("title") or "Без названия"))
+    nm_id = html.escape(str(row.get("nmId") or "n/a"))
+    dynamic = html.escape(format_percent(row.get("orderSum_delta")))
+
+    return f"{title} (WB {nm_id}, выручка {dynamic})"
+
+
+def _build_no_problem_executive_block(summary_stats):
+    best, worst = _best_worst_from_evidence(summary_stats)
+
+    return (
+        "✅ <b>Критичных проблем не найдено</b>\n"
+        f"Лучший SKU: {_format_signal_sku(best)}\n"
+        f"Худший SKU: {_format_signal_sku(worst)}\n"
+        "Рекомендации: сохранить текущие настройки, точечно проверить худший SKU "
+        "и не расширять рекламу без контроля ДРР."
+    )
+
+
+def _trim_telegram_message(text, max_length=3500):
+    if len(text) <= max_length:
+        return text
+
+    suffix = "\n\n…сокращено до executive-summary лимита."
+    return text[: max_length - len(suffix)].rstrip() + suffix
+
+
 def _format_evidence_metric(row, label, metric, suffix=""):
     selected_value = format_number(row.get(f"{metric}_selected"))
     past_value = format_number(row.get(f"{metric}_past"))
@@ -663,38 +895,37 @@ def _build_evidence_block(summary_stats):
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = _problems_to_records(problems)
     problem_products = _group_problems_by_product(records)
-    header = _build_telegram_header(len(records), len(problem_products), summary_stats)
+    critical_sku_count = len(problem_products)
     message_parts = [
-        header,
-        _build_summary_block(summary_stats),
-        _build_store_dynamics_block(summary_stats),
-        _build_control_signals_block(summary_stats),
-        _build_top_drop_signals_block(summary_stats),
-        _build_ads_block(records, summary_stats),
-        _build_evidence_block(summary_stats),
+        _build_executive_header(summary_stats),
+        _build_executive_store_dynamics(summary_stats),
+        f"🚨 <b>Критичных SKU:</b> {_format_number(critical_sku_count)}",
     ]
 
     if not records:
-        message_parts.append(
-            "✅ Критичных проблем не найдено\n"
-            "⚠️ Это не означает отсутствие просадок — часть SKU могла быть "
-            "отфильтрована ABC."
+        message_parts.extend(
+            [
+                _build_no_problem_executive_block(summary_stats),
+                _build_executive_ads_block(records, summary_stats),
+                _build_executive_stocks_block(records),
+            ]
         )
-        return "\n\n".join(part for part in message_parts if part)
+        return _trim_telegram_message(
+            "\n\n".join(part for part in message_parts if part)
+        )
 
-    top_products = problem_products[:TELEGRAM_TOP_LIMIT]
-    message_parts.append(
-        _build_root_cause_insights_block(root_cause_insights, top_products)
-    )
-    formatted_products = [
-        _format_product_item(index, product)
-        for index, product in enumerate(top_products, start=1)
-    ]
-    message_parts.append(
-        "🔴 <b>ТОП-5 проблемных товаров:</b>\n\n" + "\n\n".join(formatted_products)
+    message_parts.extend(
+        [
+            _build_executive_top_problems(problem_products, root_cause_insights),
+            _build_executive_insight(
+                problem_products, root_cause_insights, summary_stats
+            ),
+            _build_executive_ads_block(records, summary_stats),
+            _build_executive_stocks_block(records),
+        ]
     )
 
-    return "\n\n".join(part for part in message_parts if part)
+    return _trim_telegram_message("\n\n".join(part for part in message_parts if part))
 
 
 def _build_dashboard_caption(summary_stats=None):
