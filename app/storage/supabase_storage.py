@@ -307,8 +307,15 @@ def _normalize_problem(problem):
         "root_recommendation": _first_present(
             problem, ["root_recommendation", "rootRecommendation"]
         ),
+        "severity": _first_present(problem, ["severity"]),
         "severity_score": _to_number(
             _first_present(problem, ["severity_score", "severityScore"])
+        ),
+        "lost_orders": _to_number(
+            _first_present(problem, ["lost_orders", "lostOrders"])
+        ),
+        "lost_order_sum": _to_number(
+            _first_present(problem, ["lost_order_sum", "lostOrderSum"])
         ),
         "recommendation": problem.get("recommendation"),
         "recent_changes": _first_present(problem, ["recent_changes", "recentChanges"]),

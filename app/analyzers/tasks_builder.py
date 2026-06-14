@@ -1,5 +1,7 @@
 from datetime import date
 
+from app.analyzers.severity import task_priority_from_severity
+
 HIGH_PRIORITY_PROBLEM_TYPES = (
     "orderCount",
     "orderSum",
@@ -72,7 +74,8 @@ def build_tasks_from_problems(problems):
                 "title": problem.get("title", ""),
                 "problemType": problem_type,
                 "problemLabel": problem_label,
-                "priority": _get_task_priority(problem_type),
+                "priority": task_priority_from_severity(problem.get("severity"))
+                or _get_task_priority(problem_type),
                 "action": problem.get("recommendation", ""),
                 "status": "Новая",
             }
