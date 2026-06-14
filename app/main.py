@@ -6,6 +6,7 @@ from app.analyzers.ads_analyzer import (
     enrich_ads_time_series,
     save_ads_report,
 )
+from app.analyzers.decision_engine import apply_decision_engine
 from app.analyzers.forecast_engine import build_predictive_forecasts
 from app.analyzers.perfume_intelligence import (
     build_perfume_intelligence,
@@ -282,6 +283,7 @@ def main():
     all_problems = enrich_perfume_records(
         funnel_problems + ads_problems + stocks_problems
     )
+    all_problems = apply_decision_engine(all_problems)
     if funnel_rows:
         storage.save_funnel_snapshot(funnel_rows)
     if all_problems:

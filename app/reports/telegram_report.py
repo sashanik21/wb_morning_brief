@@ -22,6 +22,7 @@ FORECAST_ALERT_LIMIT = 3
 LOW_PRIORITY_SIGNAL_THRESHOLD = 10
 EXECUTIVE_PROBLEMS_LIMIT = 3
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
+EXECUTIVE_ACTIONS_LIMIT = 5
 logger = logging.getLogger(__name__)
 
 DECLINE_SOURCE_TELEGRAM_LABELS = {
@@ -119,6 +120,11 @@ def _is_critical_telegram_problem(problem):
 
 
 def _is_priority_telegram_problem(problem):
+    if problem.get("isSuppressed"):
+        return False
+    action_priority = str(problem.get("actionPriority") or "")
+    if action_priority in {"NOW", "TODAY", "THIS_WEEK"}:
+        return True
     severity = str(problem.get("severity") or "").lower()
     return severity in {"critical", "high", "medium"} and not _is_below_abc_threshold(
         problem
@@ -294,14 +300,28 @@ def _group_problems_by_product(records):
         grouped_products[group_key]["problems"].append(problem)
 
     for product in grouped_products.values():
-        product["problems"].sort(key=lambda item: -to_number(item.get("severityScore")))
+        product["problems"].sort(
+            key=lambda item: (
+                -to_number(item.get("businessPriorityScore")),
+                -to_number(item.get("severityScore")),
+            )
+        )
         product["severityScore"] = to_number(
             product["problems"][0].get("severityScore") if product["problems"] else 0
+        )
+        product["businessPriorityScore"] = to_number(
+            product["problems"][0].get("businessPriorityScore")
+            if product["problems"]
+            else 0
         )
 
     return sorted(
         grouped_products.values(),
-        key=lambda product: (-product["severityScore"], product["first_index"]),
+        key=lambda product: (
+            -product["businessPriorityScore"],
+            -product["severityScore"],
+            product["first_index"],
+        ),
     )
 
 
@@ -1127,6 +1147,68 @@ def _executive_problem_line(index, product, insights_by_key):
     )
 
 
+def _format_root_cause_chain(problem):
+    chain = str(problem.get("rootCauseChain") or "").strip()
+    if not chain:
+        return ""
+    return chain.replace(" → ", "\n↓\n")
+
+
+def _business_action_text(problem, insight=None):
+    insight = insight or {}
+    if _is_stock_impact_problem(problem):
+        return f"Срочно восстановить остатки {_format_product_identity(problem)}"
+    if _problem_zone(problem) == "ADS":
+        return f"Снизить перегрев рекламы / проверить ДРР по {_format_product_identity(problem)}"
+    if insight.get("rootCauseZone"):
+        return f"Проверить {insight.get('rootCauseZone')} по {_format_product_identity(problem)}"
+    return str(
+        problem.get("recommendation")
+        or f"Проверить ключевой сигнал по {_format_product_identity(problem)}"
+    )
+
+
+def _build_executive_actions_block(priority_records, root_cause_insights):
+    actionable = [
+        record
+        for record in priority_records
+        if record.get("actionPriority") in {"NOW", "TODAY", "THIS_WEEK"}
+        and not record.get("isSuppressed")
+    ]
+    if not actionable:
+        return ""
+
+    insights_by_key = _build_insights_by_key(root_cause_insights)
+    ordered = sorted(
+        actionable,
+        key=lambda record: (
+            {"NOW": 0, "TODAY": 1, "THIS_WEEK": 2}.get(record.get("actionPriority"), 9),
+            -to_number(record.get("businessPriorityScore")),
+        ),
+    )
+    lines = []
+    seen = set()
+    for record in ordered:
+        action = _business_action_text(
+            record, insights_by_key.get(_problem_group_key(record))
+        )
+        if action in seen:
+            continue
+        seen.add(action)
+        impact = _problem_impact_value(record)
+        impact_text = (
+            f" — блокируется ~{_format_number(impact)} ₽/день" if impact > 0 else ""
+        )
+        priority = html.escape(str(record.get("actionPriority") or "TODAY"))
+        lines.append(
+            f"{len(lines) + 1}. [{priority}] {html.escape(action)}{impact_text}."
+        )
+        if len(lines) == EXECUTIVE_ACTIONS_LIMIT:
+            break
+
+    return "✅ <b>Что делать сегодня</b>\n" + "\n".join(lines)
+
+
 def _build_executive_top_problems(problem_products, root_cause_insights):
     if not problem_products:
         return ""
@@ -1162,7 +1244,8 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
         ) or len(stock_problems)
         loss = sum(_problem_impact_value(problem) for problem in stock_problems)
         return (
-            "🧠 <b>Главный инсайт:</b> Остатки WB: "
+            "🧠 <b>Главный инсайт:</b> Основной риск магазина — потеря продаж "
+            "из-за отсутствия остатков по ключевым SKU. Остатки WB: "
             f"{_format_product_count(sku_count)} без остатков блокируют около "
             f"{_format_number(loss)} ₽ выручки в день."
         )
@@ -1532,6 +1615,18 @@ def _format_priority_problem_line(problem):
     decline_source_block = (
         f"\nисточник: {html.escape(decline_source)}" if decline_source else ""
     )
+    decision_block = (
+        f"\nприоритет: {html.escape(str(problem.get('actionPriority') or 'MONITOR'))}"
+        f" / score {_format_number(problem.get('businessPriorityScore'))}"
+        f" / SKU {html.escape(str(problem.get('skuCriticality') or 'support'))}"
+    )
+    cluster_block = ""
+    if problem.get("signalCluster"):
+        cluster_block = f"\nсигнал: {html.escape(str(problem.get('signalCluster')))}"
+    chain_block = ""
+    chain = _format_root_cause_chain(problem)
+    if chain:
+        chain_block = f"\nцепочка причины:\n{html.escape(chain)}"
 
     budget_waste = ""
     if _has_budget_waste_risk(problem):
@@ -1542,7 +1637,8 @@ def _format_priority_problem_line(problem):
 
     return (
         f"- <b>{impact}</b> | {zone} | {_format_product_identity(problem)} | {problem_label}"
-        f"{decline_source_block}{specifics_block}\n{html.escape(_format_business_impact(problem))}"
+        f"{decision_block}{decline_source_block}{cluster_block}{specifics_block}"
+        f"{chain_block}\n{html.escape(_format_business_impact(problem))}"
         f"{html.escape(stock_stop)}{html.escape(budget_waste)}"
     )
 
@@ -1950,6 +2046,14 @@ def _build_low_priority_signals_block(records):
 
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = _problems_to_records(problems)
+    records = sorted(
+        records,
+        key=lambda record: (
+            record.get("isSuppressed") is True,
+            -to_number(record.get("businessPriorityScore")),
+            -to_number(record.get("severityScore")),
+        ),
+    )
     priority_records = [
         record for record in records if _is_priority_telegram_problem(record)
     ]
@@ -1986,11 +2090,8 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
                 problem_products, root_cause_insights, summary_stats
             ),
             _build_perfume_intelligence_block(summary_stats),
+            _build_executive_actions_block(priority_records, root_cause_insights),
             _build_executive_top_problems(problem_products, root_cause_insights),
-            _build_first_checks_block(priority_records, root_cause_insights).replace(
-                "🎯 <b>Что проверить в первую очередь:</b>",
-                "✅ <b>Что сделать сегодня</b>",
-            ),
             _build_executive_stocks_block(priority_records, summary_stats),
             _build_executive_ads_block(priority_records, summary_stats),
         ]
