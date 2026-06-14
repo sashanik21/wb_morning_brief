@@ -130,6 +130,12 @@ def _metric_paths(period, metric):
 INSUFFICIENT_DATA_ZONE = "Недостаточно данных"
 INSUFFICIENT_DATA_REASON = "Недостаточно данных для определения причины"
 INSUFFICIENT_DATA_CHECKS = ["проверить карточку вручную"]
+INSUFFICIENT_HISTORY_ZONE = "INSUFFICIENT_HISTORY"
+INSUFFICIENT_HISTORY_REASON = "Недостаточно истории для сравнения рекламных метрик"
+INSUFFICIENT_HISTORY_CHECKS = [
+    "накопить рекламную историю",
+    "проверить новую рекламную активность",
+]
 
 ADS_ROOT_CAUSE_RULE = {
     "zone": "Реклама",
@@ -402,6 +408,14 @@ def _wb_stock_is_zero(product_problems, funnel_record):
     return stock_value == 0
 
 
+def _has_insufficient_history_problem(product_problems):
+    return any(
+        problem.get("rootCause") == "INSUFFICIENT_HISTORY"
+        or problem.get("baselineReliability") == "INSUFFICIENT_HISTORY"
+        for problem in product_problems
+    )
+
+
 def _main_problem(product_problems, preferred_metric):
     for problem in product_problems:
         if _problem_metric(problem) == preferred_metric:
@@ -460,7 +474,18 @@ def analyze_root_causes(problems, funnel_rows):
             "orderSum", product_problems, funnel_record
         )
 
-        if _has_ads_problem(product_problems):
+        if _has_insufficient_history_problem(product_problems):
+            insights.append(
+                _build_insight(
+                    product,
+                    INSUFFICIENT_HISTORY_ZONE,
+                    INSUFFICIENT_HISTORY_REASON,
+                    INSUFFICIENT_HISTORY_CHECKS,
+                    product_problems[0].get("problemLabel")
+                    or "новая рекламная активность",
+                )
+            )
+        elif _has_ads_problem(product_problems):
             insights.append(
                 _build_insight(
                     product,

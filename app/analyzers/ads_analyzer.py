@@ -25,6 +25,7 @@ ADS_REPORT_COLUMNS = [
     "drr",
     "problemType",
     "recommendation",
+    "baselineReliability",
 ]
 
 CTR_LOW_THRESHOLD = 3
@@ -46,6 +47,7 @@ ADS_PROBLEM_LABELS = {
     "ads_impressions_drop": "резкое падение показов рекламы",
     "ads_traffic_drop": "просадка рекламного трафика",
     "ads_reach_expensive": "реклама стала дороже, охват снизился",
+    "NEW_ACTIVITY_DETECTED": "новая рекламная активность",
 }
 
 
@@ -61,6 +63,7 @@ ADS_RECOMMENDATIONS = {
     "ads_impressions_drop": "Проверить бюджет, ставки, статус кампании и доступность карточки.",
     "ads_traffic_drop": "Проверить охват рекламной кампании: падение CTR совпало с падением переходов.",
     "ads_reach_expensive": "Оптимизировать ставки: CPC вырос, расход/охват снизились и переходы просели.",
+    "NEW_ACTIVITY_DETECTED": "Наблюдать за новой рекламной активностью до накопления истории.",
 }
 
 
@@ -83,17 +86,83 @@ def _dynamic_percent(current_value, previous_value):
     return round((_to_number(current_value) - previous_value) / previous_value * 100, 2)
 
 
+def _metric_key(metric, prefix):
+    return f"{prefix}{metric[0].upper()}{metric[1:]}"
+
+
 def _previous_value(row, metric):
-    return row.get(f"previous{metric[0].upper()}{metric[1:]}")
+    return row.get(_metric_key(metric, "previous"))
+
+
+def _history_average(row, metric, days):
+    keys = (
+        f"avg_{metric}_{days}d",
+        f"avg{days}d{metric[0].upper()}{metric[1:]}",
+        f"avg{metric[0].upper()}{metric[1:]}{days}d",
+    )
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _ads_baseline(row, metric):
+    candidates = (
+        ("avg_7d", _history_average(row, metric, 7), "HIGH"),
+        ("avg_3d", _history_average(row, metric, 3), "MEDIUM"),
+        ("previous_day", _previous_value(row, metric), "LOW"),
+    )
+
+    for baseline_type, value, reliability in candidates:
+        if value not in (None, "") and _to_number(value) != 0:
+            return value, baseline_type, reliability
+
+    return None, "insufficient_history", "INSUFFICIENT_HISTORY"
+
+
+def _has_activity(row):
+    return any(
+        _to_number(row.get(metric)) > 0 for metric in ("impressions", "clicks", "spend")
+    )
+
+
+def _is_insufficient_ads_baseline(row, *metrics):
+    return any(
+        _ads_baseline(row, metric)[2] == "INSUFFICIENT_HISTORY" for metric in metrics
+    )
+
+
+def _has_previous_ctr_base(row):
+    return (
+        _to_number(_previous_value(row, "impressions")) > 0
+        or _to_number(_previous_value(row, "clicks")) > 0
+    )
 
 
 def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
-    dynamic_percent = _dynamic_percent(selected_value, past_value)
+    baseline_value, baseline_type, baseline_reliability = _ads_baseline(row, metric)
+    if past_value not in (None, ""):
+        baseline_value = past_value
+        baseline_type = "previous_day"
+        baseline_reliability = (
+            "LOW" if _to_number(past_value) != 0 else "INSUFFICIENT_HISTORY"
+        )
+
+    dynamic_percent = _dynamic_percent(selected_value, baseline_value)
     label = ADS_PROBLEM_LABELS[problem_type]
 
     severity_fields = calculate_problem_severity(
-        metric, selected_value, past_value, dynamic_percent, row.get("ABC")
+        metric, selected_value, baseline_value, dynamic_percent, row.get("ABC")
     )
+    if baseline_reliability == "LOW":
+        severity_fields["severityScore"] = round(
+            severity_fields["severityScore"] * 0.5, 2
+        )
+        severity_fields["severity"] = "low"
+    if baseline_reliability == "INSUFFICIENT_HISTORY":
+        severity_fields["severityScore"] = 0
+        severity_fields["severity"] = "low"
 
     return {
         "sellerName": row.get("sellerName") or SELLER_NAME,
@@ -107,7 +176,15 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "problemType": problem_type,
         "problemLabel": label,
         "selectedValue": selected_value,
-        "pastValue": past_value if past_value not in (None, "") else "",
+        "pastValue": baseline_value if baseline_value not in (None, "") else "",
+        "baselineType": baseline_type,
+        "baselineValue": baseline_value if baseline_value not in (None, "") else "",
+        "baselineReliability": baseline_reliability,
+        "rootCause": (
+            "INSUFFICIENT_HISTORY"
+            if baseline_reliability == "INSUFFICIENT_HISTORY"
+            else "ADS"
+        ),
         "dynamicPercent": dynamic_percent if dynamic_percent is not None else "",
         **severity_fields,
         "ctr": row.get("ctr", 0),
@@ -242,12 +319,25 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
         orders = _to_number(row.get("orders"))
         impressions = _to_number(row.get("impressions"))
         clicks = _to_number(row.get("clicks"))
-        ctr_dynamic = _dynamic_percent(ctr, _previous_value(row, "ctr"))
-        cpc_dynamic = _dynamic_percent(cpc, _previous_value(row, "cpc"))
-        cpm_dynamic = _dynamic_percent(cpm, _previous_value(row, "cpm"))
-        impressions_dynamic = _dynamic_percent(
-            impressions, _previous_value(row, "impressions")
+        ctr_baseline, _, _ = _ads_baseline(row, "ctr")
+        cpc_baseline, _, _ = _ads_baseline(row, "cpc")
+        cpm_baseline, _, _ = _ads_baseline(row, "cpm")
+        impressions_baseline, _, _ = _ads_baseline(row, "impressions")
+        ctr_dynamic = (
+            _dynamic_percent(ctr, ctr_baseline) if _has_previous_ctr_base(row) else None
         )
+        cpc_dynamic = (
+            _dynamic_percent(cpc, cpc_baseline)
+            if _to_number(_previous_value(row, "clicks")) > 0
+            else None
+        )
+        cpm_dynamic = _dynamic_percent(cpm, cpm_baseline)
+        impressions_dynamic = _dynamic_percent(impressions, impressions_baseline)
+
+        if _has_activity(row) and _is_insufficient_ads_baseline(row, "ctr", "cpc"):
+            problems.append(
+                _ads_problem(row, "NEW_ACTIVITY_DETECTED", "ctr", ctr, None)
+            )
 
         if ctr_dynamic is not None and ctr_dynamic < 0:
             problems.append(
@@ -270,7 +360,11 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
                 )
             )
 
-        if drr > DRR_HIGH_THRESHOLD:
+        if (
+            drr > DRR_HIGH_THRESHOLD
+            and not (orders == 0 and _to_number(row.get("ordersSum")) == 0)
+            and not _is_insufficient_ads_baseline(row, "drr")
+        ):
             problems.append(
                 _ads_problem(row, "ads_drr_growth", "drr", drr, DRR_HIGH_THRESHOLD)
             )
@@ -280,12 +374,23 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
                 _ads_problem(row, "ads_spend_without_orders", "orders", orders, "")
             )
 
-        if impressions > 0 and clicks > 0 and ctr < CTR_LOW_THRESHOLD:
+        if (
+            impressions > 0
+            and clicks > 0
+            and ctr < CTR_LOW_THRESHOLD
+            and not _is_insufficient_ads_baseline(row, "ctr")
+        ):
             problems.append(
                 _ads_problem(row, "ads_ctr_low", "ctr", ctr, CTR_LOW_THRESHOLD)
             )
 
-        if spend > 0 and (orders == 0 or drr > DRR_HIGH_THRESHOLD):
+        if spend > 0 and (
+            orders == 0
+            or (
+                drr > DRR_HIGH_THRESHOLD
+                and not _is_insufficient_ads_baseline(row, "drr")
+            )
+        ):
             problems.append(_ads_problem(row, "ads_ineffective", "spend", spend, ""))
 
         if impressions == 0 and clicks == 0 and spend == 0:
@@ -378,6 +483,7 @@ def build_ads_report_rows(ads_rows, ads_problems):
                 "drr": row.get("drr", 0),
                 "problemType": problem.get("problemLabel") or "",
                 "recommendation": problem.get("recommendation") or "",
+                "baselineReliability": problem.get("baselineReliability") or "",
             }
         )
 
