@@ -504,24 +504,33 @@ def _format_ads_specifics(problem):
         ("CTR", "previousCtr", "ctr", "%"),
         ("CPC", "previousCpc", "cpc", " ₽"),
         ("ДРР", "previousDrr", "drr", "%"),
+        ("Средняя позиция", "previousAvgPosition", "avgPosition", ""),
     ]
 
-    if problem.get("baselineReliability") == "INSUFFICIENT_HISTORY":
+    if (
+        problem.get("baselineReliability") == "INSUFFICIENT_HISTORY"
+        and problem.get("adsRootCause") == "INSUFFICIENT_DATA"
+    ):
         for label, _past_key, selected_key, suffix in metrics:
             selected_value = problem.get(selected_key)
             if _is_present(selected_value):
                 lines.append(f"{label}: {_format_number(selected_value)}{suffix}")
         lines.append("новая рекламная активность")
-        return "\n".join(lines)
+    else:
+        for label, past_key, selected_key, suffix in metrics:
+            selected_value = problem.get(selected_key)
+            past_value = problem.get(past_key)
 
-    for label, past_key, selected_key, suffix in metrics:
-        selected_value = problem.get(selected_key)
-        past_value = problem.get(past_key)
+            if _is_present(selected_value) and _is_present(past_value):
+                lines.append(
+                    f"{label}: {_format_value_change(past_value, selected_value, suffix)}"
+                )
 
-        if _is_present(selected_value) and _is_present(past_value):
-            lines.append(
-                f"{label}: {_format_value_change(past_value, selected_value, suffix)}"
-            )
+    if problem.get("bidDelta") not in (None, ""):
+        lines.append(f"Ставка: Δ {_format_number(problem.get('bidDelta'))}%")
+    if problem.get("auctionTemperature"):
+        temperature = html.escape(str(problem.get("auctionTemperature")))
+        lines.append(f"Температура аукциона: {temperature}")
 
     return "\n".join(lines)
 
@@ -1201,10 +1210,20 @@ def _build_executive_ads_block(records, summary_stats):
             or "проверить эффективность расходов"
         )
     )
+    score = ads_summary.get("adsEfficiencyScore")
+    temperature = ads_summary.get("auctionTemperature") or first_problem.get(
+        "auctionTemperature"
+    )
+    executive_bits = []
+    if score not in (None, ""):
+        executive_bits.append(f"score {_format_number(score)}")
+    if temperature:
+        executive_bits.append(f"аукцион {html.escape(str(temperature))}")
+    suffix = f" ({', '.join(executive_bits)})" if executive_bits else ""
     return (
         f"📢 <b>Реклама:</b> проблем {_format_number(problem_campaigns)}. "
         f"Активных кампаний {_format_number(active_campaigns)}. "
-        f"Фокус: {reason}"
+        f"Фокус: {reason}{suffix}"
     )
 
 

@@ -136,6 +136,40 @@ def _campaign_name(campaign):
     )
 
 
+def _extract_search_queries(campaign):
+    query_rows = []
+    containers = (
+        campaign.get("searchQueries"),
+        campaign.get("queries"),
+        campaign.get("keywords"),
+        campaign.get("searchPhrases"),
+    )
+    for container in containers:
+        if not isinstance(container, list):
+            continue
+        for item in container:
+            if not isinstance(item, dict):
+                continue
+            query = item.get("query") or item.get("keyword") or item.get("phrase")
+            impressions = _to_number(item.get("views") or item.get("impressions"))
+            clicks = _to_number(item.get("clicks"))
+            spend = _to_number(item.get("sum") or item.get("spend"))
+            orders = _to_number(item.get("orders"))
+            revenue = _to_number(item.get("sum_price") or item.get("ordersSum"))
+            query_rows.append(
+                {
+                    "query": query,
+                    "impressions": int(impressions),
+                    "clicks": int(clicks),
+                    "ctr": _safe_percent(clicks, impressions),
+                    "spend": round(spend, 2),
+                    "orders": int(orders),
+                    "drr": _safe_percent(spend, revenue),
+                }
+            )
+    return query_rows
+
+
 def _aggregate_campaign(campaign):
     nm_rows = _flatten_nm_stats(campaign)
     impressions = _to_number(campaign.get("views") or campaign.get("impressions"))
@@ -186,6 +220,11 @@ def _aggregate_campaign(campaign):
         "ordersSum": round(orders_sum, 2),
         "spend": round(spend, 2),
         "drr": round(drr, 2),
+        "bid": _to_number(campaign.get("bid") or campaign.get("cpmBid")),
+        "avgPosition": _to_number(
+            campaign.get("avgPosition") or campaign.get("avgAdPosition")
+        ),
+        "searchQueries": _extract_search_queries(campaign),
     }
 
 

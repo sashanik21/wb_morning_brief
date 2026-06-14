@@ -3,6 +3,7 @@ import pandas as pd
 from app.analyzers.ads_analyzer import (
     analyze_ads_problems,
     build_ads_summary,
+    enrich_ads_time_series,
     save_ads_report,
 )
 from app.analyzers.forecast_engine import build_predictive_forecasts
@@ -214,6 +215,7 @@ def main():
     print("=" * 50)
 
     ads_data = collect_ads_stats()
+    ads_data = enrich_ads_time_series(ads_data, storage=storage, seller_id=seller_id)
     funnel_report = flatten_sales_funnel_data(data)
     funnel_rows = funnel_report.to_dict("records")
     for funnel_row in funnel_rows:
