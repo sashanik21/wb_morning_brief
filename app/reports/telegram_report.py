@@ -319,6 +319,32 @@ def _problem_lost_revenue(problem):
     return _loss_value(problem, "potentialRevenueLoss", "lostOrderSum") or 0
 
 
+def _problem_blocked_revenue(problem):
+    return _loss_value(problem, "blockedRevenuePerDay", "potentialRevenueLoss") or 0
+
+
+def _problem_impact_value(problem):
+    return max(_problem_lost_revenue(problem), _problem_blocked_revenue(problem))
+
+
+def _is_insufficient_history_problem(problem):
+    return (
+        problem.get("rootCause") == "INSUFFICIENT_HISTORY"
+        or problem.get("baselineReliability") == "INSUFFICIENT_HISTORY"
+        or problem.get("impactConfidence") == "INSUFFICIENT_HISTORY"
+        or problem.get("problemType") == "INSUFFICIENT_HISTORY"
+    )
+
+
+def _is_stock_impact_problem(problem):
+    return (
+        _decline_source(problem) == "STOCK_DECLINE"
+        or problem.get("problemType") == "sellableOutOfStock"
+        or problem.get("metric") in {"wbStocks", "realSellableStock", "stocks"}
+        or problem.get("problemCategory") == "stocks"
+    )
+
+
 def _has_problem_loss(problem):
     revenue = _loss_value(problem, "potentialRevenueLoss", "lostOrderSum")
     orders = _loss_value(problem, "potentialOrdersLoss", "lostOrders")
@@ -980,8 +1006,39 @@ def _build_executive_top_problems(problem_products, root_cause_insights):
 
 def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
     insights_by_key = _build_insights_by_key(root_cause_insights)
+    top_problems = [_product_primary_problem(product) for product in problem_products]
+    stock_problems = [
+        problem
+        for problem in top_problems
+        if problem
+        and _is_stock_impact_problem(problem)
+        and _problem_impact_value(problem) > 0
+    ]
+
+    if stock_problems:
+        sku_count = len(
+            {
+                str(problem.get("nmId"))
+                for problem in stock_problems
+                if problem.get("nmId")
+            }
+        ) or len(stock_problems)
+        loss = sum(_problem_impact_value(problem) for problem in stock_problems)
+        return (
+            "🧠 <b>Главный инсайт:</b> Остатки WB: "
+            f"{_format_number(sku_count)} SKU без sellable stock дают ≈ "
+            f"{_format_number(loss)} ₽ потенциальной потери выручки."
+        )
 
     for product in problem_products:
+        primary_problem = _product_primary_problem(product)
+        if _is_insufficient_history_problem(primary_problem) and any(
+            _problem_impact_value(problem) > 0
+            for problem in top_problems
+            if not _is_insufficient_history_problem(problem)
+        ):
+            continue
+
         insight = insights_by_key.get(_problem_group_key(product))
 
         if insight and insight.get("reason"):
@@ -1286,8 +1343,8 @@ def _build_daily_losses_block(priority_records):
 
 def _build_top_impact_block(priority_records):
     records = sorted(
-        [record for record in priority_records if _problem_lost_revenue(record) > 0],
-        key=_problem_lost_revenue,
+        [record for record in priority_records if _problem_impact_value(record) > 0],
+        key=_problem_impact_value,
         reverse=True,
     )[:3]
     if not records:
@@ -1298,19 +1355,21 @@ def _build_top_impact_block(priority_records):
         title = html.escape(str(record.get("title") or "").strip())
         name = f"WB {nm_id}" + (f" {title}" if title else "")
         lines.append(
-            f"{index}. {name} — ≈ {_format_number(_problem_lost_revenue(record))} ₽"
+            f"{index}. {name} — ≈ {_format_number(_problem_impact_value(record))} ₽"
         )
     return "\n".join(lines)
 
 
 def _check_priority_score(record):
-    stock_bonus = 100 if record.get("metric") == "wbStocks" else 0
+    stock_bonus = 100 if _is_stock_impact_problem(record) else 0
     ads_bonus = 30 if _problem_zone(record) == "ADS" else 0
+    history_penalty = 200 if _is_insufficient_history_problem(record) else 0
     return (
         to_number(record.get("severityScore"))
-        + _problem_lost_revenue(record) / 1000
+        + _problem_impact_value(record) / 1000
         + stock_bonus
         + ads_bonus
+        - history_penalty
     )
 
 
@@ -1319,16 +1378,40 @@ def _build_first_checks_block(priority_records, root_cause_insights):
         return ""
 
     insights_by_key = _build_insights_by_key(root_cause_insights)
+    top_impact_records = sorted(
+        [record for record in priority_records if _problem_impact_value(record) > 0],
+        key=_problem_impact_value,
+        reverse=True,
+    )
+    stock_impact_records = [
+        record for record in top_impact_records if _is_stock_impact_problem(record)
+    ]
     checks = []
     seen = set()
 
+    if stock_impact_records:
+        sku_list = ", ".join(
+            f"WB {record.get('nmId')}"
+            for record in stock_impact_records[:3]
+            if record.get("nmId")
+        )
+        if sku_list:
+            check = (
+                "Срочно проверить остатки и поставку по SKU с blocked revenue: "
+                f"{sku_list}."
+            )
+            checks.append(html.escape(check))
+            seen.add(check)
+
+    has_stock_or_high_impact = bool(stock_impact_records) or bool(top_impact_records)
+
     for record in sorted(priority_records, key=_check_priority_score, reverse=True):
+        if has_stock_or_high_impact and _is_insufficient_history_problem(record):
+            continue
+
         insight = insights_by_key.get(_problem_group_key(record), {})
 
-        if (
-            record.get("metric") == "wbStocks"
-            and to_number(record.get("selectedValue")) == 0
-        ):
+        if _is_stock_impact_problem(record):
             check = (
                 "Восстановить остатки WB: продажи остановлены из-за нулевого склада."
             )
@@ -1338,7 +1421,9 @@ def _build_first_checks_block(priority_records, root_cause_insights):
             check = f"{insight.get('rootCauseZone')}: {insight.get('reason')}."
         else:
             check = (
-                record.get("recommendation")
+                record.get("rootCause")
+                or record.get("rootRecommendation")
+                or record.get("recommendation")
                 or "Проверить воронку, цену, рекламу и остатки."
             )
 
@@ -1352,7 +1437,17 @@ def _build_first_checks_block(priority_records, root_cause_insights):
             break
 
     lines = [f"{index}. {check}" for index, check in enumerate(checks, start=1)]
-    return "🎯 <b>Что проверить в первую очередь:</b>\n" + "\n".join(lines)
+    technical_note = ""
+    if any(_is_insufficient_history_problem(record) for record in priority_records):
+        technical_note = (
+            "\nℹ️ Ограничение анализа: по рекламе пока недостаточно истории."
+        )
+
+    return (
+        "🎯 <b>Что проверить в первую очередь:</b>\n"
+        + "\n".join(lines)
+        + technical_note
+    )
 
 
 def _trim_telegram_message(text, max_length=3500):
