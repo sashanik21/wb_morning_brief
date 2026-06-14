@@ -24,13 +24,13 @@ from app.collectors.funnel import (
 from app.reports.dashboard_image import generate_dashboard_image
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
-from app.sheets.google_sheets import (
+from app.storage.stub_storage import (
     create_tasks,
     get_change_log,
-    get_google_sheets_configuration_status,
     get_products,
     get_sellers,
-    log_google_sheets_configuration,
+    get_storage_status,
+    log_storage_configuration,
 )
 
 
@@ -88,7 +88,7 @@ def _build_summary_stats(
 
     return {
         "sellerName": seller_name,
-        "googleSheets": get_google_sheets_configuration_status(),
+        "storage": get_storage_status(),
         "totalSkuFromApi": total_sku_from_api,
         "skuInProducts": sku_in_products,
         "skuNotInProducts": sku_not_in_products,
@@ -129,7 +129,7 @@ def main():
     print("=" * 50)
     print("WB MORNING BRIEF")
     print("=" * 50)
-    log_google_sheets_configuration()
+    log_storage_configuration()
     print("=" * 50)
 
     sellers = get_sellers()

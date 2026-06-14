@@ -7,7 +7,7 @@ from app.collectors.cards import get_cards_list
 from app.config import ABC_RULES, HEADERS
 from app.constants.problem_labels import get_problem_label
 from app.seller_config import SELLER_NAME
-from app.sheets.google_sheets import get_change_log, get_products
+from app.storage.stub_storage import get_change_log, get_products
 from app.wb_client import WBClient
 
 SALES_FUNNEL_URL = (

@@ -2,6 +2,4 @@ requests
 python-dotenv
 pandas
 openpyxl
-gspread
-google-auth
 matplotlib
