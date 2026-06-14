@@ -6,6 +6,7 @@ PROBLEM_LABELS = {
     "addToCartPercent": "Конверсия в корзину",
     "cartToOrderPercent": "Конверсия в заказ",
     "wbStocks": "Остатки WB",
+    "realSellableStock": "Sellable stock",
 }
 
 

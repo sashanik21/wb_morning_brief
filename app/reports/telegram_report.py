@@ -365,7 +365,10 @@ def _format_ads_specifics(problem):
 def _format_funnel_specifics(problem):
     metric = str(problem.get("metric") or "")
 
-    if problem.get("problemCategory") == "ads" or metric == "wbStocks":
+    if problem.get("problemCategory") == "ads" or metric in {
+        "wbStocks",
+        "realSellableStock",
+    }:
         return ""
 
     label = get_problem_label(metric)
@@ -928,12 +931,24 @@ def _build_executive_stocks_block(records):
         if isinstance(record, dict)
         and (
             record.get("problemCategory") == "stocks"
-            or record.get("metric") in ("wbStocks", "stocks")
+            or record.get("metric") in ("wbStocks", "realSellableStock", "stocks")
         )
     ]
 
     if not stock_records:
         return "📦 <b>Остатки:</b> критичных сигналов нет"
+
+    pipeline = {
+        "acceptance": sum(
+            to_number(record.get("acceptanceStock")) for record in stock_records
+        ),
+        "returning": sum(
+            to_number(record.get("returningStock")) for record in stock_records
+        ),
+        "ready": sum(
+            to_number(record.get("readyForSaleStock")) for record in stock_records
+        ),
+    }
 
     top_record = stock_records[0]
     title = html.escape(str(top_record.get("title") or "SKU без названия"))
@@ -945,6 +960,10 @@ def _build_executive_stocks_block(records):
         "📦 <b>Остатки:</b> "
         f"критичных SKU {_format_number(len(stock_records))}. "
         f"Фокус: {title} — {recommendation}"
+        f"\n📦 Логистика WB: "
+        f"{_format_number(pipeline['acceptance'])} шт в приемке, "
+        f"{_format_number(pipeline['returning'])} шт едут возвратами, "
+        f"{_format_number(pipeline['ready'])} шт готовы к продаже"
     )
 
 
@@ -992,10 +1011,28 @@ def _format_priority_problem_line(problem):
     zone = html.escape(_problem_zone(problem))
     stock_stop = ""
     if (
-        problem.get("metric") == "wbStocks"
+        problem.get("metric") in {"wbStocks", "realSellableStock"}
         and to_number(problem.get("selectedValue")) == 0
     ):
-        stock_stop = "\nПродажи остановлены из-за отсутствия остатков WB"
+        if any(
+            to_number(problem.get(key)) > 0
+            for key in (
+                "incomingStock",
+                "returningStock",
+                "acceptanceStock",
+                "transitStock",
+            )
+        ):
+            stock_stop = (
+                "\n⚠️ SKU временно недоступен для продажи"
+                "\nТовар уже находится в логистике WB"
+                f"\n📦 Логистика WB:"
+                f"\n- {_format_number(problem.get('acceptanceStock'))} шт в приемке"
+                f"\n- {_format_number(problem.get('returningStock'))} шт едут возвратами"
+                f"\n- {_format_number(problem.get('readyForSaleStock'))} шт готовы к продаже"
+            )
+        else:
+            stock_stop = "\nПродажи остановлены из-за отсутствия sellable stock"
 
     specifics = _format_ads_specifics(problem) or _format_funnel_specifics(problem)
     specifics_block = f"\n{html.escape(specifics)}" if specifics else ""

@@ -6,6 +6,11 @@ HIGH_PRIORITY_PROBLEM_TYPES = (
     "orderCount",
     "orderSum",
     "wbStocks",
+    "realSellableStock",
+    "sellableOutOfStock",
+    "acceptanceDelay",
+    "returnFlow",
+    "transitDelay",
     "warehouseStockZero",
 )
 MEDIUM_PRIORITY_PROBLEM_TYPES = (
