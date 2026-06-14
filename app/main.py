@@ -185,7 +185,13 @@ def main():
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("ADS SUMMARY:")
     print(f"campaigns: {ads_summary['activeCampaigns']}")
+    print(f"ads rows: {ads_summary['adsRows']}")
     print(f"problems: {ads_summary['problems']}")
+    print(
+        "period: "
+        f"{ads_summary.get('selectedPeriod') or 'n/a'} vs "
+        f"{ads_summary.get('pastPeriod') or 'n/a'}"
+    )
     print("=" * 50)
 
     stocks_problems = []

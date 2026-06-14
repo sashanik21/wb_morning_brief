@@ -562,8 +562,9 @@ def _build_ads_block(records, summary_stats):
 
     active_campaigns = ads_summary.get("activeCampaigns", 0)
     problem_campaigns = ads_summary.get("problemCampaigns", 0)
+    ads_problem_count = ads_summary.get("problems", len(ads_records))
     block_lines = [
-        "📢 <b>Реклама:</b>",
+        f"📢 <b>Реклама:</b> проблем {_format_number(ads_problem_count)}",
         f"Активных кампаний: <b>{_format_number(active_campaigns)}</b>",
         f"Проблемных кампаний: <b>{_format_number(problem_campaigns)}</b>",
     ]
@@ -582,7 +583,7 @@ def _build_ads_block(records, summary_stats):
 
     problem_lines = []
 
-    for record in list(grouped_campaigns.values())[:TELEGRAM_TOP_LIMIT]:
+    for record in list(grouped_campaigns.values())[:3]:
         title = html.escape(
             str(record.get("title") or record.get("campaignName") or "Без названия")
         )
@@ -809,9 +810,8 @@ def _build_executive_ads_block(records, summary_stats):
         )
     )
     return (
-        "📢 <b>Реклама:</b> "
-        f"активных кампаний {_format_number(active_campaigns)}, "
-        f"проблемных {_format_number(problem_campaigns)}. "
+        f"📢 <b>Реклама:</b> проблем {_format_number(problem_campaigns)}. "
+        f"Активных кампаний {_format_number(active_campaigns)}. "
         f"Фокус: {reason}"
     )
 
