@@ -102,6 +102,10 @@ PROBLEMS_REPORT_COLUMNS = [
     "adsOrdersShare",
     "organicOrdersShare",
     "declineSource",
+    "daysUntilOOS",
+    "forecastConfidence",
+    "forecastType",
+    "forecastMessage",
 ]
 PROBLEM_RULES = [
     {
@@ -1634,7 +1638,11 @@ def _adjust_worksheet_layout(worksheet, dataframe):
 
 
 def save_funnel_problems_report(
-    funnel_data, seller_id=None, supply_stock_metrics_by_nm_id=None, ads_rows=None
+    funnel_data,
+    seller_id=None,
+    supply_stock_metrics_by_nm_id=None,
+    ads_rows=None,
+    predictive_forecasts=None,
 ):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1646,6 +1654,11 @@ def save_funnel_problems_report(
         supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
         ads_rows=ads_rows,
     )
+
+    if predictive_forecasts:
+        forecast_dataframe = pd.DataFrame(predictive_forecasts)
+        dataframe = pd.concat([dataframe, forecast_dataframe], ignore_index=True)
+        dataframe = dataframe.reindex(columns=PROBLEMS_REPORT_COLUMNS).fillna("")
 
     _print_problems_summary(dataframe)
 

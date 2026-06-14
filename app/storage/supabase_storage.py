@@ -411,6 +411,16 @@ def _normalize_problem(problem):
             _first_present(problem, ["organic_orders_share", "organicOrdersShare"])
         ),
         "decline_source": _first_present(problem, ["decline_source", "declineSource"]),
+        "days_until_oos": _to_number(
+            _first_present(problem, ["days_until_oos", "daysUntilOOS"])
+        ),
+        "forecast_confidence": _first_present(
+            problem, ["forecast_confidence", "forecastConfidence"]
+        ),
+        "forecast_type": _first_present(problem, ["forecast_type", "forecastType"]),
+        "forecast_message": _first_present(
+            problem, ["forecast_message", "forecastMessage"]
+        ),
     }
 
 

@@ -107,6 +107,10 @@ create table if not exists problems (
     ads_orders_share numeric,
     organic_orders_share numeric,
     decline_source text,
+    days_until_oos numeric,
+    forecast_confidence text,
+    forecast_type text,
+    forecast_message text,
     recommendation text,
     recent_changes text,
     created_at timestamptz default now()
