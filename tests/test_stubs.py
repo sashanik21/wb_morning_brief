@@ -181,3 +181,102 @@ def test_ads_analyzer_detects_cpc_growth():
     problems = analyze_ads_problems([_ads_row(cpc=47, previousCpc=35)])
 
     assert "ads_cpc_growth" in _problem_types(problems)
+
+
+class _CardsClientStub:
+    responses = []
+    requests = []
+
+    def __init__(self, headers):
+        self.headers = headers
+
+    def request(self, method, url, json_data):
+        self.requests.append({"method": method, "url": url, "json_data": json_data})
+        return self.responses.pop(0)
+
+
+def _install_cards_client(monkeypatch, responses):
+    monkeypatch.setenv("WB_API_TOKEN_TEST", "test-token")
+
+    from app.collectors import cards as cards_collector
+
+    _CardsClientStub.responses = list(responses)
+    _CardsClientStub.requests = []
+    monkeypatch.setattr(cards_collector, "WBClient", _CardsClientStub)
+    return cards_collector, _CardsClientStub
+
+
+def test_cards_collector_collects_single_page(monkeypatch):
+    cards_collector, client_stub = _install_cards_client(
+        monkeypatch,
+        [
+            {
+                "cards": [{"nmID": 1}, {"nmID": 2}],
+                "cursor": {"updatedAt": "2026-06-14T00:00:00Z", "nmID": 2},
+            },
+            {"cards": [], "cursor": {"updatedAt": "2026-06-14T00:00:00Z", "nmID": 2}},
+        ],
+    )
+
+    result = cards_collector.get_cards_list()
+
+    assert result == {"cards": [{"nmID": 1}, {"nmID": 2}]}
+    assert client_stub.requests[0]["json_data"]["settings"]["cursor"] == {"limit": 100}
+    assert client_stub.requests[1]["json_data"]["settings"]["cursor"] == {
+        "limit": 100,
+        "updatedAt": "2026-06-14T00:00:00Z",
+        "nmID": 2,
+    }
+
+
+def test_cards_collector_collects_multiple_pages(monkeypatch):
+    cards_collector, client_stub = _install_cards_client(
+        monkeypatch,
+        [
+            {
+                "cards": [{"nmID": 1}],
+                "cursor": {"updatedAt": "2026-06-14T00:00:00Z", "nmID": 1},
+            },
+            {
+                "cards": [{"nmID": 2}],
+                "cursor": {"updatedAt": "2026-06-14T00:01:00Z", "nmID": 2},
+            },
+            {"cards": [], "cursor": {"updatedAt": "2026-06-14T00:01:00Z", "nmID": 2}},
+        ],
+    )
+
+    result = cards_collector.get_cards_list()
+
+    assert result == {"cards": [{"nmID": 1}, {"nmID": 2}]}
+    assert len(client_stub.requests) == 3
+
+
+def test_cards_collector_handles_empty_response(monkeypatch, capsys):
+    cards_collector, _client_stub = _install_cards_client(
+        monkeypatch,
+        [{"cards": [], "cursor": {}}],
+    )
+
+    result = cards_collector.get_cards_list()
+
+    assert result == {"cards": []}
+    assert "No WB cards found" in capsys.readouterr().out
+
+
+def test_cards_collector_stops_at_max_pages(monkeypatch):
+    cards_collector, client_stub = _install_cards_client(
+        monkeypatch,
+        [
+            {
+                "cards": [{"nmID": page}],
+                "cursor": {"updatedAt": f"2026-06-14T00:{page:02d}:00Z", "nmID": page},
+            }
+            for page in range(1, 4)
+        ],
+    )
+    monkeypatch.setattr(cards_collector, "MAX_CARDS_PAGES", 3)
+
+    result = cards_collector.get_cards_list()
+
+    assert result == {"cards": [{"nmID": 1}, {"nmID": 2}, {"nmID": 3}]}
+    assert len(client_stub.requests) == 3
