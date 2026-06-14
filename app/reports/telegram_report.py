@@ -407,6 +407,36 @@ def _format_funnel_specifics(problem):
     return f"{label}: {_format_value_change(past_value, selected_value, suffix)}"
 
 
+def _format_visibility_specifics(problem):
+    avg_position = problem.get("avgPosition")
+    past_position = problem.get("pastAvgPosition") or problem.get("previousAvgPosition")
+    visibility_score = problem.get("visibilityScore")
+
+    if not (
+        _is_present(avg_position)
+        or _is_present(past_position)
+        or _is_present(visibility_score)
+    ):
+        return ""
+
+    lines = ["📉 Видимость:"]
+    if _is_present(avg_position) and _is_present(past_position):
+        lines.append(
+            f"позиция: {_format_number(past_position)} → {_format_number(avg_position)}"
+        )
+    elif _is_present(avg_position):
+        lines.append(f"позиция: {_format_number(avg_position)}")
+
+    if _is_present(visibility_score):
+        lines.append(f"visibility score: {_format_number(visibility_score)}%")
+
+    risk = problem.get("searchVisibilityRisk")
+    if _is_present(risk):
+        lines.append(f"risk: {html.escape(str(risk))}")
+
+    return "\n".join(lines)
+
+
 def _format_business_impact(problem):
     if not _has_problem_loss(problem):
         return "потери не рассчитаны"
@@ -1119,7 +1149,11 @@ def _format_priority_problem_line(problem):
     ):
         stock_stop = _format_stock_stop_block(problem)
 
-    specifics = _format_ads_specifics(problem) or _format_funnel_specifics(problem)
+    specifics_parts = [
+        _format_ads_specifics(problem) or _format_funnel_specifics(problem),
+        _format_visibility_specifics(problem),
+    ]
+    specifics = "\n".join(part for part in specifics_parts if part)
     specifics_block = f"\n{html.escape(specifics)}" if specifics else ""
 
     return (

@@ -41,6 +41,10 @@ FUNNEL_REPORT_COLUMNS = [
     "addToCartPercent",
     "cartToOrderPercent",
     "localizationPercent",
+    "avgPosition",
+    "positionDelta",
+    "visibilityScore",
+    "searchVisibilityRisk",
     "wbStocks",
     "mpStocks",
     "realSellableStock",
@@ -76,6 +80,11 @@ PROBLEMS_REPORT_COLUMNS = [
     "lostOrderSum",
     "recommendation",
     "recentChanges",
+    "avgPosition",
+    "positionDelta",
+    "visibilityScore",
+    "searchVisibilityRisk",
+    "rootCause",
     "realSellableStock",
     "incomingStock",
     "returningStock",
@@ -252,6 +261,19 @@ def _flatten_history_products(products):
                         history_item, ["cartToOrderPercent", "cartToOrderConversion"]
                     ),
                     "localizationPercent": history_item.get("localizationPercent"),
+                    "avgPosition": _first_present(
+                        history_item, ["avgPosition", "averagePosition", "position"]
+                    ),
+                    "positionDelta": "",
+                    "visibilityScore": _first_present(
+                        history_item,
+                        [
+                            "visibilityScore",
+                            "searchVisibilityScore",
+                            "visibility_score",
+                        ],
+                    ),
+                    "searchVisibilityRisk": "",
                     "wbStocks": _get_nested_value(product, "stocks.wb"),
                     "mpStocks": _get_nested_value(product, "stocks.mp"),
                 }
@@ -298,6 +320,81 @@ def _calculate_dynamic_percent(selected_value, past_value):
         return None
 
     return ((selected_number - past_number) / past_number) * 100
+
+
+def _position_paths(period):
+    return [
+        f"statistic.{period}.avgPosition",
+        f"statistics.{period}.avgPosition",
+        f"{period}.avgPosition",
+        f"avgPosition.{period}",
+        f"statistic.{period}.position",
+        f"statistics.{period}.position",
+        f"{period}.position",
+        f"position.{period}",
+    ]
+
+
+def _position_metrics(record):
+    selected_position = _first_present(
+        record,
+        [
+            *_position_paths("selected"),
+            "avgPosition",
+            "averagePosition",
+            "position",
+        ],
+        default="",
+    )
+    past_position = _first_present(
+        record,
+        [
+            *_position_paths("past"),
+            "previousAvgPosition",
+            "pastAvgPosition",
+            "previousPosition",
+            "pastPosition",
+        ],
+        default="",
+    )
+    selected_number = _to_number(selected_position)
+    past_number = _to_number(past_position)
+
+    position_delta = None
+    visibility_score = _first_present(
+        record,
+        [
+            "visibilityScore",
+            "searchVisibilityScore",
+            "visibility_score",
+            "search_visibility_score",
+        ],
+        default=None,
+    )
+    risk = ""
+
+    if selected_number is not None and past_number is not None:
+        position_delta = selected_number - past_number
+        if _to_number(visibility_score) is None and past_number != 0:
+            visibility_score = ((past_number - selected_number) / past_number) * 100
+
+        if position_delta > 0:
+            risk = "POSITION_DROP"
+
+    visibility_number = _to_number(visibility_score)
+    if visibility_number is not None:
+        if visibility_number <= -30:
+            risk = "SEARCH_TRAFFIC_LOSS"
+        elif visibility_number < 0 and not risk:
+            risk = "VISIBILITY_DROP"
+
+    return {
+        "avgPosition": _format_problem_number(selected_position),
+        "pastAvgPosition": _format_problem_number(past_position),
+        "positionDelta": _format_problem_number(position_delta),
+        "visibilityScore": _format_problem_number(visibility_score),
+        "searchVisibilityRisk": risk,
+    }
 
 
 def _metric_paths(period, metric):
@@ -575,6 +672,16 @@ def _build_problem_row(
     severity_fields = calculate_problem_severity(
         rule["metric"], selected_value, past_value, dynamic_percent, abc
     )
+    position_metrics = _position_metrics(record)
+    root_cause = ""
+    if rule["metric"] in {"addToCartPercent", "openCount"} and dynamic_percent < 0:
+        if _to_number(position_metrics.get("positionDelta")) is not None:
+            if _to_number(position_metrics.get("positionDelta")) > 0:
+                root_cause = "Просадка связана с потерей позиции в выдаче"
+            else:
+                root_cause = "Проблема вероятно связана с карточкой или рекламой"
+        elif rule["metric"] == "openCount":
+            root_cause = "SEARCH_TRAFFIC_LOSS"
 
     return {
         "sellerName": SELLER_NAME,
@@ -600,6 +707,8 @@ def _build_problem_row(
             record, products_by_nm_id, rule["recommendation"]
         ),
         "recentChanges": recent_changes,
+        **position_metrics,
+        "rootCause": root_cause,
     }
 
 
@@ -1101,30 +1210,52 @@ def flatten_sales_funnel_data(funnel_data):
 
         rows.append(
             {
-                "sellerName": SELLER_NAME,
-                "date": report_date,
-                "nmId": _first_present(record, ["product.nmId", "nmId", "nmID"]),
-                "vendorCode": _first_present(
-                    record, ["product.vendorCode", "vendorCode"]
-                ),
-                "brandName": _first_present(record, ["product.brandName", "brandName"]),
-                "title": _first_present(record, ["product.title", "title"]),
-                "openCount": _first_present(
-                    record,
-                    ["statistic.selected.openCount", "selected.openCount", "openCount"],
-                ),
-                "cartCount": _first_present(
-                    record,
-                    ["statistic.selected.cartCount", "selected.cartCount", "cartCount"],
-                ),
-                "orderCount": _first_present(
-                    record,
-                    [
-                        "statistic.selected.orderCount",
-                        "selected.orderCount",
-                        "orderCount",
-                    ],
-                ),
+                **{
+                    "sellerName": SELLER_NAME,
+                    "date": report_date,
+                    "nmId": _first_present(record, ["product.nmId", "nmId", "nmID"]),
+                    "vendorCode": _first_present(
+                        record, ["product.vendorCode", "vendorCode"]
+                    ),
+                    "brandName": _first_present(
+                        record, ["product.brandName", "brandName"]
+                    ),
+                    "title": _first_present(record, ["product.title", "title"]),
+                },
+                **{
+                    key: value
+                    for key, value in {
+                        "openCount": _first_present(
+                            record,
+                            [
+                                "statistic.selected.openCount",
+                                "selected.openCount",
+                                "openCount",
+                            ],
+                        ),
+                        "cartCount": _first_present(
+                            record,
+                            [
+                                "statistic.selected.cartCount",
+                                "selected.cartCount",
+                                "cartCount",
+                            ],
+                        ),
+                        "orderCount": _first_present(
+                            record,
+                            [
+                                "statistic.selected.orderCount",
+                                "selected.orderCount",
+                                "orderCount",
+                            ],
+                        ),
+                    }.items()
+                },
+            }
+        )
+
+        rows[-1].update(
+            {
                 "orderSum": _first_present(
                     record,
                     ["statistic.selected.orderSum", "selected.orderSum", "orderSum"],
@@ -1157,6 +1288,11 @@ def flatten_sales_funnel_data(funnel_data):
                         "localizationPercent",
                     ],
                 ),
+                **{
+                    key: value
+                    for key, value in _position_metrics(record).items()
+                    if key != "pastAvgPosition"
+                },
                 "wbStocks": _first_present(record, ["product.stocks.wb", "stocks.wb"]),
                 "mpStocks": _first_present(record, ["product.stocks.mp", "stocks.mp"]),
                 "realSellableStock": _first_present(
