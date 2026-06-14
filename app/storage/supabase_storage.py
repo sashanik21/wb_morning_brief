@@ -59,6 +59,13 @@ def _first_present(row, keys, default=None):
     return default
 
 
+def _to_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "да"}
+
+    return bool(value)
+
+
 def _to_int(value):
     if value in (None, ""):
         return None
@@ -310,6 +317,13 @@ def _normalize_problem(problem):
         "severity": _first_present(problem, ["severity"]),
         "severity_score": _to_number(
             _first_present(problem, ["severity_score", "severityScore"])
+        ),
+        "is_below_abc_threshold": _to_bool(
+            _first_present(
+                problem,
+                ["is_below_abc_threshold", "isBelowAbcThreshold"],
+                default=False,
+            )
         ),
         "lost_orders": _to_number(
             _first_present(problem, ["lost_orders", "lostOrders"])

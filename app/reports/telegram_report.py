@@ -23,6 +23,20 @@ TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 logger = logging.getLogger(__name__)
 
 
+def _is_below_abc_threshold(problem):
+    value = problem.get("isBelowAbcThreshold")
+
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "да"}
+
+    return bool(value)
+
+
+def _is_priority_telegram_problem(problem):
+    severity = str(problem.get("severity") or "").lower()
+    return severity in {"critical", "high"} and not _is_below_abc_threshold(problem)
+
+
 def _split_long_telegram_line(line, max_length):
     chunks = []
     start = 0
@@ -371,8 +385,8 @@ def _build_summary_block(summary_stats):
         f"SKU из WB API: {_format_number(summary_stats.get('totalSkuFromApi'))}\n"
         f"SKU есть в PRODUCTS: {_format_number(summary_stats.get('skuInProducts'))}\n"
         f"SKU нет в PRODUCTS: {_format_number(summary_stats.get('skuNotInProducts'))}\n"
-        f"Проигнорировано ABC-фильтром: "
-        f"{_format_number(summary_stats.get('skuIgnoredByAbcFilter'))}\n"
+        f"Ниже ABC-порога: "
+        f"{_format_number(summary_stats.get('belowAbcThresholdProblems'))}\n"
         f"Переходы в карточку: "
         f"{_format_number(summary_stats.get('totalOpenCount'))}\n"
         f"Корзины: {_format_number(summary_stats.get('totalCartCount'))}\n"
@@ -453,8 +467,8 @@ def _build_control_signals_block(summary_stats):
     if summary_stats.get("skuNotInProducts", 0) > 0:
         signals.append("⚠️ Есть карточки WB, не внесённые в PRODUCTS")
 
-    if summary_stats.get("skuIgnoredByAbcFilter", 0) > 0:
-        signals.append("⚠️ Часть SKU проигнорирована ABC-фильтром")
+    if summary_stats.get("belowAbcThresholdProblems", 0) > 0:
+        signals.append("⚠️ Есть низкоприоритетные сигналы ниже ABC-порога")
 
     if summary_stats.get("totalOrders", 0) == 0:
         signals.append("🔴 Заказов нет")
@@ -943,20 +957,25 @@ def _build_evidence_block(summary_stats):
 
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = _problems_to_records(problems)
-    problem_products = _group_problems_by_product(records)
+    priority_records = [
+        record for record in records if _is_priority_telegram_problem(record)
+    ]
+    low_priority_signals_count = len(records) - len(priority_records)
+    problem_products = _group_problems_by_product(priority_records)
     critical_sku_count = len(problem_products)
     message_parts = [
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
         f"🚨 <b>Критичных SKU:</b> {_format_number(critical_sku_count)}",
+        f"Низкоприоритетных сигналов: {_format_number(low_priority_signals_count)}",
     ]
 
-    if not records:
+    if not priority_records:
         message_parts.extend(
             [
                 _build_no_problem_executive_block(summary_stats),
-                _build_executive_ads_block(records, summary_stats),
-                _build_executive_stocks_block(records),
+                _build_executive_ads_block(priority_records, summary_stats),
+                _build_executive_stocks_block(priority_records),
             ]
         )
         return _trim_telegram_message(
@@ -969,8 +988,8 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
             _build_executive_insight(
                 problem_products, root_cause_insights, summary_stats
             ),
-            _build_executive_ads_block(records, summary_stats),
-            _build_executive_stocks_block(records),
+            _build_executive_ads_block(priority_records, summary_stats),
+            _build_executive_stocks_block(priority_records),
         ]
     )
 

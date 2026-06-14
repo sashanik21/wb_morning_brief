@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from app.analyzers.severity import calculate_problem_severity
+from app.analyzers.severity import calculate_problem_severity, downgrade_severity
 from app.collectors.cards import get_cards_list
 from app.config import ABC_RULES, HEADERS
 from app.constants.problem_labels import get_problem_label
@@ -54,6 +54,7 @@ PROBLEMS_REPORT_COLUMNS = [
     "dynamicPercent",
     "severity",
     "severityScore",
+    "isBelowAbcThreshold",
     "lostOrders",
     "lostOrderSum",
     "recommendation",
@@ -649,6 +650,16 @@ def _metric_dynamic_percent(record, rule):
     return selected_value, past_value, dynamic_percent
 
 
+def _apply_abc_priority(problem_rows, is_below_abc_threshold):
+    for problem_row in problem_rows:
+        problem_row["isBelowAbcThreshold"] = is_below_abc_threshold
+
+        if is_below_abc_threshold:
+            problem_row["severity"] = downgrade_severity(problem_row.get("severity"))
+
+    return problem_rows
+
+
 def _build_record_problem_rows(
     record, products_by_nm_id, recent_changes="", history_baselines=None
 ):
@@ -711,16 +722,16 @@ def _build_record_problem_rows(
 
 
 def count_sku_ignored_by_abc_filter(funnel_data):
-    ignored_sku_count = 0
+    below_threshold_problem_count = 0
     products_by_nm_id = _build_products_by_nm_id()
 
     for record in _extract_problem_records(funnel_data):
-        if _build_record_problem_rows(
-            record, products_by_nm_id
-        ) and not _passes_abc_filter(record, products_by_nm_id):
-            ignored_sku_count += 1
+        record_problem_rows = _build_record_problem_rows(record, products_by_nm_id)
 
-    return ignored_sku_count
+        if record_problem_rows and not _passes_abc_filter(record, products_by_nm_id):
+            below_threshold_problem_count += len(record_problem_rows)
+
+    return below_threshold_problem_count
 
 
 def build_top_funnel_drop_signals(funnel_data, limit=5):
@@ -873,7 +884,7 @@ def _load_history_baselines(seller_id, records):
 
 def analyze_funnel_problems(funnel_data, seller_id=None):
     problem_rows = []
-    ignored_sku_count = 0
+    below_threshold_problem_count = 0
     products_by_nm_id = _build_products_by_nm_id()
     recent_changes_by_nm_id = _build_recent_changes_by_nm_id()
 
@@ -893,15 +904,20 @@ def analyze_funnel_problems(funnel_data, seller_id=None):
         if not record_problem_rows:
             continue
 
-        if not _passes_abc_filter(record, products_by_nm_id):
-            ignored_sku_count += 1
-            continue
+        is_below_abc_threshold = not _passes_abc_filter(record, products_by_nm_id)
+        _apply_abc_priority(record_problem_rows, is_below_abc_threshold)
+
+        if is_below_abc_threshold:
+            below_threshold_problem_count += len(record_problem_rows)
 
         problem_rows.extend(record_problem_rows)
 
-    print("ABC FILTER:")
-    print(f"ignored SKU: {ignored_sku_count}")
-    print(f"remaining problems: {len(problem_rows)}")
+    priority_problem_count = len(problem_rows) - below_threshold_problem_count
+
+    print("ABC PRIORITY FILTER:")
+    print(f"below threshold problems: {below_threshold_problem_count}")
+    print(f"priority problems: {priority_problem_count}")
+    print(f"total problems: {len(problem_rows)}")
 
     return pd.DataFrame(problem_rows, columns=PROBLEMS_REPORT_COLUMNS).fillna("")
 

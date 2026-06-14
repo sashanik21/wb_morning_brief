@@ -74,8 +74,12 @@ def build_tasks_from_problems(problems):
                 "title": problem.get("title", ""),
                 "problemType": problem_type,
                 "problemLabel": problem_label,
-                "priority": task_priority_from_severity(problem.get("severity"))
-                or _get_task_priority(problem_type),
+                "priority": (
+                    "low"
+                    if problem.get("isBelowAbcThreshold")
+                    else task_priority_from_severity(problem.get("severity"))
+                    or _get_task_priority(problem_type)
+                ),
                 "action": problem.get("recommendation", ""),
                 "status": "Новая",
             }

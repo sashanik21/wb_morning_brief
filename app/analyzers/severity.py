@@ -4,6 +4,17 @@ SEVERITY_LABELS = {
     "medium": "Medium",
     "low": "Low",
 }
+SEVERITY_ORDER = ["low", "medium", "high", "critical"]
+
+
+def downgrade_severity(severity):
+    severity = str(severity or "low").lower()
+
+    if severity not in SEVERITY_ORDER:
+        return "low"
+
+    severity_index = SEVERITY_ORDER.index(severity)
+    return SEVERITY_ORDER[max(severity_index - 1, 0)]
 
 
 def to_number(value, default=0):

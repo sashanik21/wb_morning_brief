@@ -76,7 +76,7 @@ def _build_summary_stats(
     total_sku_from_api,
     sku_in_products,
     sku_not_in_products,
-    sku_ignored_by_abc_filter,
+    below_abc_threshold_problems,
     critical_problems_count,
     funnel_data,
 ):
@@ -91,7 +91,7 @@ def _build_summary_stats(
         "skuNotInProducts": sku_not_in_products,
         "skuAfterProductsFilter": total_sku_from_api,
         "skuRemovedByProductsFilter": 0,
-        "skuIgnoredByAbcFilter": sku_ignored_by_abc_filter,
+        "belowAbcThresholdProblems": below_abc_threshold_problems,
         "criticalProblemsCount": critical_problems_count,
         "totalOrders": _summary_total(
             funnel_summary_dynamics, "selectedOrderCount", funnel_report, "orderCount"
@@ -117,7 +117,7 @@ def _print_summary_stats(summary_stats):
     print(f"totalSkuFromApi: {summary_stats['totalSkuFromApi']}")
     print(f"skuInProducts: {summary_stats['skuInProducts']}")
     print(f"skuNotInProducts: {summary_stats['skuNotInProducts']}")
-    print(f"skuIgnoredByAbcFilter: {summary_stats['skuIgnoredByAbcFilter']}")
+    print(f"belowAbcThresholdProblems: {summary_stats['belowAbcThresholdProblems']}")
 
 
 def main():
@@ -220,7 +220,7 @@ def main():
         total_sku_from_api=total_sku_from_api,
         sku_in_products=sku_in_products,
         sku_not_in_products=sku_not_in_products,
-        sku_ignored_by_abc_filter=count_sku_ignored_by_abc_filter(data),
+        below_abc_threshold_problems=count_sku_ignored_by_abc_filter(data),
         critical_problems_count=len(all_problems),
         funnel_data=data,
     )
