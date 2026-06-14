@@ -227,3 +227,7 @@ def save_funnel_snapshot(rows):
 
 def save_problems(problems):
     print(f"STUB SAVE PROBLEMS: {len(problems)} rows")
+
+
+def save_daily_qbiki_metrics(rows):
+    print(f"STUB SAVE DAILY QBIKI METRICS: {len(rows)} rows")

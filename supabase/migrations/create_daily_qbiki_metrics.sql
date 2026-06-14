@@ -1,0 +1,31 @@
+create table if not exists daily_qbiki_metrics (
+    id bigint generated always as identity primary key,
+    date date,
+    seller_name text,
+    nm_id bigint,
+    vendor_code text,
+    title text,
+
+    orders_per_1000_impressions numeric,
+    organic_cr numeric,
+    ads_cr numeric,
+    ads_orders numeric,
+    ads_impressions numeric,
+    ads_ctr numeric,
+    ads_clicks numeric,
+    cart_conversion numeric,
+    order_conversion numeric,
+    avg_ad_bid numeric,
+    ad_profit_per_order numeric,
+    cpo numeric,
+    drr numeric,
+    clean_drr numeric,
+    clean_margin numeric,
+    clean_margin_organic numeric,
+    clean_margin_ads numeric,
+    roi numeric,
+    wb_stock numeric,
+    days_of_stock numeric,
+
+    created_at timestamp default now()
+);

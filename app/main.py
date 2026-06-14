@@ -13,6 +13,7 @@ from app.analyzers.perfume_intelligence import (
     enrich_perfume_records,
 )
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
+from app.analyzers.qbiki_metrics import build_qbiki_problems, enrich_qbiki_metrics
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import collect_ads_stats
@@ -25,6 +26,7 @@ from app.collectors.funnel import (
     save_funnel_problems_report,
     save_sales_funnel_report,
 )
+from app.collectors.qbiki import collect_qbiki_metrics
 from app.collectors.supplies import collect_supply_stock_metrics
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
@@ -228,7 +230,13 @@ def main():
     ads_problems = analyze_ads_problems(ads_data, funnel_report)
     perfume_intelligence = build_perfume_intelligence(funnel_rows, ads_data)
     funnel_rows = perfume_intelligence["rows"]
-    ads_summary = build_ads_summary(ads_data, ads_problems)
+    qbiki_metrics = enrich_qbiki_metrics(
+        collect_qbiki_metrics(), funnel_rows=funnel_rows, ads_rows=ads_data
+    )
+    qbiki_problems = build_qbiki_problems(qbiki_metrics)
+    if qbiki_metrics and hasattr(storage, "save_daily_qbiki_metrics"):
+        storage.save_daily_qbiki_metrics(qbiki_metrics)
+    ads_summary = build_ads_summary(ads_data, ads_problems + qbiki_problems)
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("ADS SUMMARY:")
     print(f"campaigns: {ads_summary['activeCampaigns']}")
@@ -281,7 +289,7 @@ def main():
     ).fillna("")
     funnel_problems = funnel_problems_df.to_dict("records")
     all_problems = enrich_perfume_records(
-        funnel_problems + ads_problems + stocks_problems
+        funnel_problems + ads_problems + qbiki_problems + stocks_problems
     )
     all_problems = apply_decision_engine(all_problems)
     if funnel_rows:
@@ -303,6 +311,7 @@ def main():
     )
 
     summary_stats["adsSummary"] = ads_summary
+    summary_stats["qbikiMetrics"] = qbiki_metrics
     summary_stats["perfumeIntelligence"] = perfume_intelligence
     _print_summary_stats(summary_stats)
     print("=" * 50)
@@ -310,6 +319,7 @@ def main():
     print("TOTAL PROBLEMS:")
     print(f"funnel: {len(funnel_problems)}")
     print(f"ads: {len(ads_problems)}")
+    print(f"qbiki: {len(qbiki_problems)}")
     print(f"stocks: {len(stocks_problems)}")
     print(f"all: {len(all_problems)}")
     print("=" * 50)
