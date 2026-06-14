@@ -6,7 +6,7 @@ PROBLEM_LABELS = {
     "addToCartPercent": "Конверсия в корзину",
     "cartToOrderPercent": "Конверсия в заказ",
     "wbStocks": "Остатки WB",
-    "realSellableStock": "Sellable stock",
+    "realSellableStock": "Остаток доступный к продаже",
     "STOCK_FORECAST": "Прогноз OOS",
     "ADS_FORECAST": "Прогноз эффективности рекламы",
     "ORGANIC_FORECAST": "Прогноз органики",

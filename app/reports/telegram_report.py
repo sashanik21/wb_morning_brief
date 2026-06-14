@@ -25,12 +25,12 @@ TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 logger = logging.getLogger(__name__)
 
 DECLINE_SOURCE_TELEGRAM_LABELS = {
-    "ADS_DECLINE": "ADS",
-    "ORGANIC_DECLINE": "ORGANIC",
-    "CONVERSION_DECLINE": "CONVERSION",
-    "STOCK_DECLINE": "AVAILABILITY",
-    "MIXED_DECLINE": "MIXED",
-    "INSUFFICIENT_DATA": "INSUFFICIENT_DATA",
+    "ADS_DECLINE": "реклама",
+    "ORGANIC_DECLINE": "органика",
+    "CONVERSION_DECLINE": "конверсия",
+    "STOCK_DECLINE": "остатки",
+    "MIXED_DECLINE": "смешанный",
+    "INSUFFICIENT_DATA": "недостаточно данных",
 }
 
 DECLINE_SOURCE_PRIORITY_LABELS = {
@@ -41,6 +41,62 @@ DECLINE_SOURCE_PRIORITY_LABELS = {
     "MIXED_DECLINE": "смешанный",
     "INSUFFICIENT_DATA": "недостаточно данных",
 }
+
+
+IMPACT_RANK_LABELS = {
+    "HIGH IMPACT": "Высокий риск",
+    "MEDIUM IMPACT": "Средний риск",
+    "LOW IMPACT": "Низкий риск",
+    "IMPACT TBD": "Риск требует проверки",
+    "NEW ACTIVITY": "Новая активность",
+}
+
+ZONE_LABELS = {
+    "AVAILABILITY": "Остатки",
+    "STOCKS": "Остатки",
+    "CONVERSION": "Конверсия",
+    "TRAFFIC": "Трафик",
+    "ADS": "Реклама",
+    "CARD": "Карточка",
+}
+
+TRUST_SCORE_LABELS = {
+    "LOW": "низкая — накоплено менее 7 дней истории или не хватает ключевых данных",
+    "MEDIUM": "средняя — часть оценок требует проверки",
+    "HIGH": "высокая — данных достаточно для управленческих выводов",
+}
+
+
+def _russian_impact_rank(problem):
+    return IMPACT_RANK_LABELS.get(_impact_rank(problem), _impact_rank(problem))
+
+
+def _russian_zone(zone):
+    return ZONE_LABELS.get(str(zone or ""), str(zone or ""))
+
+
+def _format_product_identity(record_or_product):
+    title = html.escape(str(record_or_product.get("title") or "Без названия"))
+    nm_id = record_or_product.get("nmId") or record_or_product.get("nm_id")
+    if nm_id in (None, ""):
+        return title
+    return f"{title} — WB {html.escape(str(nm_id))}"
+
+
+def _format_report_trust_score(score):
+    score = str(score or "").upper()
+    return TRUST_SCORE_LABELS.get(score, "средняя — часть оценок требует проверки")
+
+
+def _format_product_count(count):
+    count = int(to_number(count) or 0)
+    if count % 10 == 1 and count % 100 != 11:
+        word = "товар"
+    elif count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
+        word = "товара"
+    else:
+        word = "товаров"
+    return f"{_format_number(count)} {word}"
 
 
 def _is_below_abc_threshold(problem):
@@ -394,16 +450,16 @@ def _impact_confidence_reason(problem):
     if not confidence:
         return ""
     if confidence == "INSUFFICIENT_HISTORY":
-        return "LOW — недостаточно истории (<7 дней)"
+        return "низкая — недостаточно истории (<7 дней)"
     baseline_reliability = str(problem.get("baselineReliability") or "")
     baseline_type = str(problem.get("baselineType") or "")
     if confidence == "LOW" and (
         baseline_reliability == "previous_day"
         or baseline_type in {"previous_day", "prev_day"}
     ):
-        return "LOW — baseline только по previous day"
+        return "низкая — сравнение только со вчерашним днем"
     if confidence == "LOW" and baseline_reliability == "INSUFFICIENT_HISTORY":
-        return "LOW — недостаточно истории (<7 дней)"
+        return "низкая — недостаточно истории (<7 дней)"
     return confidence
 
 
@@ -514,11 +570,11 @@ def _format_visibility_specifics(problem):
         lines.append(f"позиция: {_format_number(avg_position)}")
 
     if _is_present(visibility_score):
-        lines.append(f"visibility score: {_format_number(visibility_score)}%")
+        lines.append(f"индекс видимости: {_format_number(visibility_score)}%")
 
     risk = problem.get("searchVisibilityRisk")
     if _is_present(risk):
-        lines.append(f"risk: {html.escape(str(risk))}")
+        lines.append(f"риск: {html.escape(str(risk))}")
 
     return "\n".join(lines)
 
@@ -557,8 +613,8 @@ def _format_business_impact(problem):
     if orders is not None and orders > 0:
         lines.append(f"≈ {_format_number(orders)} потерянных заказов")
     confidence_reason = _impact_confidence_reason(problem)
-    if confidence_reason:
-        lines.append(f"confidence: {html.escape(confidence_reason)}")
+    if confidence_reason and confidence not in {"LOW", "INSUFFICIENT_HISTORY"}:
+        lines.append(f"Надежность оценки: {html.escape(confidence_reason)}")
     return "\n".join(lines) or "потери не рассчитаны"
 
 
@@ -635,7 +691,7 @@ def _format_product_item(_index, product):
         f"{_format_severity(primary_problem)}\n"
         f"🏷️ <b>{title}</b>\n\n"
         f"Артикул продавца: {vendor_code}\n"
-        f"nmID: {nm_id}\n"
+        f"WB: {nm_id}\n"
         f"ABC: {abc}\n\n"
         f"Проблем: <b>{len(problems)}</b>"
         + loss_block
@@ -655,7 +711,7 @@ def _build_telegram_header(total_problems, problem_products_count, summary_stats
         f"Продавец: <b>{seller_name}</b>\n\n"
         f"Всего проблем: <b>{total_problems}</b>\n"
         f"Проблемных товаров: <b>{problem_products_count}</b>\n"
-        f"📦 SKU после ABC-фильтра: <b>{problem_products_count}</b>"
+        f"📦 Товаров после ABC-фильтра: <b>{problem_products_count}</b>"
     )
 
 
@@ -684,9 +740,9 @@ def _build_summary_block(summary_stats):
     return (
         "📊 <b>Сводка:</b>\n"
         f"Storage: {html.escape(storage_mode)}\n"
-        f"SKU из WB API: {_format_number(summary_stats.get('totalSkuFromApi'))}\n"
-        f"SKU есть в PRODUCTS: {_format_number(summary_stats.get('skuInProducts'))}\n"
-        f"SKU нет в PRODUCTS: {_format_number(summary_stats.get('skuNotInProducts'))}\n"
+        f"Товаров из WB API: {_format_number(summary_stats.get('totalSkuFromApi'))}\n"
+        f"Товаров есть в PRODUCTS: {_format_number(summary_stats.get('skuInProducts'))}\n"
+        f"Товаров нет в PRODUCTS: {_format_number(summary_stats.get('skuNotInProducts'))}\n"
         f"Ниже ABC-порога: "
         f"{_format_number(summary_stats.get('belowAbcThresholdProblems'))}\n"
         f"Переходы в карточку: "
@@ -814,7 +870,7 @@ def _format_drop_signal(signal):
     else:
         comparison = f"{selected_value} vs {past_value}"
 
-    return f"— {title} (nmID {nm_id}): {metric} {dynamic} ({comparison})"
+    return f"— {title} — WB {nm_id}: {metric} {dynamic} ({comparison})"
 
 
 def _build_top_drop_signals_block(summary_stats):
@@ -824,9 +880,9 @@ def _build_top_drop_signals_block(summary_stats):
     top_drop_signals = summary_stats.get("topDropSignals") or []
 
     if not top_drop_signals:
-        return "📉 <b>TOP SKU по падению:</b>\n— Просадок по funnel не найдено"
+        return "📉 <b>TOP товаров по падению:</b>\n— Просадок по funnel не найдено"
 
-    return "📉 <b>TOP SKU по падению:</b>\n" + "\n".join(
+    return "📉 <b>TOP товаров по падению:</b>\n" + "\n".join(
         _format_drop_signal(signal) for signal in top_drop_signals
     )
 
@@ -1019,7 +1075,7 @@ def _executive_problem_title(product):
     title = html.escape(str(product.get("title") or "Без названия"))
     nm_id = html.escape(str(product.get("nmId") or "n/a"))
 
-    return f"{title} (nmID {nm_id})"
+    return f"{title} — WB {nm_id}"
 
 
 def _executive_problem_line(index, product, insights_by_key):
@@ -1088,8 +1144,8 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
         loss = sum(_problem_impact_value(problem) for problem in stock_problems)
         return (
             "🧠 <b>Главный инсайт:</b> Остатки WB: "
-            f"{_format_number(sku_count)} SKU без доступного к продаже остатка дают ≈ "
-            f"{_format_number(loss)} ₽ потенциальной потери выручки в день."
+            f"{_format_product_count(sku_count)} без остатков блокируют около "
+            f"{_format_number(loss)} ₽ выручки в день."
         )
 
     for product in problem_products:
@@ -1165,12 +1221,14 @@ def _supply_pipeline_from_summary(summary_stats):
 
 def _format_logistics_pipeline(pipeline):
     if not pipeline or not any(pipeline.values()):
-        return "📦 Логистика по аккаунту (все SKU): данные поставок недоступны"
+        return (
+            "📦 Логистика по аккаунту: поставка или возврат товара в WB не обнаружены."
+        )
 
     return (
-        "📦 Логистика по аккаунту (все SKU):"
-        f"\n- SKU в поставках: {_format_number(pipeline['matched'])}"
-        f"\n- Готово к продаже: {_format_number(pipeline['ready'])} шт"
+        "📦 Логистика по аккаунту:"
+        f"\n- Товаров в поставках: {_format_number(pipeline['matched'])}"
+        f"\n- Общий доступный остаток по аккаунту: {_format_number(pipeline['ready'])} шт"
         f"\n- В приемке: {_format_number(pipeline['acceptance'])} шт"
         f"\n- В транзите: {_format_number(pipeline['transit'])} шт"
     )
@@ -1212,14 +1270,14 @@ def _build_executive_stocks_block(records, summary_stats=None):
     pipeline = summary_pipeline if any(summary_pipeline.values()) else records_pipeline
 
     top_record = stock_records[0]
-    title = html.escape(str(top_record.get("title") or "SKU без названия"))
+    title = html.escape(str(top_record.get("title") or "товар без названия"))
     recommendation = html.escape(
         str(top_record.get("recommendation") or "проверить наличие и поставку")
     )
 
     return (
         "📦 <b>Остатки:</b> "
-        f"критичных SKU {_format_number(len(stock_records))}. "
+        f"критичных товаров {_format_number(len(stock_records))}. "
         f"Фокус: {title} — {recommendation}"
         f"\n{_format_logistics_pipeline(pipeline)}"
     )
@@ -1248,16 +1306,16 @@ def _format_signal_sku(row):
     nm_id = html.escape(str(row.get("nmId") or "n/a"))
     dynamic = html.escape(format_percent(row.get("orderSum_delta")))
 
-    return f"{title} (nmID {nm_id}, выручка {dynamic})"
+    return f"{title} — WB {nm_id}, выручка {dynamic}"
 
 
 def _build_no_problem_executive_block(summary_stats):
     best, worst = _best_worst_from_evidence(summary_stats)
 
     return (
-        f"Лучший SKU: {_format_signal_sku(best)}\n"
-        f"Худший SKU: {_format_signal_sku(worst)}\n"
-        "Рекомендации: сохранить текущие настройки, точечно проверить худший SKU "
+        f"Лучший товар: {_format_signal_sku(best)}\n"
+        f"Худший товар: {_format_signal_sku(worst)}\n"
+        "Рекомендации: сохранить текущие настройки, точечно проверить худший товар "
         "и не расширять рекламу без контроля ДРР."
     )
 
@@ -1288,18 +1346,29 @@ def _stock_stop_reason(problem):
 
 
 def _format_stock_stop_block(problem):
-    stock_state = str(problem.get("stockState") or "n/a")
     sellable = problem.get("realSellableStock")
     if sellable in (None, ""):
         sellable = problem.get("selectedValue")
 
+    pipeline_values = [
+        to_number(problem.get("readyForSaleStock")),
+        to_number(problem.get("incomingStock")),
+        to_number(problem.get("acceptanceStock")),
+        to_number(problem.get("transitStock")),
+    ]
+    if not any(pipeline_values):
+        return (
+            "\n⚠️ Товар временно недоступен для продажи"
+            f"\n{_stock_stop_reason(problem)}"
+            "\nПоставка или возврат товара в WB не обнаружены."
+        )
+
     return (
-        "\n⚠️ SKU временно недоступен для продажи"
+        "\n⚠️ Товар временно недоступен для продажи"
         f"\n{_stock_stop_reason(problem)}"
-        "\n📦 Логистика по SKU:"
-        f"\n- Состояние: {stock_state}"
-        f"\n- Готово к продаже: {_format_number(sellable)}"
-        f"\n- Готово к продаже на складах WB: {_format_number(problem.get('readyForSaleStock'))}"
+        "\n📦 Движение товара:"
+        f"\n- Остаток доступный к продаже: {_format_number(sellable)}"
+        f"\n- Доступно на складах WB: {_format_number(problem.get('readyForSaleStock'))}"
         f"\n- Ожидается поставка: {_format_number(problem.get('incomingStock'))}"
         f"\n- В приемке: {_format_number(problem.get('acceptanceStock'))}"
         f"\n- В транзите: {_format_number(problem.get('transitStock'))}"
@@ -1381,8 +1450,8 @@ def _report_trust_score(records):
 def _format_priority_problem_line(problem):
     nm_id = html.escape(str(problem.get("nmId") or "n/a"))
     problem_label = html.escape(_human_readable_problem_type(problem))
-    impact = html.escape(_impact_rank(problem))
-    zone = html.escape(_problem_zone(problem))
+    impact = html.escape(_russian_impact_rank(problem))
+    zone = html.escape(_russian_zone(_problem_zone(problem)))
     stock_stop = ""
     if (
         problem.get("metric") in {"wbStocks", "realSellableStock"}
@@ -1406,12 +1475,12 @@ def _format_priority_problem_line(problem):
     budget_waste = ""
     if _has_budget_waste_risk(problem):
         budget_waste = (
-            "\n⚠️ Реклама активна на OOS SKU → возможен слив бюджета."
+            "\n⚠️ Реклама активна при нулевых остатках → возможен слив бюджета."
             "\nРекомендация: Приостановить или сократить рекламу до восстановления остатков."
         )
 
     return (
-        f"- <b>{impact}</b> | {zone} | nmID {nm_id} | {problem_label}"
+        f"- <b>{impact}</b> | {zone} | {_format_product_identity(problem)} | {problem_label}"
         f"{decline_source_block}{specifics_block}\n{html.escape(_format_business_impact(problem))}"
         f"{html.escape(stock_stop)}{html.escape(budget_waste)}"
     )
@@ -1440,13 +1509,13 @@ def _build_risk_zones_block(priority_records, root_cause_insights):
         sku_by_zone.setdefault(zone, set()).add(_problem_group_key(record))
 
     lines = [
-        f"{zone}: {_format_number(len(skus))} SKU"
+        f"{_russian_zone(zone)}: {_format_product_count(len(skus))}"
         for zone, skus in sorted(sku_by_zone.items())
     ]
     return (
         "🔥 <b>Главные зоны риска (типы сигналов):</b>\n"
         + "\n".join(lines)
-        + "\nℹ️ SKU могут входить в несколько категорий."
+        + "\nℹ️ Товары могут входить в несколько категорий."
     )
 
 
@@ -1480,9 +1549,7 @@ def _build_daily_losses_block(priority_records):
     if lost_orders > 0:
         lines.append(f"≈ {_format_number(lost_orders)} потерянных заказов")
     if confidence != "INSUFFICIENT_HISTORY":
-        lines.append(
-            f"confidence: {confidence} — агрегированная оценка по приоритетным сигналам"
-        )
+        lines.append(f"Надежность оценки: {_format_report_trust_score(confidence)}")
     if len(lines) == 1:
         lines.append("недостаточно данных для точного расчёта")
     return "\n".join(lines)
@@ -1500,7 +1567,7 @@ def _build_top_impact_block(priority_records):
     for index, record in enumerate(records, start=1):
         nm_id = html.escape(str(record.get("nmId") or "—"))
         title = html.escape(str(record.get("title") or "").strip())
-        name = f"nmID {nm_id}" + (f" {title}" if title else "")
+        name = f"{title} — WB {nm_id}" if title else f"WB {nm_id}"
         lines.append(
             f"{index}. {name} — ≈ {_format_number(_problem_impact_value(record))} ₽"
         )
@@ -1538,13 +1605,13 @@ def _build_first_checks_block(priority_records, root_cause_insights):
 
     if stock_impact_records:
         sku_list = ", ".join(
-            f"nmID {record.get('nmId')}"
+            f"{record.get('title') or 'Товар'} — WB {record.get('nmId')}"
             for record in stock_impact_records[:3]
             if record.get("nmId")
         )
         if sku_list:
             check = (
-                "Срочно проверить остатки и поставку по SKU с заблокированной выручкой: "
+                "Срочно пополнить остатки по товарам с заблокированной выручкой: "
                 f"{sku_list}."
             )
             checks.append(html.escape(check))
@@ -1562,7 +1629,7 @@ def _build_first_checks_block(priority_records, root_cause_insights):
     )
     if has_oos_with_ads:
         check = (
-            "Приостановить или сократить рекламный трафик на OOS SKU "
+            "Приостановить или сократить рекламный трафик на товары без остатков "
             "и перераспределить бюджет."
         )
         checks.append(html.escape(check))
@@ -1620,26 +1687,29 @@ def _is_predictive_problem(problem):
 
 
 def _format_forecast_alert(problem):
-    nm_id = html.escape(str(problem.get("nmId") or problem.get("nm_id") or "n/a"))
     forecast_type = str(problem.get("forecastType") or "").upper()
     message = str(problem.get("forecastMessage") or "").strip()
 
     if message:
         message = message.replace("⚠️ ", "")
-        if "nmID" in message or "SKU" in message:
-            return f"- {html.escape(message)}"
+        if "SKU может уйти в OOS" in message:
+            eta = _format_forecast_eta(problem)
+            suffix = f", остатков хватит примерно на {eta}" if eta else ""
+            return f"- {_format_product_identity(problem)}: товар может закончиться{suffix}"
+        if "nmID" not in message and "SKU" not in message:
+            return f"- {_format_product_identity(problem)}: {html.escape(message)}"
 
     if forecast_type == "OOS" or problem.get("daysUntilOOS") not in (None, ""):
         eta = (
             _format_forecast_eta(problem)
             or f"≈{_format_number(problem.get('daysUntilOOS'))} дня"
         )
-        return f"- nmID {nm_id} → OOS {eta}"
+        return f"- {_format_product_identity(problem)}: риск обнуления остатков, хватит примерно на {eta}"
     if forecast_type == "ADS":
-        return f"- nmID {nm_id} → риск роста ДРР"
+        return f"- {_format_product_identity(problem)}: риск роста ДРР"
     if forecast_type == "ORGANIC":
-        return f"- nmID {nm_id} → риск падения органики"
-    return f"- nmID {nm_id} → прогнозный риск"
+        return f"- {_format_product_identity(problem)}: риск падения органики"
+    return f"- {_format_product_identity(problem)}: прогнозный риск"
 
 
 def _build_forecast_risks_block(records):
@@ -1677,12 +1747,13 @@ def _build_stock_eta_block(records):
     )
     lines = []
     for record in stock_forecasts[:FORECAST_ALERT_LIMIT]:
-        nm_id = html.escape(str(record.get("nmId") or record.get("nm_id") or "n/a"))
         eta = (
             _format_forecast_eta(record)
             or f"≈{_format_number(record.get('daysUntilOOS'))} дня"
         )
-        lines.append(f"- nmID {nm_id} → {eta}")
+        lines.append(
+            f"- {_format_product_identity(record)}: остатков хватит примерно на {eta}"
+        )
     return "📦 <b>Прогноз остатков:</b>\n" + "\n".join(lines)
 
 
@@ -1756,7 +1827,7 @@ def _build_evidence_block(summary_stats):
         formatted_rows.append(
             f"🏷️ <b>{escape(row.get('title') or 'Без названия')}</b>\n"
             f"Артикул продавца: {escape(row.get('vendorCode') or 'n/a')}\n"
-            f"nmID: {escape(row.get('nmId') or 'n/a')}\n\n"
+            f"WB: {escape(row.get('nmId') or 'n/a')}\n\n"
             + _format_evidence_metric(row, "Переходы", "openCount")
             + "\n\n"
             + _format_evidence_metric(row, "Корзины", "cartCount")
@@ -1809,7 +1880,11 @@ def _build_low_priority_signals_block(records):
     ]
     if not noisy_buckets:
         return ""
-    return "ℹ️ Есть низкоприоритетные сигналы по " + ", ".join(noisy_buckets) + "."
+    return (
+        "Замечены слабые сигналы ухудшения по нескольким товарам: "
+        + ", ".join(noisy_buckets)
+        + "."
+    )
 
 
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
@@ -1823,8 +1898,8 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     message_parts = [
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
-        f"Надежность отчета: {html.escape(trust_score)}",
-        f"🚨 <b>Приоритетных SKU:</b> {_format_number(priority_sku_count)}",
+        f"Надежность оценки: {html.escape(_format_report_trust_score(trust_score))}",
+        f"🚨 <b>Приоритетных товаров:</b> {_format_number(priority_sku_count)}",
         _build_low_priority_signals_block(records),
         _build_forecast_risks_block(records),
         _build_stock_eta_block(records),
@@ -1845,19 +1920,16 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
 
     message_parts.extend(
         [
-            _build_risk_zones_block(priority_records, root_cause_insights),
-            _build_daily_losses_block(priority_records),
-            _build_top_impact_block(priority_records),
-            _build_priority_problems_block(priority_records),
+            _build_executive_insight(
+                problem_products, root_cause_insights, summary_stats
+            ),
+            _build_executive_top_problems(problem_products, root_cause_insights),
             _build_first_checks_block(priority_records, root_cause_insights).replace(
                 "🎯 <b>Что проверить в первую очередь:</b>",
                 "✅ <b>Что сделать сегодня</b>",
             ),
-            _build_executive_insight(
-                problem_products, root_cause_insights, summary_stats
-            ),
-            _build_executive_ads_block(priority_records, summary_stats),
             _build_executive_stocks_block(priority_records, summary_stats),
+            _build_executive_ads_block(priority_records, summary_stats),
         ]
     )
 
