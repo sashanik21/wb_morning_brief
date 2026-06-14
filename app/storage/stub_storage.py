@@ -194,6 +194,13 @@ def get_products():
     return _records_from_cached(_get_products_cached())
 
 
+def sync_products_from_wb_cards(seller_id, cards):
+    print("STUB SYNC PRODUCTS FROM WB:")
+    print(f"seller_id: {seller_id}")
+    print(f"cards: {len(cards or [])}")
+    print("upserted: 0")
+
+
 def get_change_log():
     return _records_from_cached(_get_change_log_cached())
 
