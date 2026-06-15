@@ -2628,6 +2628,12 @@ def _build_api_coverage_debug_block(summary_stats):
         return ""
 
     parts = [html.escape(str(line))]
+    ads_found = coverage.get("adsFound")
+    total_sku = coverage.get("totalSku")
+    if total_sku and ads_found is not None and (ads_found / total_sku) < 0.7:
+        parts.append(
+            f"Покрытие рекламы низкое: данные найдены только для {ads_found} из {total_sku} SKU."
+        )
     if coverage.get("adsApiHad429"):
         parts.append("Реклама: данные частичные из-за ограничения WB API.")
     return "\n".join(parts)
