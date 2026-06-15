@@ -234,6 +234,9 @@ create index if not exists idx_daily_ads_metrics_report_seller
 create index if not exists idx_daily_ads_metrics_campaign_nm
     on daily_ads_metrics(seller_id, campaign_id, nm_id, report_date desc);
 
+create unique index if not exists daily_ads_metrics_unique_idx
+    on daily_ads_metrics(report_date, seller_id, campaign_id, nm_id);
+
 create index if not exists idx_stocks_daily_report_date_seller_id
     on stocks_daily(report_date, seller_id);
 
