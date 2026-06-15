@@ -89,10 +89,6 @@ def _russian_zone(zone):
 
 def _format_product_identity(record_or_product):
     title_value = record_or_product.get("title") or "Без названия"
-    perfume_line = record_or_product.get("perfumeLine")
-    volume_ml = record_or_product.get("volumeMl")
-    if perfume_line:
-        title_value = f"{perfume_line} {volume_ml} мл" if volume_ml else perfume_line
     title = html.escape(str(title_value))
     nm_id = record_or_product.get("nmId") or record_or_product.get("nm_id")
     if nm_id in (None, ""):
@@ -417,6 +413,10 @@ def _human_readable_problem_type(problem):
 
 
 def _has_executive_problem_text(problem):
+    if _is_insufficient_history_problem(problem):
+        return False
+    if _is_forecast_signal(problem):
+        return _has_clear_forecast_payload(problem)
     problem_label = str(problem.get("problemLabel") or "").strip().lower()
     forecast_message = str(problem.get("forecastMessage") or "").strip().lower()
 
@@ -640,7 +640,13 @@ def _format_ads_specifics(problem):
     if problem.get("bidDelta") not in (None, ""):
         lines.append(f"Ставка: Δ {_format_number(problem.get('bidDelta'))}%")
     if problem.get("auctionTemperature"):
-        temperature = html.escape(str(problem.get("auctionTemperature")))
+        raw_temperature = str(problem.get("auctionTemperature"))
+        temperature_label = {
+            "NORMAL": "без признаков перегрева",
+            "HOT": "аукцион нагрет",
+            "OVERHEATED": "аукцион перегрет",
+        }.get(raw_temperature.upper(), raw_temperature)
+        temperature = html.escape(temperature_label)
         lines.append(f"Температура аукциона: {temperature}")
 
     return "\n".join(lines)
@@ -1113,9 +1119,7 @@ def _ads_history_status(ads_summary):
 
 
 def _qbiki_unavailable_line(summary_stats):
-    if (summary_stats or {}).get("qbikiMetrics"):
-        return ""
-    return "📢 Реклама: данные по прибыльности из Qbiki не подключены."
+    return ""
 
 
 def _ads_baseline_missing(value):
@@ -1151,32 +1155,42 @@ def _format_ads_metric_transition(previous, current, suffix=""):
 
 def _ads_summary_lines(ads_summary):
     ads_summary = ads_summary or {}
+    lines = ["📢 <b>Реклама</b>"]
+    selected_period = ads_summary.get("selectedPeriod")
+    past_period = ads_summary.get("pastPeriod")
+    if selected_period and past_period:
+        lines.append(
+            "Период: "
+            f"{html.escape(str(selected_period))}, сравнение с {html.escape(str(past_period))}"
+        )
+    lines.append("")
     if _ads_has_incomplete_metric_history(ads_summary):
-        return [
-            "📢 <b>Реклама:</b>",
-            "Истории рекламы пока мало.",
-            _format_ads_current_metrics(ads_summary),
-        ]
+        lines.extend(
+            [
+                "Истории рекламы пока мало.",
+                _format_ads_current_metrics(ads_summary),
+            ]
+        )
+        return lines
 
-    return [
-        "📢 <b>Реклама:</b>",
-        "CTR рекламы: "
-        + _format_ads_metric_transition(
-            ads_summary.get("previousCtr"), ads_summary.get("currentCtr"), "%"
-        ),
-        "Стоимость клика: "
-        + _format_ads_metric_transition(
-            ads_summary.get("previousCpc"), ads_summary.get("currentCpc"), " ₽"
-        ),
-        "ДРР: "
-        + _format_ads_metric_transition(
-            ads_summary.get("previousDrr"), ads_summary.get("currentDrr"), "%"
-        ),
-        "Средняя ставка: "
-        + _format_ads_metric_transition(
-            ads_summary.get("previousBid"), ads_summary.get("currentBid"), " ₽"
-        ),
-    ]
+    lines.extend(
+        [
+            "Общие показатели:",
+            "— CTR рекламы: "
+            + _format_ads_metric_transition(
+                ads_summary.get("previousCtr"), ads_summary.get("currentCtr"), "%"
+            ),
+            "— Стоимость клика: "
+            + _format_ads_metric_transition(
+                ads_summary.get("previousCpc"), ads_summary.get("currentCpc"), " ₽"
+            ),
+            "— ДРР: "
+            + _format_ads_metric_transition(
+                ads_summary.get("previousDrr"), ads_summary.get("currentDrr"), "%"
+            ),
+        ]
+    )
+    return lines
 
 
 def _build_ads_block(records, summary_stats):
@@ -1374,12 +1388,8 @@ def _product_primary_problem(product):
 
 def _executive_problem_title(product):
     title_value = product.get("title") or "Без названия"
-    perfume_line = product.get("perfumeLine")
-    volume_ml = product.get("volumeMl")
-    if perfume_line:
-        title_value = f"{perfume_line} {volume_ml} мл" if volume_ml else perfume_line
     title = html.escape(str(title_value))
-    nm_id = html.escape(str(product.get("nmId") or "n/a"))
+    nm_id = html.escape(str(product.get("nmId") or "—"))
 
     return f"{title} — WB {nm_id}"
 
@@ -1391,20 +1401,34 @@ def _executive_problem_line(index, product, insights_by_key):
     dynamic = html.escape(
         _format_dynamic_percent(primary_problem.get("dynamicPercent"))
     )
-    consequence = html.escape(
-        str(
-            insight.get("reason")
-            or primary_problem.get("problemLabel")
-            or "есть риск потери заказов и выручки"
-        )
+    consequence_text = str(
+        insight.get("reason")
+        or primary_problem.get("problemLabel")
+        or "есть риск потери заказов и выручки"
     )
-    action = html.escape(
-        str(
-            primary_problem.get("recommendation")
-            or ", ".join(str(item) for item in insight.get("whatToCheck") or [])
-            or "проверить карточку, цену, рекламу и остатки"
-        )
+    if _is_forecast_signal(primary_problem) and consequence_text.lower() in {
+        "n/a",
+        "прогноз риска",
+    }:
+        consequence_text = "Риск скорого окончания остатков"
+    action_text = str(
+        primary_problem.get("recommendation")
+        or ", ".join(str(item) for item in insight.get("whatToCheck") or [])
+        or "проверить карточку, цену, рекламу и остатки"
     )
+    for technical, user_text in (
+        ("INSUFFICIENT_HISTORY", "Недостаточно истории для точной оценки рекламы"),
+        ("STOCK_FORECAST", "Риск скорого окончания остатков"),
+        ("SKU", "товар"),
+        ("[TODAY]", ""),
+        ("[NOW]", ""),
+        ("NORMAL", "без признаков перегрева"),
+        ("n/a", ""),
+    ):
+        consequence_text = consequence_text.replace(technical, user_text).strip()
+        action_text = action_text.replace(technical, user_text).strip()
+    consequence = html.escape(consequence_text)
+    action = html.escape(action_text)
 
     return (
         f"{index}. <b>{_executive_problem_title(product)}</b>\n"
@@ -1475,7 +1499,10 @@ def _build_executive_actions_block(
     priority_records, root_cause_insights, forecast_records=None
 ):
     actionable = [
-        record for record in priority_records if not record.get("isSuppressed")
+        record
+        for record in priority_records
+        if not record.get("isSuppressed")
+        and not _is_insufficient_history_problem(record)
     ]
     if not actionable:
         return ""
@@ -1525,6 +1552,23 @@ def _build_executive_top_problems(problem_products, root_cause_insights):
 
 
 def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
+    evidence_rows = (summary_stats or {}).get("evidenceRows") or []
+    decline_rows = [
+        row
+        for row in evidence_rows
+        if isinstance(row, dict) and to_number(row.get("orderSum_delta")) < 0
+    ]
+    if decline_rows:
+        row = min(decline_rows, key=lambda item: to_number(item.get("orderSum_delta")))
+        title = html.escape(str(row.get("title") or "товару"))
+        return (
+            "🧠 <b>Главный инсайт:</b> Основная просадка дня — падение переходов "
+            f"и заказов по {title}: переходы упали с "
+            f"{_format_number(row.get('openCount_past'))} до {_format_number(row.get('openCount_selected'))}, "
+            f"заказы с {_format_number(row.get('orderCount_past'))} до {_format_number(row.get('orderCount_selected'))}, "
+            f"выручка с {_format_number(row.get('orderSum_past'))} ₽ до {_format_number(row.get('orderSum_selected'))} ₽."
+        )
+
     insights_by_key = _build_insights_by_key(root_cause_insights)
     top_problems = [_product_primary_problem(product) for product in problem_products]
     stock_problems = [
@@ -1546,7 +1590,7 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
         loss = sum(_problem_impact_value(problem) for problem in stock_problems)
         return (
             "🧠 <b>Главный инсайт:</b> Основной риск магазина — потеря продаж "
-            "из-за отсутствия остатков по ключевым SKU. Остатки WB: "
+            "из-за отсутствия остатков по ключевым товарам. Остатки WB: "
             f"{_format_product_count(sku_count)} без остатков блокируют около "
             f"{_format_number(loss)} ₽ выручки в день."
         )
@@ -1562,7 +1606,11 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
 
         insight = insights_by_key.get(_problem_group_key(product))
 
-        if insight and insight.get("reason"):
+        if (
+            insight
+            and insight.get("reason")
+            and not _is_insufficient_history_problem(primary_problem)
+        ):
             zone = html.escape(str(insight.get("rootCauseZone") or "причина"))
             reason = html.escape(str(insight.get("reason")))
             return f"🧠 <b>Главный инсайт:</b> {zone}: {reason}"
@@ -1574,44 +1622,10 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
 
 
 def _build_perfume_intelligence_block(summary_stats):
-    if not (summary_stats or {}).get("qbikiMetrics"):
-        return ""
-    perfume = (summary_stats or {}).get("perfumeIntelligence") or {}
-    insights = [item for item in perfume.get("insights") or [] if item.get("message")]
-    volume_rows = perfume.get("volumeAnalytics") or []
-    if not insights and not volume_rows:
-        return ""
-
-    lines = ["🧴 <b>Аналитика парфюмерии:</b>"]
-    for insight in insights[:3]:
-        lines.append(f"- {html.escape(str(insight.get('message')))}")
-
-    if volume_rows:
-        best_conversion = max(
-            volume_rows, key=lambda row: to_number(row.get("conversion"))
-        )
-        cheapest_cpc = min(
-            volume_rows,
-            key=lambda row: to_number(row.get("cpc")) or 999999,
-        )
-        best_margin = max(volume_rows, key=lambda row: to_number(row.get("margin")))
-        lines.append(
-            "- Объемы: лучшая конверсия у "
-            f"{html.escape(str(best_conversion.get('volumeMl') or 'n/a'))} мл; "
-            "самый дешевый CPC у "
-            f"{html.escape(str(cheapest_cpc.get('volumeMl') or 'n/a'))} мл; "
-            "выше средний чек/маржа у "
-            f"{html.escape(str(best_margin.get('volumeMl') or 'n/a'))} мл."
-        )
-
-    return "\n".join(lines)
+    return ""
 
 
 def _build_executive_ads_block(records, summary_stats):
-    qbiki_block = _build_qbiki_ads_profitability_block(summary_stats)
-    if qbiki_block:
-        return qbiki_block
-
     ads_summary = (summary_stats or {}).get("adsSummary") or {}
     ads_records = [
         record
@@ -1625,86 +1639,52 @@ def _build_executive_ads_block(records, summary_stats):
     if not ads_summary and not ads_records:
         return "📢 <b>Реклама:</b> данных для сигнала нет"
 
-    active_campaigns = ads_summary.get("activeCampaigns", 0)
     problem_campaigns = ads_summary.get(
         "problemCampaigns", ads_summary.get("problems", len(ads_records))
     )
+    lines = _ads_summary_lines(ads_summary)
 
     if not ads_records:
-        lines = _ads_summary_lines(ads_summary)
         limitation_line = _ads_api_429_limitation_line(summary_stats)
         if limitation_line:
             lines.append(limitation_line)
-        qbiki_line = _qbiki_unavailable_line(summary_stats)
-        if qbiki_line:
-            lines.append(qbiki_line)
-        if (
-            limitation_line
-            or qbiki_line
-            or _ads_has_incomplete_metric_history(ads_summary)
-        ):
-            lines.append("Критичных рекламных проблем по доступным данным не найдено.")
+        if problem_campaigns:
+            lines.append(
+                "Критичных рекламных проблем по доступным данным не найдено, "
+                f"но есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
+            )
         else:
-            lines.append("критичных проблем нет")
+            lines.append("Критичных рекламных проблем по доступным данным не найдено.")
         return "\n".join(lines)
 
     first_problem = ads_records[0]
-    score = ads_summary.get("adsEfficiencyScore")
-    temperature = ads_summary.get("auctionTemperature") or first_problem.get(
-        "auctionTemperature"
-    )
-    lines = _ads_summary_lines(ads_summary)
     limitation_line = _ads_api_429_limitation_line(summary_stats)
-    if limitation_line:
-        lines.append(limitation_line)
-    lines.append(f"проблем: {_format_number(problem_campaigns)}")
-    qbiki_line = _qbiki_unavailable_line(summary_stats)
-    if qbiki_line:
-        lines.append(qbiki_line)
-    if score not in (None, "") or temperature:
-        bits = []
-        if score not in (None, ""):
-            bits.append(f"оценка эффективности {_format_number(score)}")
-        if temperature:
-            bits.append(f"аукцион {html.escape(str(temperature))}")
-        lines.append("Статус: " + ", ".join(bits) + ".")
 
-    for label, key in (("Лучший SKU", "bestSku"), ("Худший SKU", "worstSku")):
+    for label, key in (
+        ("Лучший товар по рекламе", "bestSku"),
+        ("Зона внимания", "worstSku"),
+    ):
         sku = ads_summary.get(key) or {}
         if sku:
+            lines.append("")
             lines.append(
-                f"{label}: {html.escape(str(sku.get('title') or sku.get('nmId') or '—'))} "
-                f"(CTR {_format_number(sku.get('ctr'))}%, CPC {_format_number(sku.get('cpc'))} ₽, "
-                f"ДРР {_format_number(sku.get('drr'))}%)."
+                f"{label}:\n"
+                f"{html.escape(str(sku.get('title') or sku.get('nmId') or 'товар'))} — "
+                f"CTR {_format_number(sku.get('ctr'))}%, "
+                f"CPC {_format_number(sku.get('cpc'))} ₽, "
+                f"ДРР {_format_number(sku.get('drr'))}%"
             )
 
-    overheating = [
-        p for p in ads_records if p.get("problemType") == "AUCTION_OVERHEATING"
-    ]
-    cpc_growth = [p for p in ads_records if p.get("problemType") == "ads_cpc_growth"]
-    ctr_drop = [p for p in ads_records if p.get("problemType") == "ads_ctr_drop"]
-    waste = [
-        p
-        for p in ads_records
-        if p.get("problemType") in {"ads_spend_without_orders", "ads_query_waste"}
-        or p.get("budgetWasteRisk")
-    ]
-    if overheating:
-        lines.append(f"Перегретые кампании: {_format_number(len(overheating))}.")
-    if cpc_growth:
-        lines.append(f"Рост CPC: {_format_product_identity(cpc_growth[0])}.")
-    if ctr_drop:
-        lines.append(f"Падение CTR: {_format_product_identity(ctr_drop[0])}.")
-    if waste:
-        lines.append(
-            f"Нерациональный расход: {_format_number(sum(to_number(p.get('spend')) for p in waste))} ₽."
-        )
-
-    specifics = _format_ads_specifics(first_problem)
-    if specifics:
-        lines.append(specifics)
     if first_problem.get("problemType") == "AUCTION_OVERHEATING":
         lines.append("Вывод: аукцион перегрет, повышение ставок не дает роста позиций.")
+    if limitation_line:
+        lines.append("")
+        lines.append(limitation_line)
+    elif problem_campaigns:
+        lines.append("")
+        lines.append(
+            f"Есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
+        )
     return "\n".join(lines)
 
 
@@ -1974,7 +1954,7 @@ def _format_priority_problem_line(problem):
     decision_block = (
         f"\nприоритет: {html.escape(str(problem.get('actionPriority') or 'MONITOR'))}"
         f" / приоритет {_format_number(problem.get('businessPriorityScore'))}"
-        f" / SKU {html.escape(str(problem.get('skuCriticality') or 'support'))}"
+        f" / товар {html.escape(str(problem.get('skuCriticality') or 'support'))}"
     )
     cluster_block = ""
     if problem.get("signalCluster"):
