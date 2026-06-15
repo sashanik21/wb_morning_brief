@@ -23,6 +23,17 @@ LOW_PRIORITY_SIGNAL_THRESHOLD = 10
 EXECUTIVE_PROBLEMS_LIMIT = 3
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 EXECUTIVE_ACTIONS_LIMIT = 5
+
+FACTUAL_EXECUTIVE_METRICS = {
+    "orderSum",
+    "orderCount",
+    "openCount",
+    "cartCount",
+    "addToCartPercent",
+    "cartToOrderPercent",
+}
+FACTUAL_EXECUTIVE_TYPES = {"sellableOutOfStock"}
+FORECAST_SIGNAL_TYPES = {"STOCK_FORECAST", "ADS_FORECAST", "ORGANIC_FORECAST"}
 logger = logging.getLogger(__name__)
 
 DECLINE_SOURCE_TELEGRAM_LABELS = {
@@ -119,16 +130,63 @@ def _is_critical_telegram_problem(problem):
     return severity == "critical" and not _is_below_abc_threshold(problem)
 
 
-def _is_priority_telegram_problem(problem):
+def _is_forecast_signal(problem):
+    metric = str(problem.get("metric") or "").upper()
+    problem_type = str(problem.get("problemType") or "").upper()
+    root_cause = str(problem.get("rootCause") or "").upper()
+    return (
+        metric in FORECAST_SIGNAL_TYPES
+        or problem_type in FORECAST_SIGNAL_TYPES
+        or root_cause in FORECAST_SIGNAL_TYPES
+        or bool(problem.get("forecastType"))
+        or problem_type.endswith("_FORECAST")
+    )
+
+
+def _has_clear_forecast_payload(problem):
+    if not _is_forecast_signal(problem):
+        return False
+    message = str(
+        problem.get("forecastMessage") or problem.get("message") or ""
+    ).strip()
+    title = str(problem.get("title") or "").strip()
+    action = str(problem.get("recommendation") or problem.get("action") or "").strip()
+    return bool(
+        message
+        and message.lower() != "n/a"
+        and title
+        and title.lower() != "n/a"
+        and action
+        and action.lower() != "n/a"
+        and _problem_impact_value(problem) > 0
+    )
+
+
+def _is_factual_executive_problem(problem):
     if problem.get("isSuppressed") or _is_insufficient_history_problem(problem):
+        return False
+    if _is_forecast_signal(problem):
+        return False
+    metric = str(problem.get("metric") or "")
+    problem_type = str(problem.get("problemType") or "")
+    category = str(problem.get("problemCategory") or "")
+    if metric in FACTUAL_EXECUTIVE_METRICS or problem_type in FACTUAL_EXECUTIVE_TYPES:
+        return True
+    if category == "ads" or problem_type.startswith("ads_"):
+        return _format_ads_specifics(problem) != ""
+    return False
+
+
+def _is_priority_telegram_problem(problem):
+    if not _is_factual_executive_problem(problem):
+        return False
+    if _is_below_abc_threshold(problem):
         return False
     action_priority = str(problem.get("actionPriority") or "")
     if action_priority in {"NOW", "TODAY", "THIS_WEEK"}:
         return True
     severity = str(problem.get("severity") or "").lower()
-    return severity in {"critical", "high", "medium"} and not _is_below_abc_threshold(
-        problem
-    )
+    return severity in {"critical", "high", "medium"}
 
 
 def _is_low_priority_telegram_problem(problem):
@@ -1377,43 +1435,71 @@ def _business_action_text(problem, insight=None):
     )
 
 
-def _build_executive_actions_block(priority_records, root_cause_insights):
+def _product_action_text(product, insights_by_key):
+    problems = product.get("problems") or []
+    by_metric = {str(problem.get("metric") or ""): problem for problem in problems}
+    identity = _format_product_identity(product)
+
+    def transition(metric, label):
+        problem = by_metric.get(metric)
+        if not problem:
+            return ""
+        selected = problem.get("selectedValue")
+        past = problem.get("pastValue")
+        if _is_present(selected) and _is_present(past):
+            return (
+                f"{label} упали с {_format_number(past)} до {_format_number(selected)}"
+            )
+        return f"{label} {_format_dynamic_percent(problem.get('dynamicPercent'))}"
+
+    facts = [
+        item
+        for item in (
+            transition("openCount", "переходы в карточку"),
+            transition("orderCount", "заказы"),
+            transition("orderSum", "выручка"),
+            transition("cartCount", "корзины"),
+        )
+        if item
+    ]
+    if facts:
+        return f"Проверить {identity}: " + ", ".join(facts[:2]) + "."
+
+    primary = _product_primary_problem(product)
+    return _business_action_text(
+        primary, insights_by_key.get(_problem_group_key(primary))
+    )
+
+
+def _build_executive_actions_block(
+    priority_records, root_cause_insights, forecast_records=None
+):
     actionable = [
-        record
-        for record in priority_records
-        if record.get("actionPriority") in {"NOW", "TODAY", "THIS_WEEK"}
-        and not record.get("isSuppressed")
+        record for record in priority_records if not record.get("isSuppressed")
     ]
     if not actionable:
         return ""
 
     insights_by_key = _build_insights_by_key(root_cause_insights)
-    ordered = sorted(
-        actionable,
-        key=lambda record: (
-            {"NOW": 0, "TODAY": 1, "THIS_WEEK": 2}.get(record.get("actionPriority"), 9),
-            -to_number(record.get("businessPriorityScore")),
-        ),
-    )
+    products = _group_problems_by_product(actionable)
     lines = []
     seen = set()
-    for record in ordered:
-        action = _business_action_text(
-            record, insights_by_key.get(_problem_group_key(record))
-        )
+    for product in products:
+        action = _product_action_text(product, insights_by_key)
         if action in seen:
             continue
         seen.add(action)
-        impact = _problem_impact_value(record)
-        impact_text = (
-            f" — блокируется ~{_format_number(impact)} ₽/день" if impact > 0 else ""
-        )
-        priority = html.escape(str(record.get("actionPriority") or "TODAY"))
-        lines.append(
-            f"{len(lines) + 1}. [{priority}] {html.escape(action)}{impact_text}."
-        )
+        lines.append(f"{len(lines) + 1}. {html.escape(action)}")
         if len(lines) == EXECUTIVE_ACTIONS_LIMIT:
             break
+
+    if any(
+        _is_predictive_problem(record)
+        for record in _problems_to_records(forecast_records)
+    ):
+        forecast_action = "Проверить остатки по товарам с риском OOS в прогнозе."
+        if forecast_action not in seen and len(lines) < EXECUTIVE_ACTIONS_LIMIT:
+            lines.append(f"{len(lines) + 1}. {forecast_action}")
 
     return "✅ <b>Что делать сегодня</b>\n" + "\n".join(lines)
 
@@ -2110,9 +2196,7 @@ def _build_first_checks_block(priority_records, root_cause_insights):
 
 
 def _is_predictive_problem(problem):
-    return problem.get("forecastType") or str(
-        problem.get("problemType") or ""
-    ).endswith("_FORECAST")
+    return _is_forecast_signal(problem)
 
 
 def _format_forecast_alert(problem):
@@ -2145,13 +2229,8 @@ def _build_forecast_risks_block(records):
     forecast_records = [
         record
         for record in records
-        if _is_predictive_problem(record)
-        and not _is_insufficient_history_problem(record)
-        and (
-            _forecast_eta_hours(record) is not None
-            or record.get("daysUntilOOS") not in (None, "")
-            or str(record.get("forecastMessage") or "").strip()
-        )
+        if _has_clear_forecast_payload(record)
+        and str(record.get("forecastType") or "").upper() not in {"OOS", "STOCK"}
     ]
     if not forecast_records:
         return ""
@@ -2193,7 +2272,7 @@ def _build_stock_eta_block(records):
         lines.append(
             f"- {_format_product_identity(record)}: остатков хватит примерно на {eta}"
         )
-    return "📦 <b>Прогноз остатков:</b>\n" + "\n".join(lines)
+    return "🔮 <b>Прогноз остатков:</b>\n" + "\n".join(lines)
 
 
 def _trim_telegram_message(text, max_length=3500):
@@ -2336,26 +2415,47 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
             -to_number(record.get("severityScore")),
         ),
     )
-    priority_records = [
-        record for record in records if _is_priority_telegram_problem(record)
+    factual_records = [
+        record for record in records if _is_factual_executive_problem(record)
     ]
-    problem_products = _group_problems_by_product(priority_records)
-    priority_sku_count = len(problem_products)
+    priority_records = [
+        record for record in factual_records if _is_priority_telegram_problem(record)
+    ]
+    main_records = priority_records or factual_records
+    problem_products = _group_problems_by_product(main_records)
+    priority_sku_count = len(_group_problems_by_product(priority_records))
     trust_score = _report_trust_score(records)
+    priority_line = (
+        f"🚨 <b>Приоритетных товаров:</b> {_format_number(priority_sku_count)}"
+        if priority_sku_count
+        else "🚨 <b>Критичных проблем по ABC-товарам не найдено</b>"
+    )
+    below_fact_count = len(
+        {
+            _problem_group_key(record)
+            for record in factual_records
+            if _is_below_abc_threshold(record)
+        }
+    )
+    below_fact_line = (
+        "⚠️ Есть фактические просадки по товарам ниже ABC-порога"
+        if not priority_sku_count and below_fact_count
+        else ""
+    )
     message_parts = [
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
         f"Надежность оценки: {html.escape(_format_report_trust_score(trust_score))}",
-        f"🚨 <b>Приоритетных товаров:</b> {_format_number(priority_sku_count)}",
+        priority_line,
+        below_fact_line,
         _build_low_priority_signals_block(records),
         _build_forecast_risks_block(records),
         _build_stock_eta_block(records),
     ]
 
-    if not priority_records:
+    if not main_records:
         message_parts.extend(
             [
-                _build_priority_problems_block(priority_records),
                 _build_no_problem_executive_block(summary_stats),
                 _build_perfume_intelligence_block(summary_stats),
                 _build_executive_ads_block(priority_records, summary_stats),
@@ -2372,7 +2472,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
                 problem_products, root_cause_insights, summary_stats
             ),
             _build_perfume_intelligence_block(summary_stats),
-            _build_executive_actions_block(priority_records, root_cause_insights),
+            _build_executive_actions_block(main_records, root_cause_insights, records),
             _build_executive_top_problems(problem_products, root_cause_insights),
             _build_executive_stocks_block(priority_records, summary_stats),
             _build_executive_ads_block(priority_records, summary_stats),
