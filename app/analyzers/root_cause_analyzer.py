@@ -531,18 +531,7 @@ def analyze_root_causes(problems, funnel_rows):
         position_worsens = position_delta is not None and position_delta > 0
         position_stable = position_delta is not None and position_delta <= 0
 
-        if _has_insufficient_history_problem(product_problems):
-            insights.append(
-                _build_insight(
-                    product,
-                    INSUFFICIENT_HISTORY_ZONE,
-                    INSUFFICIENT_HISTORY_REASON,
-                    INSUFFICIENT_HISTORY_CHECKS,
-                    product_problems[0].get("problemLabel")
-                    or "новая рекламная активность",
-                )
-            )
-        elif (ctr_falls or open_count_falls) and (
+        if (ctr_falls or open_count_falls) and (
             position_worsens or _has_visibility_risk(product_problems)
         ):
             insights.append(
