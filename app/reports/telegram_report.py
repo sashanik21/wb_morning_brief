@@ -1543,6 +1543,9 @@ def _product_primary_problem(product):
     if not problems:
         return {}
 
+    for problem in problems:
+        if not _is_insufficient_history_problem(problem):
+            return problem
     return problems[0]
 
 
@@ -1759,23 +1762,33 @@ def _format_metric_bullet(problem, label):
 
 def _main_business_decline_product(problem_products):
     candidates = []
+    metric_priority = {"orderSum": 0, "orderCount": 1, "openCount": 2, "cartCount": 3}
     for product in problem_products or []:
-        revenue_problem = _problem_by_metric(product, "orderSum")
-        orders_problem = _problem_by_metric(product, "orderCount")
-        traffic_problem = _problem_by_metric(product, "openCount")
-        if not (revenue_problem or orders_problem or traffic_problem):
+        metric_problems = {
+            metric: _problem_by_metric(product, metric)
+            for metric in ("orderSum", "orderCount", "openCount", "cartCount")
+        }
+        metric_problems = {
+            metric: problem for metric, problem in metric_problems.items() if problem
+        }
+        if not metric_problems:
             continue
+        primary_metric = min(
+            metric_problems, key=lambda metric: metric_priority[metric]
+        )
         candidates.append(
             (
                 product,
-                _absolute_metric_drop(revenue_problem or {}),
-                _absolute_metric_drop(orders_problem or {}),
-                _absolute_metric_drop(traffic_problem or {}),
+                -metric_priority[primary_metric],
+                _absolute_metric_drop(metric_problems.get("orderSum") or {}),
+                _absolute_metric_drop(metric_problems.get("orderCount") or {}),
+                _absolute_metric_drop(metric_problems.get("openCount") or {}),
+                _absolute_metric_drop(metric_problems.get("cartCount") or {}),
             )
         )
     if not candidates:
         return None
-    return max(candidates, key=lambda item: (item[1], item[2], item[3]))[0]
+    return max(candidates, key=lambda item: item[1:])[0]
 
 
 def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
@@ -1845,6 +1858,8 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
             insight
             and insight.get("reason")
             and not _is_insufficient_history_problem(primary_problem)
+            and insight.get("rootCauseZone") != "INSUFFICIENT_HISTORY"
+            and insight.get("reason") != "INSUFFICIENT_HISTORY"
         ):
             zone = html.escape(str(insight.get("rootCauseZone") or "причина"))
             reason = html.escape(str(insight.get("reason")))
@@ -2008,8 +2023,32 @@ def _best_worst_from_evidence(summary_stats):
     if not rows:
         return None, None
 
-    best = max(rows, key=lambda row: row.get("orderSum_delta") or 0)
-    worst = min(rows, key=lambda row: row.get("orderSum_delta") or 0)
+    growth_rows = [
+        row
+        for row in rows
+        if to_number(row.get("orderSum_delta")) > 0
+        and to_number(row.get("orderCount_delta")) > 0
+    ]
+    best = (
+        max(
+            growth_rows,
+            key=lambda row: (
+                to_number(row.get("orderSum_delta")),
+                to_number(row.get("orderCount_delta")),
+                to_number(row.get("openCount_delta")),
+            ),
+        )
+        if growth_rows
+        else None
+    )
+    worst = min(
+        rows,
+        key=lambda row: (
+            to_number(row.get("orderSum_delta")),
+            to_number(row.get("orderCount_delta")),
+            to_number(row.get("openCount_delta")),
+        ),
+    )
     return best, worst
 
 
@@ -2027,8 +2066,13 @@ def _format_signal_sku(row):
 def _build_no_problem_executive_block(summary_stats):
     best, worst = _best_worst_from_evidence(summary_stats)
 
+    best_line = (
+        f"Лучший товар: {_format_signal_sku(best)}"
+        if best
+        else "Лидеров роста за период не найдено."
+    )
     return (
-        f"Лучший товар: {_format_signal_sku(best)}\n"
+        f"{best_line}\n"
         f"Худший товар: {_format_signal_sku(worst)}\n"
         "Рекомендации: сохранить текущие настройки, точечно проверить худший товар "
         "и не расширять рекламу без контроля ДРР."
@@ -2658,10 +2702,19 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     problem_products = _group_problems_by_product(main_records)
     priority_sku_count = _priority_sku_count(factual_records)
     trust_score = _report_trust_score(records)
+    has_major_drop = (
+        to_number((summary_stats or {}).get("orderSumDynamic")) <= -15
+        or to_number((summary_stats or {}).get("openCountDynamic")) <= -30
+        or to_number((summary_stats or {}).get("orderCountDynamic")) <= -15
+    )
     priority_line = (
         f"🚨 <b>Приоритетных товаров:</b> {_format_number(priority_sku_count)}"
         if priority_sku_count
-        else "🚨 <b>Критичных проблем по ABC-товарам не найдено</b>"
+        else (
+            "🚨 <b>Есть заметные просадки по ключевым SKU.</b>"
+            if has_major_drop
+            else "🚨 <b>Критичных проблем по ABC-товарам не найдено</b>"
+        )
     )
     below_fact_count = len(
         {

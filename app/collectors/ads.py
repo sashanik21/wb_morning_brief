@@ -433,5 +433,17 @@ def collect_ads_stats(report_date=None):
         print("Ads rows: 0")
         return []
 
+    unique_nmids = {
+        row.get("nmId") for row in ads_rows if row.get("nmId") not in (None, "")
+    }
+    row_campaign_ids = {
+        row.get("campaignId") or row.get("advertId")
+        for row in ads_rows
+        if row.get("campaignId") or row.get("advertId")
+    }
+    print("ADS COVERAGE:")
+    print(f"campaigns: {len(campaign_ids) or len(row_campaign_ids)}")
+    print(f"ads rows: {len(ads_rows)}")
+    print(f"unique nmIds: {len(unique_nmids)}")
     print(f"Ads rows: {len(ads_rows)}")
     return ads_rows
