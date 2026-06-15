@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 
 from app.analyzers.ads_analyzer import (
@@ -166,6 +168,32 @@ def _print_summary_stats(summary_stats):
     print(f"belowAbcThresholdProblems: {summary_stats['belowAbcThresholdProblems']}")
 
 
+def _qbiki_source_status():
+    return (
+        "configured"
+        if os.getenv("QBIKI_METRICS_PATH") or os.getenv("QBIKI_GOOGLE_SHEETS_EXPORT")
+        else "not configured"
+    )
+
+
+def _matched_qbiki_nm_ids(qbiki_rows, funnel_rows, ads_rows):
+    known_nm_ids = {
+        str(row.get("nmId") or row.get("nm_id"))
+        for row in (funnel_rows or []) + (ads_rows or [])
+        if isinstance(row, dict)
+        and (row.get("nmId") or row.get("nm_id")) not in (None, "")
+    }
+    return len(
+        {
+            str(row.get("nmId") or row.get("nm_id"))
+            for row in qbiki_rows or []
+            if isinstance(row, dict)
+            and (row.get("nmId") or row.get("nm_id")) not in (None, "")
+            and str(row.get("nmId") or row.get("nm_id")) in known_nm_ids
+        }
+    )
+
+
 def main():
 
     print("MAIN VERSION: TELEGRAM ENABLED")
@@ -230,9 +258,16 @@ def main():
     ads_problems = analyze_ads_problems(ads_data, funnel_report)
     perfume_intelligence = build_perfume_intelligence(funnel_rows, ads_data)
     funnel_rows = perfume_intelligence["rows"]
+    raw_qbiki_rows = collect_qbiki_metrics()
     qbiki_metrics = enrich_qbiki_metrics(
-        collect_qbiki_metrics(), funnel_rows=funnel_rows, ads_rows=ads_data
+        raw_qbiki_rows, funnel_rows=funnel_rows, ads_rows=ads_data
     )
+    qbiki_source_status = _qbiki_source_status()
+    qbiki_matched_nm_ids = _matched_qbiki_nm_ids(qbiki_metrics, funnel_rows, ads_data)
+    print("QBIKI DATA:")
+    print(f"source: {qbiki_source_status}")
+    print(f"rows loaded: {len(raw_qbiki_rows)}")
+    print(f"matched nmIds: {qbiki_matched_nm_ids}")
     qbiki_problems = build_qbiki_problems(qbiki_metrics)
     if qbiki_metrics and hasattr(storage, "save_daily_qbiki_metrics"):
         storage.save_daily_qbiki_metrics(qbiki_metrics)
@@ -312,6 +347,9 @@ def main():
 
     summary_stats["adsSummary"] = ads_summary
     summary_stats["qbikiMetrics"] = qbiki_metrics
+    summary_stats["qbikiSourceStatus"] = qbiki_source_status
+    summary_stats["qbikiRowsLoaded"] = len(raw_qbiki_rows)
+    summary_stats["qbikiMatchedNmIds"] = qbiki_matched_nm_ids
     summary_stats["perfumeIntelligence"] = perfume_intelligence
     _print_summary_stats(summary_stats)
     print("=" * 50)
