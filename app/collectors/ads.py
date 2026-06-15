@@ -7,6 +7,17 @@ ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/co
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
 ADS_TIMEOUT_SECONDS = 60
 ADS_CAMPAIGN_BATCH_SIZE = 50
+_ADS_API_HAD_429 = False
+
+
+def ads_api_had_429():
+    return _ADS_API_HAD_429
+
+
+def _mark_ads_api_status(status_code):
+    global _ADS_API_HAD_429
+    if status_code == 429:
+        _ADS_API_HAD_429 = True
 
 
 def _extract_campaign_ids(payload):
@@ -72,6 +83,8 @@ def _request_ads_campaign_ids(token):
         timeout=ADS_TIMEOUT_SECONDS,
     )
 
+    _mark_ads_api_status(response.status_code)
+
     if response.status_code != 200:
         print("WB Ads campaigns API error")
         print("STATUS:", response.status_code)
@@ -98,6 +111,8 @@ def _request_ads_fullstats(token, campaign_ids, begin_date, end_date):
         },
         timeout=ADS_TIMEOUT_SECONDS,
     )
+
+    _mark_ads_api_status(response.status_code)
 
     if response.status_code != 200:
         print("WB Ads API error")
@@ -284,6 +299,8 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date):
 
 
 def collect_ads_stats(report_date=None):
+    global _ADS_API_HAD_429
+    _ADS_API_HAD_429 = False
     report_date = report_date or (datetime.now().date() - timedelta(days=1))
     ads_token = os.getenv("WB_ADS_API_TOKEN")
     fallback_token = os.getenv("WB_API_TOKEN_TEST")

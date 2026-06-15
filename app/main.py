@@ -18,7 +18,7 @@ from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.qbiki_metrics import build_qbiki_problems, enrich_qbiki_metrics
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 from app.analyzers.tasks_builder import build_tasks_from_problems
-from app.collectors.ads import collect_ads_stats
+from app.collectors.ads import ads_api_had_429, collect_ads_stats
 from app.collectors.funnel import (
     build_top_funnel_drop_signals,
     calculate_funnel_summary_dynamics,
@@ -346,6 +346,7 @@ def main():
     )
 
     summary_stats["adsSummary"] = ads_summary
+    summary_stats["adsApiHad429"] = ads_api_had_429()
     summary_stats["qbikiMetrics"] = qbiki_metrics
     summary_stats["qbikiSourceStatus"] = qbiki_source_status
     summary_stats["qbikiRowsLoaded"] = len(raw_qbiki_rows)
