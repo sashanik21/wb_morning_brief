@@ -161,10 +161,15 @@ create table if not exists daily_ads_metrics (
     date date,
     report_date date,
     seller_id bigint references sellers(id),
+    seller_name text,
 
     campaign_id bigint,
     campaign_name text,
+    campaign_status text,
+    campaign_type text,
     nm_id bigint,
+    vendor_code text,
+    title text,
 
     impressions numeric,
     clicks numeric,
@@ -181,7 +186,15 @@ create table if not exists daily_ads_metrics (
     drr numeric,
 
     bid numeric,
+    bid_delta numeric,
+    ctr_delta numeric,
+    cpc_delta numeric,
+    drr_delta numeric,
     avg_position numeric,
+    position_delta numeric,
+    ads_root_cause text,
+    ads_efficiency_score numeric,
+    auction_temperature text,
 
     raw_json jsonb,
     created_at timestamp default now(),

@@ -1012,6 +1012,35 @@ def _build_qbiki_ads_profitability_block(summary_stats):
     return "\n".join(lines)
 
 
+def _ads_history_status(ads_summary):
+    return "доступна" if (ads_summary or {}).get("pastPeriod") else "недоступна"
+
+
+def _qbiki_unavailable_line(summary_stats):
+    if (summary_stats or {}).get("qbikiMetrics"):
+        return ""
+    return "📢 Реклама: данные по прибыльности из Qbiki не подключены."
+
+
+def _ads_summary_lines(ads_summary):
+    ads_summary = ads_summary or {}
+    active_campaigns = ads_summary.get("activeCampaigns", 0)
+    products_with_stats = ads_summary.get("adsRows", 0)
+    history_status = _ads_history_status(ads_summary)
+    conclusion = (
+        "можно оценивать динамику ставок и CTR по daily_ads_metrics."
+        if history_status == "доступна"
+        else "пока нельзя оценить динамику ставок и CTR без daily_ads_metrics."
+    )
+    return [
+        "📢 <b>Реклама:</b>",
+        f"активных кампаний: {_format_number(active_campaigns)}",
+        f"статистика получена по товарам: {_format_number(products_with_stats)}",
+        f"история рекламы: {history_status}",
+        f"вывод: {conclusion}",
+    ]
+
+
 def _build_ads_block(records, summary_stats):
     qbiki_block = _build_qbiki_ads_profitability_block(summary_stats)
     if qbiki_block:
@@ -1033,11 +1062,12 @@ def _build_ads_block(records, summary_stats):
     active_campaigns = ads_summary.get("activeCampaigns", 0)
     problem_campaigns = ads_summary.get("problemCampaigns", 0)
     ads_problem_count = ads_summary.get("problems", len(ads_records))
-    block_lines = [
-        f"📢 <b>Реклама:</b> проблем {_format_number(ads_problem_count)}",
-        f"Активных кампаний: <b>{_format_number(active_campaigns)}</b>",
-        f"Проблемных кампаний: <b>{_format_number(problem_campaigns)}</b>",
-    ]
+    block_lines = _ads_summary_lines(ads_summary)
+    block_lines.append(f"проблем рекламы: {_format_number(ads_problem_count)}")
+    block_lines.append(f"проблемных кампаний: {_format_number(problem_campaigns)}")
+    qbiki_line = _qbiki_unavailable_line(summary_stats)
+    if qbiki_line:
+        block_lines.append(qbiki_line)
 
     if not ads_records:
         block_lines.append("✅ Проблем рекламы не найдено")
@@ -1367,13 +1397,15 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
 
 
 def _build_perfume_intelligence_block(summary_stats):
+    if not (summary_stats or {}).get("qbikiMetrics"):
+        return ""
     perfume = (summary_stats or {}).get("perfumeIntelligence") or {}
     insights = [item for item in perfume.get("insights") or [] if item.get("message")]
     volume_rows = perfume.get("volumeAnalytics") or []
     if not insights and not volume_rows:
         return ""
 
-    lines = ["🧴 <b>Perfume intelligence:</b>"]
+    lines = ["🧴 <b>Аналитика парфюмерии:</b>"]
     for insight in insights[:3]:
         lines.append(f"- {html.escape(str(insight.get('message')))}")
 
@@ -1422,25 +1454,27 @@ def _build_executive_ads_block(records, summary_stats):
     )
 
     if not ads_records:
-        return (
-            "📢 <b>Реклама:</b> "
-            f"активных кампаний {_format_number(active_campaigns)}, "
-            "критичных проблем нет"
-        )
+        lines = _ads_summary_lines(ads_summary)
+        qbiki_line = _qbiki_unavailable_line(summary_stats)
+        if qbiki_line:
+            lines.append(qbiki_line)
+        lines.append("критичных проблем нет")
+        return "\n".join(lines)
 
     first_problem = ads_records[0]
     score = ads_summary.get("adsEfficiencyScore")
     temperature = ads_summary.get("auctionTemperature") or first_problem.get(
         "auctionTemperature"
     )
-    lines = [
-        f"📢 <b>Реклама</b>: проблем {_format_number(problem_campaigns)}, "
-        f"активных кампаний {_format_number(active_campaigns)}."
-    ]
+    lines = _ads_summary_lines(ads_summary)
+    lines.append(f"проблем: {_format_number(problem_campaigns)}")
+    qbiki_line = _qbiki_unavailable_line(summary_stats)
+    if qbiki_line:
+        lines.append(qbiki_line)
     if score not in (None, "") or temperature:
         bits = []
         if score not in (None, ""):
-            bits.append(f"score {_format_number(score)}")
+            bits.append(f"оценка эффективности {_format_number(score)}")
         if temperature:
             bits.append(f"аукцион {html.escape(str(temperature))}")
         lines.append("Статус: " + ", ".join(bits) + ".")
@@ -1473,7 +1507,7 @@ def _build_executive_ads_block(records, summary_stats):
         lines.append(f"Падение CTR: {_format_product_identity(ctr_drop[0])}.")
     if waste:
         lines.append(
-            f"Waste spend: {_format_number(sum(to_number(p.get('spend')) for p in waste))} ₽."
+            f"Нерациональный расход: {_format_number(sum(to_number(p.get('spend')) for p in waste))} ₽."
         )
 
     specifics = _format_ads_specifics(first_problem)
@@ -1749,7 +1783,7 @@ def _format_priority_problem_line(problem):
     )
     decision_block = (
         f"\nприоритет: {html.escape(str(problem.get('actionPriority') or 'MONITOR'))}"
-        f" / score {_format_number(problem.get('businessPriorityScore'))}"
+        f" / приоритет {_format_number(problem.get('businessPriorityScore'))}"
         f" / SKU {html.escape(str(problem.get('skuCriticality') or 'support'))}"
     )
     cluster_block = ""

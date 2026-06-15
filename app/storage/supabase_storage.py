@@ -476,9 +476,14 @@ def _normalize_ads_metric_row(row):
         "date": _report_date(row),
         "report_date": _report_date(row),
         "seller_id": _to_int(row.get("seller_id")),
+        "seller_name": _first_present(row, ["seller_name", "sellerName"]),
         "campaign_id": _to_int(_first_present(row, ["campaign_id", "campaignId"])),
         "campaign_name": _first_present(row, ["campaign_name", "campaignName"]),
+        "campaign_status": _first_present(row, ["campaign_status", "campaignStatus"]),
+        "campaign_type": _first_present(row, ["campaign_type", "campaignType"]),
         "nm_id": _to_int(_first_present(row, ["nm_id", "nmId", "nm"])),
+        "vendor_code": _first_present(row, ["vendor_code", "vendorCode"]),
+        "title": row.get("title"),
         "impressions": _to_int(row.get("impressions")) or 0,
         "clicks": _to_int(row.get("clicks")) or 0,
         "ctr": _to_number(row.get("ctr")),
@@ -493,8 +498,22 @@ def _normalize_ads_metric_row(row):
         or 0,
         "drr": _to_number(row.get("drr")),
         "bid": _to_number(row.get("bid")),
+        "bid_delta": _to_number(_first_present(row, ["bid_delta", "bidDelta"])),
+        "ctr_delta": _to_number(_first_present(row, ["ctr_delta", "ctrDelta"])),
+        "cpc_delta": _to_number(_first_present(row, ["cpc_delta", "cpcDelta"])),
+        "drr_delta": _to_number(_first_present(row, ["drr_delta", "drrDelta"])),
         "avg_position": _to_number(
             _first_present(row, ["avg_position", "avgPosition", "avgAdPosition"])
+        ),
+        "position_delta": _to_number(
+            _first_present(row, ["position_delta", "positionDelta"])
+        ),
+        "ads_root_cause": _first_present(row, ["ads_root_cause", "adsRootCause"]),
+        "ads_efficiency_score": _to_number(
+            _first_present(row, ["ads_efficiency_score", "adsEfficiencyScore"])
+        ),
+        "auction_temperature": _first_present(
+            row, ["auction_temperature", "auctionTemperature"]
         ),
         "raw_json": row,
     }
