@@ -30,6 +30,12 @@ from app.collectors.funnel import (
 )
 from app.collectors.qbiki import collect_qbiki_metrics
 from app.collectors.supplies import collect_supply_stock_metrics
+from app.reports.api_coverage import (
+    build_api_coverage_report,
+    coverage_summary_line,
+    print_api_coverage_summary,
+    save_api_coverage_report,
+)
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
 from app.storage.storage_factory import get_storage
@@ -356,6 +362,28 @@ def main():
     summary_stats["qbikiSourceStatus"] = qbiki_source_status
     summary_stats["qbikiRowsLoaded"] = len(raw_qbiki_rows)
     summary_stats["qbikiMatchedNmIds"] = qbiki_matched_nm_ids
+    api_coverage_report = build_api_coverage_report(
+        seller_name=seller_name,
+        cards=wb_cards,
+        products=products,
+        funnel_rows=funnel_rows,
+        ads_rows=ads_data,
+        supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
+        problems=all_problems,
+        ads_api_partial=ads_api_had_429(),
+        qbiki_source_status=qbiki_source_status,
+    )
+    print_api_coverage_summary(api_coverage_report)
+    api_coverage_path = save_api_coverage_report(api_coverage_report)
+    print(f"XLSX отчёт покрытия API: {api_coverage_path}")
+    if hasattr(storage, "save_api_coverage_daily"):
+        storage.save_api_coverage_daily(
+            api_coverage_report["coverage"].to_dict("records")
+        )
+    summary_stats["apiCoverage"] = {
+        "line": coverage_summary_line(api_coverage_report),
+        "adsApiHad429": ads_api_had_429(),
+    }
     summary_stats["perfumeIntelligence"] = perfume_intelligence
     _print_summary_stats(summary_stats)
     print("=" * 50)
