@@ -326,6 +326,11 @@ def main():
     all_problems = enrich_perfume_records(
         funnel_problems + ads_problems + qbiki_problems + stocks_problems
     )
+    if ads_api_had_429():
+        for problem in all_problems:
+            if problem.get("problemCategory") == "ads":
+                problem["adsConfidence"] = "LOW"
+                problem["impactConfidence"] = "LOW"
     all_problems = apply_decision_engine(all_problems)
     if funnel_rows:
         storage.save_funnel_snapshot(funnel_rows)

@@ -212,7 +212,12 @@ def _has_clear_forecast_payload(problem):
 
 
 def _is_factual_executive_problem(problem):
-    if problem.get("isSuppressed") or _is_insufficient_history_problem(problem):
+    if problem.get("isSuppressed"):
+        return False
+    if _is_insufficient_history_problem(problem) and (
+        problem.get("problemCategory") == "ads"
+        or str(problem.get("problemType") or "").startswith("ads_")
+    ):
         return False
     if _is_forecast_signal(problem):
         return False
@@ -229,13 +234,22 @@ def _is_factual_executive_problem(problem):
 def _is_priority_telegram_problem(problem):
     if not _is_factual_executive_problem(problem):
         return False
-    if _is_below_abc_threshold(problem):
-        return False
     action_priority = str(problem.get("actionPriority") or "")
     if action_priority in {"NOW", "TODAY", "THIS_WEEK"}:
         return True
     severity = str(problem.get("severity") or "").lower()
     return severity in {"critical", "high", "medium"}
+
+
+def _priority_sku_count(records):
+    priority_like = [
+        record
+        for record in records
+        if _is_factual_executive_problem(record)
+        and not _is_insufficient_history_problem(record)
+        and str(record.get("severity") or "").lower() in {"critical", "high", "medium"}
+    ]
+    return len(_group_problems_by_product(priority_like))
 
 
 def _is_low_priority_telegram_problem(problem):
@@ -708,9 +722,18 @@ def _format_ads_specifics(problem):
             past_value = problem.get(past_key)
 
             if _is_present(selected_value) and _is_present(past_value):
-                lines.append(
-                    f"{label}: {_format_value_change(past_value, selected_value, suffix)}"
+                past_number = to_number(past_value)
+                dynamic = (
+                    (to_number(selected_value) - past_number) / past_number * 100
+                    if past_number
+                    else 0
                 )
+                if label in {"CTR", "CPC", "ДРР"} and abs(dynamic) < 3:
+                    lines.append(f"{label} рекламы без существенных изменений.")
+                else:
+                    lines.append(
+                        f"{label}: {_format_value_change(past_value, selected_value, suffix)}"
+                    )
 
     if problem.get("bidDelta") not in (None, ""):
         lines.append(f"Ставка: Δ {_format_number(problem.get('bidDelta'))}%")
@@ -1532,6 +1555,30 @@ def _executive_problem_title(product):
 
 
 def _executive_problem_line(index, product, insights_by_key):
+    problems = product.get("problems") or []
+    by_metric = {str(problem.get("metric") or ""): problem for problem in problems}
+    business_lines = [
+        _format_metric_bullet(by_metric.get("openCount"), "переходы"),
+        _format_metric_bullet(by_metric.get("cartCount"), "корзина"),
+        _format_metric_bullet(by_metric.get("orderCount"), "заказы"),
+        _format_metric_bullet(by_metric.get("orderSum"), "выручка"),
+    ]
+    ads_problem = next(
+        (problem for problem in problems if _problem_zone(problem) == "ADS"), None
+    )
+    if ads_problem and not any(business_lines):
+        problem_type = str(ads_problem.get("problemType") or "")
+        label = "CTR рекламы" if "ctr" in problem_type else "реклама"
+        business_lines.append(
+            f"— {label} снизился на {abs(to_number(ads_problem.get('dynamicPercent'))):.0f}%"
+        )
+    business_lines = [line for line in business_lines if line]
+
+    if business_lines:
+        return f"{index}. <b>{_executive_problem_title(product)}</b>\n" + "\n".join(
+            business_lines
+        )
+
     primary_problem = _product_primary_problem(product)
     insight = insights_by_key.get(_problem_group_key(product)) or {}
     problem = html.escape(_human_readable_problem_type(primary_problem))
@@ -1543,18 +1590,13 @@ def _executive_problem_line(index, product, insights_by_key):
         or primary_problem.get("problemLabel")
         or "есть риск потери заказов и выручки"
     )
-    if _is_forecast_signal(primary_problem) and consequence_text.lower() in {
-        "n/a",
-        "прогноз риска",
-    }:
-        consequence_text = "Риск скорого окончания остатков"
     action_text = str(
         primary_problem.get("recommendation")
         or ", ".join(str(item) for item in insight.get("whatToCheck") or [])
         or "проверить карточку, цену, рекламу и остатки"
     )
     for technical, user_text in (
-        ("INSUFFICIENT_HISTORY", "Недостаточно истории для точной оценки рекламы"),
+        ("INSUFFICIENT_HISTORY", ""),
         ("STOCK_FORECAST", "Риск скорого окончания остатков"),
         ("SKU", "товар"),
         ("[TODAY]", ""),
@@ -1709,6 +1751,12 @@ def _format_metric_drop_line(problem, label, suffix=""):
     )
 
 
+def _format_metric_bullet(problem, label):
+    if not problem:
+        return ""
+    return f"— {label} {_format_dynamic_value(problem.get('dynamicPercent'))}"
+
+
 def _main_business_decline_product(problem_products):
     candidates = []
     for product in problem_products or []:
@@ -1737,6 +1785,10 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
         lines = [
             _format_metric_drop_line(
                 _problem_by_metric(main_decline_product, "openCount"), "переходы"
+            ),
+            _format_metric_drop_line(
+                _problem_by_metric(main_decline_product, "cartCount"),
+                "добавления в корзину",
             ),
             _format_metric_drop_line(
                 _problem_by_metric(main_decline_product, "orderCount"), "заказы"
@@ -2586,7 +2638,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     ]
     main_records = priority_records or factual_records
     problem_products = _group_problems_by_product(main_records)
-    priority_sku_count = len(_group_problems_by_product(priority_records))
+    priority_sku_count = _priority_sku_count(factual_records)
     trust_score = _report_trust_score(records)
     priority_line = (
         f"🚨 <b>Приоритетных товаров:</b> {_format_number(priority_sku_count)}"

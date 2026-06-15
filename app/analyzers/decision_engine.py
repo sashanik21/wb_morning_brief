@@ -110,12 +110,28 @@ def _sku_criticality(problem):
     return "dead_sku" if problem.get("isBelowAbcThreshold") else "support"
 
 
+def _metric_weight(problem):
+    metric = str(problem.get("metric") or "")
+    if metric == "orderSum":
+        return 5
+    if metric == "orderCount":
+        return 4
+    if metric == "openCount":
+        return 3
+    if metric in {"cartToOrderPercent", "addToCartPercent", "cartCount"}:
+        return 2
+    if _is_ads_problem(problem):
+        return 1
+    return 2 if _is_stock_problem(problem) else 1
+
+
 def _score_problem(problem):
     revenue_loss = _problem_revenue_loss(problem)
     lost_orders = _problem_lost_orders(problem)
     severity_score = to_number(problem.get("severityScore"))
     dynamic = abs(to_number(problem.get("dynamicPercent")) or 0)
     criticality = _sku_criticality(problem)
+    weight = _metric_weight(problem)
 
     role_bonus = {
         "flagship": 35,
@@ -124,15 +140,21 @@ def _score_problem(problem):
         "low_value": -15,
         "dead_sku": -40,
     }.get(criticality, 0)
-    score = min(revenue_loss / 350, 45) + min(lost_orders * 3, 30)
-    score += min(severity_score / 2, 45) + min(dynamic / 3, 20) + role_bonus
+    score = min((revenue_loss / 350) * weight, 75) + min(lost_orders * 3 * weight, 60)
+    score += (
+        min((severity_score / 2) * weight, 70)
+        + min((dynamic / 3) * weight, 35)
+        + role_bonus
+    )
 
     if str(problem.get("organicImportance") or "").upper() in {"HIGH", "A", "TRUE"}:
         score += 12
     if _is_ads_problem(problem):
-        score += 10
+        score -= 20
+        if str(problem.get("adsConfidence") or "").upper() == "LOW":
+            score -= 25
     if problem.get("adsDependency") or _decline_source(problem) == "ADS_DECLINE":
-        score += 8
+        score += 3
     if problem.get("forecastType") or str(problem.get("problemType") or "").endswith(
         "_FORECAST"
     ):
@@ -144,7 +166,7 @@ def _score_problem(problem):
     if str(problem.get("categoryImportance") or "").upper() in {"HIGH", "A", "TOP"}:
         score += 10
     if problem.get("baselineReliability") == "INSUFFICIENT_HISTORY":
-        score -= 25
+        score -= 25 if _is_ads_problem(problem) else 5
     if problem.get("isBelowAbcThreshold"):
         score -= 30
     return max(0, round(score, 1))
