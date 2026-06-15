@@ -160,7 +160,7 @@ create table if not exists daily_ads_metrics (
 
     date date,
     report_date date,
-    seller_id bigint references sellers(id),
+    seller_id text,
     seller_name text,
 
     campaign_id bigint,

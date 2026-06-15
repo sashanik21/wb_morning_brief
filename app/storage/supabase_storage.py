@@ -76,6 +76,13 @@ def _to_int(value):
         return None
 
 
+def _string_or_none(value):
+    if value in (None, ""):
+        return None
+
+    return str(value)
+
+
 def _to_number(value):
     if value in (None, ""):
         return None
@@ -475,7 +482,7 @@ def _normalize_ads_metric_row(row):
     return {
         "date": _report_date(row),
         "report_date": _report_date(row),
-        "seller_id": _to_int(row.get("seller_id")),
+        "seller_id": _string_or_none(row.get("seller_id")),
         "seller_name": _first_present(row, ["seller_name", "sellerName"]),
         "campaign_id": _to_int(_first_present(row, ["campaign_id", "campaignId"])),
         "campaign_name": _first_present(row, ["campaign_name", "campaignName"]),
@@ -490,8 +497,14 @@ def _normalize_ads_metric_row(row):
         "cpc": _to_number(row.get("cpc")),
         "cpm": _to_number(row.get("cpm")),
         "spend": _to_number(row.get("spend")) or 0,
-        "orders_count": _to_number(row.get("orders")) or 0,
-        "orders": _to_number(row.get("orders")) or 0,
+        "orders_count": _to_number(
+            _first_present(row, ["orders", "orders_count", "ordersCount"])
+        )
+        or 0,
+        "orders": _to_number(
+            _first_present(row, ["orders", "orders_count", "ordersCount"])
+        )
+        or 0,
         "revenue": _to_number(
             _first_present(row, ["revenue", "ordersSum", "orders_sum"])
         )
@@ -524,7 +537,7 @@ def get_ads_history(seller_id, campaign_id, nm_id=None, days=7):
         _get_client()
         .table("daily_ads_metrics")
         .select("*")
-        .eq("seller_id", _to_int(seller_id))
+        .eq("seller_id", _string_or_none(seller_id))
         .eq("campaign_id", _to_int(campaign_id))
         .order("report_date", desc=True)
         .limit(_to_int(days) or 7)
