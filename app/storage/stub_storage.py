@@ -231,3 +231,7 @@ def save_problems(problems):
 
 def save_daily_qbiki_metrics(rows):
     print(f"STUB SAVE DAILY QBIKI METRICS: {len(rows)} rows")
+
+
+def save_api_coverage_daily(rows):
+    print(f"STUB SAVE API COVERAGE DAILY: {len(rows)} rows")

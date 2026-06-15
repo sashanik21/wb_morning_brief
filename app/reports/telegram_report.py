@@ -2621,6 +2621,18 @@ def _build_low_priority_signals_block(records):
     )
 
 
+def _build_api_coverage_debug_block(summary_stats):
+    coverage = (summary_stats or {}).get("apiCoverage") or {}
+    line = coverage.get("line")
+    if not line:
+        return ""
+
+    parts = [html.escape(str(line))]
+    if coverage.get("adsApiHad429"):
+        parts.append("Реклама: данные частичные из-за ограничения WB API.")
+    return "\n".join(parts)
+
+
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = _problems_to_records(problems)
     records = sorted(
@@ -2666,6 +2678,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         _build_low_priority_signals_block(records),
         _build_forecast_risks_block(records),
         _build_stock_eta_block(records),
+        _build_api_coverage_debug_block(summary_stats),
     ]
 
     if not main_records:

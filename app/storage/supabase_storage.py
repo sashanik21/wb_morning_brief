@@ -578,6 +578,94 @@ def save_problems(problems):
         )
 
 
+def _normalize_api_coverage_row(row):
+    return {
+        "report_date": _report_date(row),
+        "seller_name": _first_present(row, ["seller_name", "sellerName"]),
+        "nm_id": _to_int(_first_present(row, ["nm_id", "nmId", "nmID"])),
+        "vendor_code": _first_present(row, ["vendor_code", "vendorCode"]),
+        "title": row.get("title"),
+        "in_cards_api": _to_bool(
+            _first_present(row, ["in_cards_api", "inCardsApi"], default=False)
+        ),
+        "in_products_catalog": _to_bool(
+            _first_present(
+                row, ["in_products_catalog", "inProductsCatalog"], default=False
+            )
+        ),
+        "in_funnel_api": _to_bool(
+            _first_present(row, ["in_funnel_api", "inFunnelApi"], default=False)
+        ),
+        "in_ads_api": _to_bool(
+            _first_present(row, ["in_ads_api", "inAdsApi"], default=False)
+        ),
+        "in_supplies_api": _to_bool(
+            _first_present(row, ["in_supplies_api", "inSuppliesApi"], default=False)
+        ),
+        "in_problems": _to_bool(
+            _first_present(row, ["in_problems", "inProblems"], default=False)
+        ),
+        "in_telegram_top": _to_bool(
+            _first_present(row, ["in_telegram_top", "inTelegramTop"], default=False)
+        ),
+        "has_funnel_metrics": _to_bool(
+            _first_present(
+                row, ["has_funnel_metrics", "hasFunnelMetrics"], default=False
+            )
+        ),
+        "has_ads_metrics": _to_bool(
+            _first_present(row, ["has_ads_metrics", "hasAdsMetrics"], default=False)
+        ),
+        "has_supply_metrics": _to_bool(
+            _first_present(
+                row, ["has_supply_metrics", "hasSupplyMetrics"], default=False
+            )
+        ),
+        "has_forecast": _to_bool(
+            _first_present(row, ["has_forecast", "hasForecast"], default=False)
+        ),
+        "has_business_impact": _to_bool(
+            _first_present(
+                row, ["has_business_impact", "hasBusinessImpact"], default=False
+            )
+        ),
+        "funnel_fields_filled": _to_int(
+            _first_present(row, ["funnel_fields_filled", "funnelFieldsFilled"])
+        ),
+        "ads_fields_filled": _to_int(
+            _first_present(row, ["ads_fields_filled", "adsFieldsFilled"])
+        ),
+        "supply_fields_filled": _to_int(
+            _first_present(row, ["supply_fields_filled", "supplyFieldsFilled"])
+        ),
+        "problem_count": _to_int(
+            _first_present(row, ["problem_count", "problemCount"])
+        ),
+        "ads_problem_count": _to_int(
+            _first_present(row, ["ads_problem_count", "adsProblemCount"])
+        ),
+        "funnel_problem_count": _to_int(
+            _first_present(row, ["funnel_problem_count", "funnelProblemCount"])
+        ),
+    }
+
+
+def save_api_coverage_daily(rows):
+    normalized_rows = _drop_empty_required(
+        [_normalize_api_coverage_row(row) for row in rows],
+        ["report_date", "seller_name", "nm_id"],
+    )
+    print(f"SUPABASE SAVE API COVERAGE DAILY: {len(normalized_rows)} rows")
+
+    if normalized_rows:
+        _execute_write(
+            _get_client()
+            .table("api_coverage_daily")
+            .upsert(normalized_rows, on_conflict="report_date,seller_name,nm_id"),
+            "api_coverage_daily",
+        )
+
+
 def create_tasks(tasks):
     normalized_tasks = _drop_empty_required(
         [_normalize_task(task) for task in tasks],
