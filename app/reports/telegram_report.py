@@ -337,6 +337,8 @@ def _human_readable_problem_type(problem):
             "ORGANIC_FORECAST",
         }:
             return get_problem_label(metric)
+        if problem_label == "Прогноз риска" and _is_predictive_problem(problem):
+            return "Риск скорого окончания остатков"
         return problem_label
 
     if metric:
@@ -349,7 +351,20 @@ def _human_readable_problem_type(problem):
         if label.lower() != "n/a":
             return label
 
-    return "Прогноз риска" if _is_predictive_problem(problem) else "Проблема"
+    return (
+        "Риск скорого окончания остатков"
+        if _is_predictive_problem(problem)
+        else "Проблема"
+    )
+
+
+def _has_executive_problem_text(problem):
+    problem_label = str(problem.get("problemLabel") or "").strip().lower()
+    forecast_message = str(problem.get("forecastMessage") or "").strip().lower()
+
+    if problem_label in {"", "n/a"} and forecast_message in {"", "n/a"}:
+        return False
+    return True
 
 
 def _format_problem_line(problem):
@@ -1408,7 +1423,13 @@ def _build_executive_top_problems(problem_products, root_cause_insights):
         return ""
 
     insights_by_key = _build_insights_by_key(root_cause_insights)
-    top_products = problem_products[:EXECUTIVE_PROBLEMS_LIMIT]
+    top_products = [
+        product
+        for product in problem_products
+        if _has_executive_problem_text(_product_primary_problem(product))
+    ][:EXECUTIVE_PROBLEMS_LIMIT]
+    if not top_products:
+        return ""
     lines = [
         _executive_problem_line(index, product, insights_by_key)
         for index, product in enumerate(top_products, start=1)
@@ -2077,7 +2098,9 @@ def _build_first_checks_block(priority_records, root_cause_insights):
     lines = [f"{index}. {check}" for index, check in enumerate(checks, start=1)]
     technical_note = ""
     if any(_is_insufficient_history_problem(record) for record in priority_records):
-        technical_note = "\nℹ️ Ограничение анализа: по рекламе пока недостаточно истории (<7 дней данных)."
+        technical_note = (
+            "\nℹ️ Ограничение анализа: Недостаточно истории для точной оценки рекламы"
+        )
 
     return (
         "🎯 <b>Что проверить в первую очередь:</b>\n"
