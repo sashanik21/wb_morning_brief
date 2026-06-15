@@ -327,16 +327,29 @@ def _group_problems_by_product(records):
 
 def _human_readable_problem_type(problem):
     problem_label = str(problem.get("problemLabel") or "").strip()
+    metric = str(problem.get("metric") or "").strip()
+    problem_type = str(problem.get("problemType") or "").strip()
 
-    if problem_label:
+    if problem_label and problem_label.lower() != "n/a":
+        if problem_label == "Прогноз риска" and metric.upper() in {
+            "STOCK_FORECAST",
+            "ADS_FORECAST",
+            "ORGANIC_FORECAST",
+        }:
+            return get_problem_label(metric)
         return problem_label
 
-    metric = str(problem.get("metric") or "").strip()
-
     if metric:
-        return get_problem_label(metric)
+        label = get_problem_label(metric)
+        if label.lower() != "n/a":
+            return label
 
-    return get_problem_label(problem.get("problemType"))
+    if problem_type:
+        label = get_problem_label(problem_type)
+        if label.lower() != "n/a":
+            return label
+
+    return "Прогноз риска" if _is_predictive_problem(problem) else "Проблема"
 
 
 def _format_problem_line(problem):
@@ -1022,22 +1035,40 @@ def _qbiki_unavailable_line(summary_stats):
     return "📢 Реклама: данные по прибыльности из Qbiki не подключены."
 
 
+def _format_ads_metric_transition(previous, current, suffix=""):
+    if previous in (None, "") or current in (None, ""):
+        return "н/д"
+
+    return f"{_format_number(previous)}{suffix} → {_format_number(current)}{suffix}"
+
+
 def _ads_summary_lines(ads_summary):
     ads_summary = ads_summary or {}
-    active_campaigns = ads_summary.get("activeCampaigns", 0)
-    products_with_stats = ads_summary.get("adsRows", 0)
-    history_status = _ads_history_status(ads_summary)
-    conclusion = (
-        "можно оценивать динамику ставок и CTR по daily_ads_metrics."
-        if history_status == "доступна"
-        else "пока нельзя оценить динамику ставок и CTR без daily_ads_metrics."
-    )
+    if _ads_history_status(ads_summary) != "доступна":
+        return [
+            "📢 <b>Реклама:</b>",
+            "статистика за день получена, но история ещё не накоплена.",
+            "Динамику CTR, ставок и ДРР можно будет оценить после 3–7 дней данных.",
+        ]
+
     return [
         "📢 <b>Реклама:</b>",
-        f"активных кампаний: {_format_number(active_campaigns)}",
-        f"статистика получена по товарам: {_format_number(products_with_stats)}",
-        f"история рекламы: {history_status}",
-        f"вывод: {conclusion}",
+        "CTR рекламы: "
+        + _format_ads_metric_transition(
+            ads_summary.get("previousCtr"), ads_summary.get("currentCtr"), "%"
+        ),
+        "CPC: "
+        + _format_ads_metric_transition(
+            ads_summary.get("previousCpc"), ads_summary.get("currentCpc"), " ₽"
+        ),
+        "ДРР: "
+        + _format_ads_metric_transition(
+            ads_summary.get("previousDrr"), ads_summary.get("currentDrr"), "%"
+        ),
+        "Средняя ставка: "
+        + _format_ads_metric_transition(
+            ads_summary.get("previousBid"), ads_summary.get("currentBid"), " ₽"
+        ),
     ]
 
 

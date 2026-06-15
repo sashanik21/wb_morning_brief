@@ -656,6 +656,22 @@ def build_ads_summary(ads_rows, ads_problems):
     ]
 
     return {
+        "currentCtr": _average([row.get("ctr") for row in ads_rows or []]),
+        "previousCtr": _average(
+            [_previous_value(row, "ctr") for row in ads_rows or []]
+        ),
+        "currentCpc": _average([row.get("cpc") for row in ads_rows or []]),
+        "previousCpc": _average(
+            [_previous_value(row, "cpc") for row in ads_rows or []]
+        ),
+        "currentDrr": _average([row.get("drr") for row in ads_rows or []]),
+        "previousDrr": _average(
+            [_previous_value(row, "drr") for row in ads_rows or []]
+        ),
+        "currentBid": _average([row.get("bid") for row in ads_rows or []]),
+        "previousBid": _average(
+            [_previous_value(row, "bid") for row in ads_rows or []]
+        ),
         "activeCampaigns": len(campaign_ids),
         "adsRows": len(ads_rows or []),
         "problemCampaigns": len(problem_campaign_ids),
