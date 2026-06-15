@@ -36,6 +36,59 @@ FACTUAL_EXECUTIVE_TYPES = {"sellableOutOfStock"}
 FORECAST_SIGNAL_TYPES = {"STOCK_FORECAST", "ADS_FORECAST", "ORGANIC_FORECAST"}
 logger = logging.getLogger(__name__)
 
+
+BUSINESS_METRIC_PRIORITY = {
+    "orderSum": 0,
+    "orderCount": 1,
+    "openCount": 2,
+    "cartCount": 3,
+    "cartToOrderPercent": 4,
+    "addToCartPercent": 5,
+}
+ADS_METRIC_PRIORITY = {"ctr": 6, "cpc": 6, "drr": 6, "bid": 6}
+FORECAST_PRIORITY = 8
+
+
+def _metric_priority_rank(problem):
+    metric = str(problem.get("metric") or "")
+    problem_type = str(problem.get("problemType") or "")
+    if metric in BUSINESS_METRIC_PRIORITY:
+        return BUSINESS_METRIC_PRIORITY[metric]
+    if problem.get("problemCategory") == "ads" or problem_type.startswith("ads_"):
+        return ADS_METRIC_PRIORITY.get(metric, 6)
+    if _is_forecast_signal(problem):
+        return FORECAST_PRIORITY
+    return 7
+
+
+def _is_actual_drop(problem):
+    selected = problem.get("selectedValue")
+    past = problem.get("pastValue")
+    if _is_present(selected) and _is_present(past):
+        return to_number(selected) < to_number(past)
+    dynamic = problem.get("dynamicPercent")
+    return _is_present(dynamic) and to_number(dynamic) < 0
+
+
+def _absolute_metric_drop(problem):
+    selected = problem.get("selectedValue")
+    past = problem.get("pastValue")
+    if not (_is_present(selected) and _is_present(past)):
+        return 0
+    return max(to_number(past) - to_number(selected), 0)
+
+
+def _business_sort_key(record):
+    return (
+        _metric_priority_rank(record),
+        -_problem_lost_revenue(record),
+        -_problem_lost_orders(record),
+        -_absolute_metric_drop(record),
+        -to_number(record.get("businessPriorityScore")),
+        -to_number(record.get("severityScore")),
+    )
+
+
 DECLINE_SOURCE_TELEGRAM_LABELS = {
     "ADS_DECLINE": "реклама",
     "ORGANIC_DECLINE": "органика",
@@ -167,7 +220,7 @@ def _is_factual_executive_problem(problem):
     problem_type = str(problem.get("problemType") or "")
     category = str(problem.get("problemCategory") or "")
     if metric in FACTUAL_EXECUTIVE_METRICS or problem_type in FACTUAL_EXECUTIVE_TYPES:
-        return True
+        return _is_actual_drop(problem) or metric in {"wbStocks", "realSellableStock"}
     if category == "ads" or problem_type.startswith("ads_"):
         return _format_ads_specifics(problem) != ""
     return False
@@ -354,12 +407,7 @@ def _group_problems_by_product(records):
         grouped_products[group_key]["problems"].append(problem)
 
     for product in grouped_products.values():
-        product["problems"].sort(
-            key=lambda item: (
-                -to_number(item.get("businessPriorityScore")),
-                -to_number(item.get("severityScore")),
-            )
-        )
+        product["problems"].sort(key=_business_sort_key)
         product["severityScore"] = to_number(
             product["problems"][0].get("severityScore") if product["problems"] else 0
         )
@@ -372,8 +420,7 @@ def _group_problems_by_product(records):
     return sorted(
         grouped_products.values(),
         key=lambda product: (
-            -product["businessPriorityScore"],
-            -product["severityScore"],
+            _business_sort_key(_product_primary_problem(product)),
             product["first_index"],
         ),
     )
@@ -425,7 +472,35 @@ def _has_executive_problem_text(problem):
     return True
 
 
+def _format_ads_problem_line(problem):
+    metric_labels = {
+        "ctr": "CTR рекламы",
+        "cpc": "CPC рекламы",
+        "drr": "ДРР рекламы",
+        "bid": "Ставка рекламы",
+    }
+    metric = str(problem.get("metric") or "")
+    label = metric_labels.get(metric)
+    if not label:
+        return ""
+    selected = problem.get("selectedValue")
+    past = problem.get("pastValue")
+    dynamic = problem.get("dynamicPercent")
+    suffix = "%" if metric in {"ctr", "drr"} else " ₽" if metric == "cpc" else "%"
+    if _is_present(selected) and _is_present(past):
+        return (
+            f"— {label}: {_format_value_change(past, selected, suffix)} "
+            f"({_format_dynamic_value(dynamic)})"
+        )
+    direction = "снизился" if to_number(dynamic) < 0 else "вырос"
+    return f"— {label} {direction} на {html.escape(str(abs(to_number(dynamic))))}%"
+
+
 def _format_problem_line(problem):
+    ads_line = _format_ads_problem_line(problem)
+    if ads_line:
+        return ads_line
+
     problem_type = html.escape(_human_readable_problem_type(problem))
 
     if problem.get("metric") == "wbStocks" and _is_present(
@@ -1153,6 +1228,65 @@ def _format_ads_metric_transition(previous, current, suffix=""):
     return f"{_format_number(previous)}{suffix} → {_format_number(current)}{suffix}"
 
 
+def _metric_change_state(previous, current, stable_threshold=5):
+    if previous in (None, "") or current in (None, "") or to_number(previous) == 0:
+        return "unknown"
+    delta = (to_number(current) - to_number(previous)) / to_number(previous) * 100
+    if abs(delta) <= stable_threshold:
+        return "stable"
+    return "up" if delta > 0 else "down"
+
+
+def _ads_summary_conclusion(ads_summary):
+    ads_summary = ads_summary or {}
+    if _ads_has_incomplete_metric_history(ads_summary):
+        return "История рекламы пока короткая, выводы предварительные."
+    ctr = _metric_change_state(
+        ads_summary.get("previousCtr"), ads_summary.get("currentCtr")
+    )
+    cpc = _metric_change_state(
+        ads_summary.get("previousCpc"), ads_summary.get("currentCpc")
+    )
+    drr = _metric_change_state(
+        ads_summary.get("previousDrr"), ads_summary.get("currentDrr")
+    )
+    if ctr == "stable" and cpc == "up" and drr == "up":
+        return (
+            "Реклама стала дороже:\n"
+            "— стоимость клика выросла;\n"
+            "— ДРР увеличился;\n"
+            "— CTR существенно не изменился."
+        )
+    if ctr == "up" and cpc == "stable" and drr == "down":
+        return (
+            "Эффективность рекламы улучшилась:\n"
+            "— CTR вырос;\n"
+            "— стоимость привлечения стабильна;\n"
+            "— ДРР снизился."
+        )
+    parts = []
+    parts.append(
+        "CTR вырос"
+        if ctr == "up"
+        else "CTR снизился" if ctr == "down" else "CTR существенно не изменился"
+    )
+    parts.append(
+        "стоимость клика выросла"
+        if cpc == "up"
+        else (
+            "стоимость клика снизилась"
+            if cpc == "down"
+            else "стоимость клика стабильна"
+        )
+    )
+    parts.append(
+        "ДРР увеличился"
+        if drr == "up"
+        else "ДРР снизился" if drr == "down" else "ДРР существенно не изменился"
+    )
+    return "Вывод по рекламе: " + "; ".join(parts) + "."
+
+
 def _ads_summary_lines(ads_summary):
     ads_summary = ads_summary or {}
     lines = ["📢 <b>Реклама</b>"]
@@ -1167,8 +1301,9 @@ def _ads_summary_lines(ads_summary):
     if _ads_has_incomplete_metric_history(ads_summary):
         lines.extend(
             [
-                "Истории рекламы пока мало.",
+                "История рекламы пока короткая, динамика ещё накапливается.",
                 _format_ads_current_metrics(ads_summary),
+                "История рекламы пока короткая, выводы предварительные.",
             ]
         )
         return lines
@@ -1188,6 +1323,8 @@ def _ads_summary_lines(ads_summary):
             + _format_ads_metric_transition(
                 ads_summary.get("previousDrr"), ads_summary.get("currentDrr"), "%"
             ),
+            "",
+            _ads_summary_conclusion(ads_summary),
         ]
     )
     return lines
@@ -1452,10 +1589,10 @@ def _business_action_text(problem, insight=None):
     if _problem_zone(problem) == "ADS":
         return f"Снизить перегрев рекламы / проверить ДРР по {_format_product_identity(problem)}"
     if insight.get("rootCauseZone"):
-        return f"Проверить {insight.get('rootCauseZone')} по {_format_product_identity(problem)}"
+        return f"Проверить {insight.get('rootCauseZone')} по товарам из блока главных проблем"
     return str(
         problem.get("recommendation")
-        or f"Проверить ключевой сигнал по {_format_product_identity(problem)}"
+        or "Проверить ключевой сигнал по товарам из блока главных проблем"
     )
 
 
@@ -1471,9 +1608,9 @@ def _product_action_text(product, insights_by_key):
         selected = problem.get("selectedValue")
         past = problem.get("pastValue")
         if _is_present(selected) and _is_present(past):
-            return (
-                f"{label} упали с {_format_number(past)} до {_format_number(selected)}"
-            )
+            if to_number(selected) < to_number(past):
+                return f"{label} упали с {_format_number(past)} до {_format_number(selected)}"
+            return ""
         return f"{label} {_format_dynamic_percent(problem.get('dynamicPercent'))}"
 
     facts = [
@@ -1551,23 +1688,69 @@ def _build_executive_top_problems(problem_products, root_cause_insights):
     return "🔴 <b>Главные проблемы</b>\n" + "\n\n".join(lines)
 
 
-def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
-    evidence_rows = (summary_stats or {}).get("evidenceRows") or []
-    decline_rows = [
-        row
-        for row in evidence_rows
-        if isinstance(row, dict) and to_number(row.get("orderSum_delta")) < 0
-    ]
-    if decline_rows:
-        row = min(decline_rows, key=lambda item: to_number(item.get("orderSum_delta")))
-        title = html.escape(str(row.get("title") or "товару"))
-        return (
-            "🧠 <b>Главный инсайт:</b> Основная просадка дня — падение переходов "
-            f"и заказов по {title}: переходы упали с "
-            f"{_format_number(row.get('openCount_past'))} до {_format_number(row.get('openCount_selected'))}, "
-            f"заказы с {_format_number(row.get('orderCount_past'))} до {_format_number(row.get('orderCount_selected'))}, "
-            f"выручка с {_format_number(row.get('orderSum_past'))} ₽ до {_format_number(row.get('orderSum_selected'))} ₽."
+def _problem_by_metric(product, metric):
+    for problem in product.get("problems") or []:
+        if str(problem.get("metric") or "") == metric and _is_actual_drop(problem):
+            return problem
+    return None
+
+
+def _format_metric_drop_line(problem, label, suffix=""):
+    if not problem:
+        return ""
+    past = problem.get("pastValue")
+    selected = problem.get("selectedValue")
+    dynamic = problem.get("dynamicPercent")
+    if not (_is_present(past) and _is_present(selected)):
+        return ""
+    return (
+        f"{label} {_format_number(past)}{suffix} → "
+        f"{_format_number(selected)}{suffix} ({_format_dynamic_value(dynamic)})"
+    )
+
+
+def _main_business_decline_product(problem_products):
+    candidates = []
+    for product in problem_products or []:
+        revenue_problem = _problem_by_metric(product, "orderSum")
+        orders_problem = _problem_by_metric(product, "orderCount")
+        traffic_problem = _problem_by_metric(product, "openCount")
+        if not (revenue_problem or orders_problem or traffic_problem):
+            continue
+        candidates.append(
+            (
+                product,
+                _absolute_metric_drop(revenue_problem or {}),
+                _absolute_metric_drop(orders_problem or {}),
+                _absolute_metric_drop(traffic_problem or {}),
+            )
         )
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[1], item[2], item[3]))[0]
+
+
+def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
+    main_decline_product = _main_business_decline_product(problem_products)
+    if main_decline_product:
+        title = html.escape(str(main_decline_product.get("title") or "товару"))
+        lines = [
+            _format_metric_drop_line(
+                _problem_by_metric(main_decline_product, "openCount"), "переходы"
+            ),
+            _format_metric_drop_line(
+                _problem_by_metric(main_decline_product, "orderCount"), "заказы"
+            ),
+            _format_metric_drop_line(
+                _problem_by_metric(main_decline_product, "orderSum"), "выручка", " ₽"
+            ),
+        ]
+        lines = [line for line in lines if line]
+        if lines:
+            return (
+                "🧠 <b>Главный инсайт:</b> Основная просадка дня — "
+                f"{title}:\n" + ";\n".join(lines) + "."
+            )
 
     insights_by_key = _build_insights_by_key(root_cause_insights)
     top_problems = [_product_primary_problem(product) for product in problem_products]
@@ -2072,7 +2255,8 @@ def _check_priority_score(record):
     ads_bonus = 30 if _problem_zone(record) == "ADS" else 0
     history_penalty = 200 if _is_insufficient_history_problem(record) else 0
     return (
-        to_number(record.get("severityScore"))
+        -(_metric_priority_rank(record) * 1000)
+        + to_number(record.get("severityScore"))
         + _problem_impact_value(record) / 1000
         + stock_bonus
         + ads_bonus
@@ -2391,8 +2575,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         records,
         key=lambda record: (
             record.get("isSuppressed") is True,
-            -to_number(record.get("businessPriorityScore")),
-            -to_number(record.get("severityScore")),
+            _business_sort_key(record),
         ),
     )
     factual_records = [
