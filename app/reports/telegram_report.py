@@ -978,7 +978,17 @@ def _format_qbiki_product_line(index, row):
     )
 
 
+def _ads_api_429_limitation_line(summary_stats):
+    if (summary_stats or {}).get("adsApiHad429"):
+        return (
+            "Ограничение: WB Ads API вернул 429, часть рекламной статистики "
+            "может быть неполной."
+        )
+    return ""
+
+
 def _build_qbiki_ads_profitability_block(summary_stats):
+    limitation_line = _ads_api_429_limitation_line(summary_stats)
     rows = [
         row
         for row in (summary_stats or {}).get("qbikiMetrics") or []
@@ -1035,6 +1045,30 @@ def _qbiki_unavailable_line(summary_stats):
     return "📢 Реклама: данные по прибыльности из Qbiki не подключены."
 
 
+def _ads_baseline_missing(value):
+    return value in (None, "") or to_number(value) <= 0
+
+
+def _ads_has_incomplete_metric_history(ads_summary):
+    ads_summary = ads_summary or {}
+    if _ads_history_status(ads_summary) != "доступна":
+        return True
+    return any(
+        _ads_baseline_missing(ads_summary.get(key))
+        for key in ("previousCtr", "previousCpc", "previousDrr")
+    )
+
+
+def _format_ads_current_metrics(ads_summary):
+    ads_summary = ads_summary or {}
+    return (
+        "Текущие показатели: CTR рекламы "
+        f"{_format_number(ads_summary.get('currentCtr'))}%, стоимость клика "
+        f"{_format_number(ads_summary.get('currentCpc'))} ₽, ДРР "
+        f"{_format_number(ads_summary.get('currentDrr'))}%."
+    )
+
+
 def _format_ads_metric_transition(previous, current, suffix=""):
     if previous in (None, "") or current in (None, ""):
         return "н/д"
@@ -1044,11 +1078,11 @@ def _format_ads_metric_transition(previous, current, suffix=""):
 
 def _ads_summary_lines(ads_summary):
     ads_summary = ads_summary or {}
-    if _ads_history_status(ads_summary) != "доступна":
+    if _ads_has_incomplete_metric_history(ads_summary):
         return [
             "📢 <b>Реклама:</b>",
-            "статистика за день получена, но история ещё не накоплена.",
-            "Динамику CTR, ставок и ДРР можно будет оценить после 3–7 дней данных.",
+            "Истории рекламы пока мало.",
+            _format_ads_current_metrics(ads_summary),
         ]
 
     return [
@@ -1057,7 +1091,7 @@ def _ads_summary_lines(ads_summary):
         + _format_ads_metric_transition(
             ads_summary.get("previousCtr"), ads_summary.get("currentCtr"), "%"
         ),
-        "CPC: "
+        "Стоимость клика: "
         + _format_ads_metric_transition(
             ads_summary.get("previousCpc"), ads_summary.get("currentCpc"), " ₽"
         ),
@@ -1094,6 +1128,9 @@ def _build_ads_block(records, summary_stats):
     problem_campaigns = ads_summary.get("problemCampaigns", 0)
     ads_problem_count = ads_summary.get("problems", len(ads_records))
     block_lines = _ads_summary_lines(ads_summary)
+    limitation_line = _ads_api_429_limitation_line(summary_stats)
+    if limitation_line:
+        block_lines.append(limitation_line)
     block_lines.append(f"проблем рекламы: {_format_number(ads_problem_count)}")
     block_lines.append(f"проблемных кампаний: {_format_number(problem_campaigns)}")
     qbiki_line = _qbiki_unavailable_line(summary_stats)
@@ -1101,7 +1138,9 @@ def _build_ads_block(records, summary_stats):
         block_lines.append(qbiki_line)
 
     if not ads_records:
-        block_lines.append("✅ Проблем рекламы не найдено")
+        block_lines.append(
+            "Критичных рекламных проблем по доступным данным не найдено."
+        )
         return "\n".join(block_lines)
 
     grouped_campaigns = {}
@@ -1486,10 +1525,20 @@ def _build_executive_ads_block(records, summary_stats):
 
     if not ads_records:
         lines = _ads_summary_lines(ads_summary)
+        limitation_line = _ads_api_429_limitation_line(summary_stats)
+        if limitation_line:
+            lines.append(limitation_line)
         qbiki_line = _qbiki_unavailable_line(summary_stats)
         if qbiki_line:
             lines.append(qbiki_line)
-        lines.append("критичных проблем нет")
+        if (
+            limitation_line
+            or qbiki_line
+            or _ads_has_incomplete_metric_history(ads_summary)
+        ):
+            lines.append("Критичных рекламных проблем по доступным данным не найдено.")
+        else:
+            lines.append("критичных проблем нет")
         return "\n".join(lines)
 
     first_problem = ads_records[0]
@@ -1498,6 +1547,9 @@ def _build_executive_ads_block(records, summary_stats):
         "auctionTemperature"
     )
     lines = _ads_summary_lines(ads_summary)
+    limitation_line = _ads_api_429_limitation_line(summary_stats)
+    if limitation_line:
+        lines.append(limitation_line)
     lines.append(f"проблем: {_format_number(problem_campaigns)}")
     qbiki_line = _qbiki_unavailable_line(summary_stats)
     if qbiki_line:
