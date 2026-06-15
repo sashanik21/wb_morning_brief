@@ -386,7 +386,9 @@ def main():
     summary_stats["apiCoverage"] = {
         "line": coverage_summary_line(api_coverage_report),
         "adsApiHad429": ads_api_had_429(),
-        "adsFound": int(api_coverage_report["coverage"]["inAdsApi"].sum()),
+        "adsFound": api_coverage_report.get("adsUniqueNmids", 0),
+        "adsCampaignCount": api_coverage_report.get("adsCampaignCount", 0),
+        "adsRowsCount": api_coverage_report.get("adsRowsCount", 0),
         "totalSku": len(api_coverage_report["coverage"]),
     }
     summary_stats["perfumeIntelligence"] = perfume_intelligence

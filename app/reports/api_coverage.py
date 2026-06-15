@@ -186,6 +186,13 @@ def build_api_coverage_report(
     cards_by_nm = _products_by_nm_id(cards)
     products_by_nm = _products_by_nm_id(products)
     funnel_by_nm = _records_by_nm_id(funnel_rows)
+    ads_rows_count = len([row for row in ads_rows or [] if isinstance(row, dict)])
+    ads_campaign_ids = {
+        _first_present(row, ["campaignId", "advertId", "adsCampaignId", "id"], None)
+        for row in ads_rows or []
+        if isinstance(row, dict)
+    }
+    ads_campaign_ids.discard(None)
     ads_by_nm = _records_by_nm_id(ads_rows)
     supply_by_nm = {}
     for nm_id, metrics in (supply_stock_metrics_by_nm_id or {}).items():
@@ -278,6 +285,8 @@ def build_api_coverage_report(
                     else "OK"
                 ),
                 "products": len(ads_by_nm),
+                "adsCampaignCount": len(ads_campaign_ids),
+                "adsRowsCount": ads_rows_count,
                 "warning": "429 warning" if ads_api_partial else "",
             },
             {
@@ -319,6 +328,9 @@ def build_api_coverage_report(
         "missing_supplies": missing_supplies,
         "api_status": api_status,
         "ads_matching_debug": ads_matching_debug_frame,
+        "adsCampaignCount": len(ads_campaign_ids),
+        "adsRowsCount": ads_rows_count,
+        "adsUniqueNmids": len(ads_by_nm),
     }
 
 
@@ -343,6 +355,12 @@ def print_api_coverage_summary(report):
     print(f"cards: {int(coverage['inCardsApi'].sum())}")
     print(f"funnel: {int(coverage['inFunnelApi'].sum())}")
     print(f"ads: {int(coverage['inAdsApi'].sum())}")
+    print("ADS COVERAGE:")
+    print(f"campaigns: {report.get('adsCampaignCount', 0)}")
+    print(f"ads rows: {report.get('adsRowsCount', 0)}")
+    print(
+        f"unique nmIds: {report.get('adsUniqueNmids', int(coverage['inAdsApi'].sum()))}"
+    )
     print(f"supplies: {int(coverage['inSuppliesApi'].sum())}")
     print(f"problems: {int(coverage['inProblems'].sum())}")
     print(f"telegram top: {int(coverage['inTelegramTop'].sum())}")
@@ -359,6 +377,7 @@ def coverage_summary_line(report):
     total = len(coverage)
     return (
         f"Данные API: воронка {int(coverage['inFunnelApi'].sum())}/{total}, "
-        f"реклама {int(coverage['inAdsApi'].sum())}/{total}, "
+        f"реклама {report.get('adsUniqueNmids', int(coverage['inAdsApi'].sum()))} SKU / "
+        f"{report.get('adsRowsCount', 0)} строк, "
         f"поставки {int(coverage['inSuppliesApi'].sum())}/{total}."
     )
