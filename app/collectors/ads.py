@@ -1,5 +1,7 @@
+import json
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import requests
 
@@ -7,6 +9,7 @@ ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/co
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
 ADS_TIMEOUT_SECONDS = 60
 ADS_CAMPAIGN_BATCH_SIZE = 50
+REPORTS_DIR = Path("reports")
 _ADS_API_HAD_429 = False
 
 
@@ -130,9 +133,24 @@ def _request_ads_fullstats(token, campaign_ids, begin_date, end_date):
 def _flatten_nm_stats(campaign):
     nm_rows = []
 
+    def append_nm_rows(container):
+        for item in container or []:
+            if isinstance(item, dict):
+                nm_rows.append(item)
+            elif item not in (None, ""):
+                nm_rows.append({"nmId": item})
+
+    append_nm_rows(campaign.get("nms"))
+    append_nm_rows(campaign.get("nmIds"))
+    for advert_item in campaign.get("advertItems") or campaign.get("items") or []:
+        if isinstance(advert_item, dict):
+            append_nm_rows(advert_item.get("nms"))
+            append_nm_rows(advert_item.get("nmIds"))
+            if advert_item.get("nm") or advert_item.get("nmId"):
+                nm_rows.append(advert_item)
     for day in campaign.get("days") or []:
         for app in day.get("apps") or []:
-            nm_rows.extend(app.get("nms") or [])
+            append_nm_rows(app.get("nms"))
 
     return nm_rows
 
@@ -185,7 +203,53 @@ def _extract_search_queries(campaign):
     return query_rows
 
 
-def _aggregate_campaign(campaign):
+def _extract_subject(campaign):
+    return (
+        campaign.get("subjectName")
+        or campaign.get("subject")
+        or campaign.get("object")
+        or ""
+    )
+
+
+def _extract_status(campaign):
+    return (
+        campaign.get("status")
+        or campaign.get("state")
+        or campaign.get("campaignStatus")
+        or ""
+    )
+
+
+def _debug_ads_raw(campaigns, report_date):
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = REPORTS_DIR / f"debug_ads_raw_{report_date.strftime('%Y_%m_%d')}.json"
+    payload = []
+    for campaign in campaigns or []:
+        nm_rows = _flatten_nm_stats(campaign)
+        payload.append(
+            {
+                "campaignId": _campaign_id(campaign),
+                "campaignName": _campaign_name(campaign),
+                "advertId": campaign.get("advertId") or _campaign_id(campaign),
+                "nmIds": [
+                    row.get("nm") or row.get("nmId")
+                    for row in nm_rows
+                    if isinstance(row, dict)
+                ],
+                "subject": _extract_subject(campaign),
+                "searchText": ", ".join(
+                    q.get("query") or "" for q in _extract_search_queries(campaign)
+                ),
+                "status": _extract_status(campaign),
+                "raw": campaign,
+            }
+        )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"ADS RAW DEBUG DUMP: {path}")
+
+
+def _aggregate_campaign(campaign, nm_row=None):
     nm_rows = _flatten_nm_stats(campaign)
     impressions = _to_number(campaign.get("views") or campaign.get("impressions"))
     clicks = _to_number(campaign.get("clicks"))
@@ -211,7 +275,17 @@ def _aggregate_campaign(campaign):
             _to_number(row.get("sum_price") or row.get("ordersSum")) for row in nm_rows
         )
 
-    first_nm = nm_rows[0] if nm_rows else {}
+    first_nm = nm_row or (nm_rows[0] if nm_rows else {})
+    if nm_row:
+        impressions = _to_number(
+            nm_row.get("views") or nm_row.get("impressions"), impressions
+        )
+        clicks = _to_number(nm_row.get("clicks"), clicks)
+        spend = _to_number(nm_row.get("sum") or nm_row.get("spend"), spend)
+        orders = _to_number(nm_row.get("orders"), orders)
+        orders_sum = _to_number(
+            nm_row.get("sum_price") or nm_row.get("ordersSum"), orders_sum
+        )
     ctr = _to_number(campaign.get("ctr")) or _safe_percent(clicks, impressions)
     cpc = _to_number(campaign.get("cpc")) or _safe_ratio(spend, clicks)
     cpm = _to_number(campaign.get("cpm")) or _safe_ratio(spend * 1000, impressions)
@@ -219,6 +293,7 @@ def _aggregate_campaign(campaign):
 
     return {
         "campaignId": _campaign_id(campaign),
+        "advertId": campaign.get("advertId") or _campaign_id(campaign),
         "campaignName": _campaign_name(campaign),
         "nmId": first_nm.get("nm") or first_nm.get("nmId") or campaign.get("nm"),
         "vendorCode": first_nm.get("vendorCode") or campaign.get("vendorCode") or "",
@@ -240,14 +315,21 @@ def _aggregate_campaign(campaign):
             campaign.get("avgPosition") or campaign.get("avgAdPosition")
         ),
         "searchQueries": _extract_search_queries(campaign),
+        "subject": _extract_subject(campaign),
+        "campaignStatus": _extract_status(campaign),
     }
 
 
 def _merge_previous_period(current_rows, previous_rows):
+    previous_by_campaign_nm = {
+        (row.get("campaignId"), row.get("nmId")): row for row in previous_rows
+    }
     previous_by_campaign = {row.get("campaignId"): row for row in previous_rows}
 
     for row in current_rows:
-        previous = previous_by_campaign.get(row.get("campaignId"), {})
+        previous = previous_by_campaign_nm.get(
+            (row.get("campaignId"), row.get("nmId"))
+        ) or previous_by_campaign.get(row.get("campaignId"), {})
         for metric in (
             "impressions",
             "clicks",
@@ -281,14 +363,25 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date):
         if current_payload is None:
             return None
 
-        current_rows.extend(
-            _aggregate_campaign(campaign) for campaign in current_payload
-        )
+        _debug_ads_raw(current_payload, report_date)
+        for campaign in current_payload:
+            nm_rows = _flatten_nm_stats(campaign)
+            if nm_rows:
+                current_rows.extend(
+                    _aggregate_campaign(campaign, nm_row) for nm_row in nm_rows
+                )
+            else:
+                current_rows.append(_aggregate_campaign(campaign))
 
         if previous_payload:
-            previous_rows.extend(
-                _aggregate_campaign(campaign) for campaign in previous_payload
-            )
+            for campaign in previous_payload:
+                nm_rows = _flatten_nm_stats(campaign)
+                if nm_rows:
+                    previous_rows.extend(
+                        _aggregate_campaign(campaign, nm_row) for nm_row in nm_rows
+                    )
+                else:
+                    previous_rows.append(_aggregate_campaign(campaign))
 
     for row in current_rows:
         row["date"] = current_date

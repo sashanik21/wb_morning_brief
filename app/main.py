@@ -8,6 +8,7 @@ from app.analyzers.ads_analyzer import (
     enrich_ads_time_series,
     save_ads_report,
 )
+from app.analyzers.ads_attribution import attribute_ads_rows
 from app.analyzers.decision_engine import apply_decision_engine
 from app.analyzers.forecast_engine import build_predictive_forecasts
 from app.analyzers.perfume_intelligence import (
@@ -256,6 +257,7 @@ def main():
     print("=" * 50)
 
     ads_data = collect_ads_stats()
+    ads_data, ads_matching_debug = attribute_ads_rows(ads_data, wb_cards + products)
     ads_data = enrich_ads_time_series(ads_data, storage=storage, seller_id=seller_id)
     funnel_report = flatten_sales_funnel_data(data)
     funnel_rows = funnel_report.to_dict("records")
@@ -372,6 +374,7 @@ def main():
         problems=all_problems,
         ads_api_partial=ads_api_had_429(),
         qbiki_source_status=qbiki_source_status,
+        ads_matching_debug=ads_matching_debug,
     )
     print_api_coverage_summary(api_coverage_report)
     api_coverage_path = save_api_coverage_report(api_coverage_report)
@@ -383,6 +386,8 @@ def main():
     summary_stats["apiCoverage"] = {
         "line": coverage_summary_line(api_coverage_report),
         "adsApiHad429": ads_api_had_429(),
+        "adsFound": int(api_coverage_report["coverage"]["inAdsApi"].sum()),
+        "totalSku": len(api_coverage_report["coverage"]),
     }
     summary_stats["perfumeIntelligence"] = perfume_intelligence
     _print_summary_stats(summary_stats)

@@ -181,6 +181,7 @@ def build_api_coverage_report(
     problems,
     ads_api_partial=False,
     qbiki_source_status="not configured",
+    ads_matching_debug=None,
 ):
     cards_by_nm = _products_by_nm_id(cards)
     products_by_nm = _products_by_nm_id(products)
@@ -297,11 +298,27 @@ def build_api_coverage_report(
             },
         ]
     )
+    ads_matching_debug_frame = pd.DataFrame(
+        ads_matching_debug or [],
+        columns=[
+            "campaignId",
+            "campaignName",
+            "advertId",
+            "apiNmId",
+            "matchedNmId",
+            "matchedVendorCode",
+            "matchStrategy",
+            "matchConfidence",
+            "matchStatus",
+            "reason",
+        ],
+    )
     return {
         "coverage": coverage,
         "missing_ads": missing_ads,
         "missing_supplies": missing_supplies,
         "api_status": api_status,
+        "ads_matching_debug": ads_matching_debug_frame,
     }
 
 
@@ -309,7 +326,13 @@ def save_api_coverage_report(report):
     REPORTS_DIR.mkdir(exist_ok=True)
     path = REPORTS_DIR / f"api_coverage_{date.today().strftime('%Y_%m_%d')}.xlsx"
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        for sheet_name in ["coverage", "missing_ads", "missing_supplies", "api_status"]:
+        for sheet_name in [
+            "coverage",
+            "missing_ads",
+            "missing_supplies",
+            "api_status",
+            "ads_matching_debug",
+        ]:
             report[sheet_name].to_excel(writer, sheet_name=sheet_name, index=False)
     return path
 
