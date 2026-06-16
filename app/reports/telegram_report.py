@@ -1250,9 +1250,9 @@ def _format_qbiki_product_line(index, row):
 
 
 def _ads_api_429_limitation_line(summary_stats):
-    if (summary_stats or {}).get("adsApiPartial") or (summary_stats or {}).get(
-        "adsApiHad429"
-    ):
+    if (summary_stats or {}).get("adsApiPartial"):
+        return "⚠️ Реклама: данные частичные, часть запросов WB API не успела/не смогла выполниться."
+    if (summary_stats or {}).get("adsApiHad429"):
         return "⚠️ Рекламные данные частичные: WB API вернул ошибку или ограничил часть запросов."
     return ""
 
@@ -2381,7 +2381,7 @@ def _format_ads_metric_pair(totals, metric, suffix=""):
 def _product_ads_open_count(product, fallback_open_count=None):
     if _is_present(fallback_open_count):
         return to_number(fallback_open_count)
-    for key in ("openCount", "selectedOpenCount", "open_count"):
+    for key in ("openCount", "selectedOpenCount", "currentOpenCount", "open_count"):
         if _is_present(product.get(key)):
             return to_number(product.get(key))
     return _product_metric_current_value(product, "openCount")
@@ -2493,19 +2493,27 @@ def _build_product_ads_breakdown(
     if totals is None:
         return "   Рекламных данных по товару нет: товар не найден в рекламной статистике WB Ads."
 
-    open_count = _product_ads_open_count(product, open_count)
-    ads_traffic_share = _product_ads_traffic_share(product, totals, open_count)
+    current_open_count = _product_ads_open_count(product, open_count)
+    ads_clicks = totals.get("clicks")
+    if current_open_count is not None and float(current_open_count) > 0:
+        ads_traffic_share = round(
+            float(ads_clicks or 0) / float(current_open_count) * 100, 2
+        )
+    else:
+        ads_traffic_share = None
     diagnostic = (
         "TELEGRAM ADS PRODUCT DATA:\n"
         f"nmId: {product.get('nmId')}\n"
-        "source: aggregated_ads_row\n"
-        f"impressions: {totals.get('impressions')}\n"
-        f"clicks: {totals.get('clicks')}\n"
-        f"spend: {totals.get('spend')}\n"
-        f"cpc: {totals.get('cpc')}\n"
-        f"openCount: {open_count if open_count is not None else ''}\n"
+        f"adsClicks: {ads_clicks}\n"
+        f"currentOpenCount: {current_open_count if current_open_count is not None else ''}\n"
         f"adsTrafficShare: {ads_traffic_share if ads_traffic_share is not None else ''}"
     )
+    if current_open_count is None:
+        diagnostic += (
+            "\n"
+            f"topDropItemKeys: {sorted((product or {}).keys())}\n"
+            f"productContextKeys: {sorted((totals or {}).keys())}"
+        )
     logger.info(diagnostic)
     print(diagnostic)
 
