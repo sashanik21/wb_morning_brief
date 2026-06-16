@@ -377,7 +377,6 @@ def coverage_summary_line(report):
     total = len(coverage)
     return (
         f"Данные API: воронка {int(coverage['inFunnelApi'].sum())}/{total}, "
-        f"реклама {report.get('adsUniqueNmids', int(coverage['inAdsApi'].sum()))} SKU / "
-        f"{report.get('adsRowsCount', 0)} строк, "
+        f"реклама {report.get('adsUniqueNmids', int(coverage['inAdsApi'].sum()))}/{total}, "
         f"поставки {int(coverage['inSuppliesApi'].sum())}/{total}."
     )

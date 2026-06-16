@@ -711,7 +711,7 @@ def _safe_share(numerator, denominator):
     if denominator_number in (None, 0):
         return ""
 
-    return _format_problem_number((_to_number(numerator) or 0) / denominator_number)
+    return round((_to_number(numerator) or 0) / denominator_number * 100, 2)
 
 
 def _ads_metric(row, metric):
