@@ -2249,7 +2249,7 @@ def _log_telegram_top_drops(raw_products, selected_products):
         for problem in product.get("problems") or []
     ]
     unique_nm_ids = []
-    for product in _merge_products_by_nm_id(raw_products):
+    for product in raw_products or []:
         nm_id = str(product.get("nmId") or "")
         if nm_id and nm_id != "n/a":
             unique_nm_ids.append(nm_id)
@@ -2260,6 +2260,7 @@ def _log_telegram_top_drops(raw_products, selected_products):
         str(product.get("title") or "Без названия") for product, *_ in selected_products
     ]
     diagnostic = (
+        "TELEGRAM TOP DROPS SOURCE: FUNNEL_PROBLEMS\n"
         "TELEGRAM TOP DROPS:\n"
         f"raw problems: {len(raw_problems)}\n"
         f"unique nmIds: {unique_nm_ids}\n"
@@ -2270,13 +2271,73 @@ def _log_telegram_top_drops(raw_products, selected_products):
     print(diagnostic)
 
 
+def _log_telegram_top_drops_grouping(stage, problems_or_products):
+    if stage == "before":
+        nm_ids = [
+            str(problem.get("nmId") or "n/a") for problem in problems_or_products or []
+        ]
+        diagnostic = (
+            "TELEGRAM TOP DROPS GROUPING BEFORE:\n"
+            f"raw problems: {len(problems_or_products or [])}\n"
+            f"raw nmIds: {nm_ids}"
+        )
+    else:
+        nm_ids = [
+            str(product.get("nmId") or "n/a") for product in problems_or_products or []
+        ]
+        titles = [
+            str(product.get("title") or "Без названия")
+            for product in problems_or_products or []
+        ]
+        diagnostic = (
+            "TELEGRAM TOP DROPS GROUPING AFTER:\n"
+            f"unique nmIds: {nm_ids}\n"
+            f"unique titles: {titles}"
+        )
+    logger.info(diagnostic)
+    print(diagnostic)
+
+
+def _group_funnel_top_drop_products(records):
+    funnel_problems = [
+        record
+        for record in records or []
+        if _is_funnel_problem(record)
+        and str(record.get("metric") or "")
+        in {metric for metric, _label in TOP_DROP_METRICS}
+    ]
+    _log_telegram_top_drops_grouping("before", funnel_problems)
+
+    grouped_products = {}
+    for index, problem in enumerate(funnel_problems):
+        group_key = _problem_group_key(problem)
+        if group_key not in grouped_products:
+            grouped_products[group_key] = {
+                "first_index": index,
+                "problems": [],
+                "title": problem.get("title") or "Без названия",
+                "vendorCode": problem.get("vendorCode") or "n/a",
+                "nmId": problem.get("nmId") or "n/a",
+                "sellerName": problem.get("sellerName") or SELLER_NAME,
+                "ABC": problem.get("ABC") or "n/a",
+            }
+        grouped_products[group_key]["problems"].append(problem)
+
+    products = sorted(
+        grouped_products.values(),
+        key=lambda product: (
+            -_product_lost_revenue(product),
+            -_product_lost_orders(product),
+            product.get("first_index", 0),
+        ),
+    )
+    _log_telegram_top_drops_grouping("after", products)
+    return products
+
+
 def _build_product_movement_block(problem_products, direction, summary_stats=None):
     products = []
-    source_products = (
-        _merge_products_by_nm_id(problem_products)
-        if direction == "drop"
-        else problem_products or []
-    )
+    source_products = problem_products or []
     for product in source_products:
         revenue_dynamic = _product_metric_dynamic(product, "orderSum")
         orders_dynamic = _product_metric_dynamic(product, "orderCount")
@@ -3618,26 +3679,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     ]
     main_records = critical_priority_records or critical_factual_records
     problem_products = _group_problems_by_product(main_records)
-    priority_source = (summary_stats or {}).get("priority_problems")
-    if priority_source is not None:
-        priority_sku_count = _unique_nmid_count(_problems_to_records(priority_source))
-    else:
-        priority_sku_count = _unique_nmid_count(critical_priority_records)
     trust_score = _report_trust_score(records)
-    has_major_drop = (
-        to_number((summary_stats or {}).get("orderSumDynamic")) <= -15
-        or to_number((summary_stats or {}).get("openCountDynamic")) <= -30
-        or to_number((summary_stats or {}).get("orderCountDynamic")) <= -15
-    )
-    priority_line = (
-        f"🚨 <b>Приоритетных товаров:</b> {_format_number(priority_sku_count)}"
-        if priority_sku_count
-        else (
-            "🚨 <b>Есть заметные просадки по ключевым SKU.</b>"
-            if has_major_drop
-            else "🚨 <b>Критичных проблем по ABC-товарам не найдено</b>"
-        )
-    )
     below_fact_count = len(
         {
             _problem_group_key(record)
@@ -3647,10 +3689,10 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     )
     below_fact_line = (
         "⚠️ Есть фактические просадки по товарам ниже ABC-порога"
-        if not priority_sku_count and below_fact_count
+        if below_fact_count
         else ""
     )
-    top_drop_products = _group_problems_by_product(priority_records or factual_records)
+    top_drop_products = _group_funnel_top_drop_products(records)
     top_drops_block = _build_top_drops_block(top_drop_products, summary_stats)
     top_drop_keys = (
         {_problem_group_key(product) for product in top_drop_products[:3]}
@@ -3661,7 +3703,6 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
         f"Надежность оценки: {html.escape(_format_report_trust_score(trust_score))}",
-        priority_line,
         below_fact_line,
         _build_low_priority_signals_block(records),
         top_drops_block,
