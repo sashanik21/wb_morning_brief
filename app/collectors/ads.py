@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -8,13 +9,18 @@ import requests
 ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
 ADS_TIMEOUT_SECONDS = 60
-ADS_CAMPAIGN_BATCH_SIZE = 50
+ADS_CAMPAIGN_BATCH_SIZE = 20
 REPORTS_DIR = Path("reports")
 _ADS_API_HAD_429 = False
+_ADS_RATE_LIMIT_STATS = {}
 
 
 def ads_api_had_429():
     return _ADS_API_HAD_429
+
+
+def ads_rate_limit_stats():
+    return dict(_ADS_RATE_LIMIT_STATS)
 
 
 def _mark_ads_api_status(status_code):
@@ -103,31 +109,55 @@ def _request_ads_campaign_ids(token):
     return _extract_campaign_ids(payload), response.status_code
 
 
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _request_ads_fullstats(token, campaign_ids, begin_date, end_date):
-    response = requests.get(
-        ADS_FULLSTATS_URL,
-        headers={"Authorization": token},
-        params={
-            "ids": ",".join(str(campaign_id) for campaign_id in campaign_ids),
-            "beginDate": begin_date,
-            "endDate": end_date,
-        },
-        timeout=ADS_TIMEOUT_SECONDS,
-    )
+    global _ADS_RATE_LIMIT_STATS
+    retry_count = _env_int("WB_ADS_RETRY_COUNT", 3)
+    retry_sleep = _env_int("WB_ADS_RETRY_SLEEP_SECONDS", 20)
+    response = None
 
-    _mark_ads_api_status(response.status_code)
+    for attempt in range(retry_count + 1):
+        response = requests.get(
+            ADS_FULLSTATS_URL,
+            headers={"Authorization": token},
+            params={
+                "ids": ",".join(str(campaign_id) for campaign_id in campaign_ids),
+                "beginDate": begin_date,
+                "endDate": end_date,
+            },
+            timeout=ADS_TIMEOUT_SECONDS,
+        )
 
-    if response.status_code != 200:
+        _mark_ads_api_status(response.status_code)
+        if response.status_code == 429:
+            _ADS_RATE_LIMIT_STATS["429_count"] = (
+                _ADS_RATE_LIMIT_STATS.get("429_count", 0) + 1
+            )
+            if attempt < retry_count:
+                _ADS_RATE_LIMIT_STATS["retries_used"] = (
+                    _ADS_RATE_LIMIT_STATS.get("retries_used", 0) + 1
+                )
+                time.sleep(retry_sleep * (attempt + 1))
+                continue
+        break
+
+    if response is None or response.status_code != 200:
         print("WB Ads API error")
-        print("STATUS:", response.status_code)
-        print("TEXT:", response.text)
-        return None
+        print("STATUS:", response.status_code if response is not None else "n/a")
+        print("TEXT:", response.text if response is not None else "")
+        return None, response.status_code if response is not None else None
 
     try:
-        return response.json()
+        return response.json(), response.status_code
     except ValueError:
         print("WB Ads API returned invalid JSON")
-        return None
+        return None, response.status_code
 
 
 def _flatten_nm_stats(campaign):
@@ -352,19 +382,50 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date):
     current_rows = []
     previous_rows = []
 
-    for campaign_id_batch in _chunked(campaign_ids, ADS_CAMPAIGN_BATCH_SIZE):
-        current_payload = _request_ads_fullstats(
+    batch_size = max(1, _env_int("WB_ADS_BATCH_SIZE", ADS_CAMPAIGN_BATCH_SIZE))
+    request_sleep = _env_int("WB_ADS_REQUEST_SLEEP_SECONDS", 2)
+    loaded_campaign_ids = set()
+    global _ADS_RATE_LIMIT_STATS
+    for campaign_id_batch in _chunked(campaign_ids, batch_size):
+        current_payload, current_status = _request_ads_fullstats(
             token, campaign_id_batch, current_date, current_date
         )
-        previous_payload = _request_ads_fullstats(
+        time.sleep(request_sleep)
+        previous_payload, _ = _request_ads_fullstats(
             token, campaign_id_batch, previous_date, previous_date
         )
+        time.sleep(request_sleep)
 
         if current_payload is None:
-            return None
+            if current_status == 429 and len(campaign_id_batch) > 1:
+                for single_campaign_id in campaign_id_batch:
+                    single_payload, single_status = _request_ads_fullstats(
+                        token, [single_campaign_id], current_date, current_date
+                    )
+                    time.sleep(request_sleep)
+                    if single_payload is None:
+                        if single_status == 429:
+                            _ADS_RATE_LIMIT_STATS["partial"] = True
+                        continue
+                    for campaign in single_payload:
+                        loaded_campaign_ids.add(
+                            str(_campaign_id(campaign) or single_campaign_id)
+                        )
+                        nm_rows = _flatten_nm_stats(campaign)
+                        if nm_rows:
+                            current_rows.extend(
+                                _aggregate_campaign(campaign, nm_row)
+                                for nm_row in nm_rows
+                            )
+                        else:
+                            current_rows.append(_aggregate_campaign(campaign))
+                continue
+            _ADS_RATE_LIMIT_STATS["partial"] = True
+            continue
 
         _debug_ads_raw(current_payload, report_date)
         for campaign in current_payload:
+            loaded_campaign_ids.add(str(_campaign_id(campaign) or ""))
             nm_rows = _flatten_nm_stats(campaign)
             if nm_rows:
                 current_rows.extend(
@@ -383,6 +444,12 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date):
                 else:
                     previous_rows.append(_aggregate_campaign(campaign))
 
+    _ADS_RATE_LIMIT_STATS["campaigns_requested"] = len(campaign_ids or [])
+    _ADS_RATE_LIMIT_STATS["campaigns_loaded"] = len(
+        {cid for cid in loaded_campaign_ids if cid}
+    )
+    _ADS_RATE_LIMIT_STATS["partial"] = bool(_ADS_RATE_LIMIT_STATS.get("partial"))
+
     for row in current_rows:
         row["date"] = current_date
         row["selectedPeriod"] = current_date
@@ -392,8 +459,15 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date):
 
 
 def collect_ads_stats(report_date=None):
-    global _ADS_API_HAD_429
+    global _ADS_API_HAD_429, _ADS_RATE_LIMIT_STATS
     _ADS_API_HAD_429 = False
+    _ADS_RATE_LIMIT_STATS = {
+        "429_count": 0,
+        "retries_used": 0,
+        "partial": False,
+        "campaigns_requested": 0,
+        "campaigns_loaded": 0,
+    }
     report_date = report_date or (datetime.now().date() - timedelta(days=1))
     ads_token = os.getenv("WB_ADS_API_TOKEN")
     fallback_token = os.getenv("WB_API_TOKEN_TEST")
@@ -429,9 +503,7 @@ def collect_ads_stats(report_date=None):
     ads_rows = _collect_ads_stats_from_api(token, campaign_ids, report_date)
 
     if ads_rows is None:
-        print("Ads collector fallback to stub mode")
-        print("Ads rows: 0")
-        return []
+        ads_rows = []
 
     unique_nmids = {
         row.get("nmId") for row in ads_rows if row.get("nmId") not in (None, "")
@@ -441,6 +513,16 @@ def collect_ads_stats(report_date=None):
         for row in ads_rows
         if row.get("campaignId") or row.get("advertId")
     }
+    print("ADS RATE LIMIT:")
+    print(f"429 count: {_ADS_RATE_LIMIT_STATS.get('429_count', 0)}")
+    print(f"retries used: {_ADS_RATE_LIMIT_STATS.get('retries_used', 0)}")
+    print(f"partial: {str(bool(_ADS_RATE_LIMIT_STATS.get('partial'))).lower()}")
+    print(
+        f"campaigns requested: {_ADS_RATE_LIMIT_STATS.get('campaigns_requested') or len(campaign_ids)}"
+    )
+    print(
+        f"campaigns loaded: {_ADS_RATE_LIMIT_STATS.get('campaigns_loaded') or len(row_campaign_ids)}"
+    )
     print("ADS COVERAGE:")
     print(f"campaigns: {len(campaign_ids) or len(row_campaign_ids)}")
     print(f"ads rows: {len(ads_rows)}")
