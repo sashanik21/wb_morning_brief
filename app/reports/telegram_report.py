@@ -1320,6 +1320,29 @@ def _ads_summary_lines(ads_summary):
             "Период: "
             f"{html.escape(str(selected_period))}, сравнение с {html.escape(str(past_period))}"
         )
+    raw_rows = ads_summary.get("rawRows")
+    aggregated_rows = ads_summary.get("aggregatedRows")
+    advertised_sku = ads_summary.get("advertisedSku")
+    total_sku = ads_summary.get("totalSku")
+    if (
+        raw_rows is not None
+        or aggregated_rows is not None
+        or advertised_sku is not None
+    ):
+        lines.extend(["Данные рекламы:"])
+        if raw_rows is not None:
+            lines.append(f"сырых строк: {_format_number(raw_rows)}")
+        if aggregated_rows is not None:
+            lines.append(
+                f"агрегировано до: {_format_number(aggregated_rows)} товаров/кампаний"
+            )
+        if advertised_sku is not None:
+            total_suffix = (
+                f"/{_format_number(total_sku)}" if total_sku is not None else ""
+            )
+            lines.append(
+                f"товаров с рекламой: {_format_number(advertised_sku)}{total_suffix}"
+            )
     lines.append("")
     if _ads_has_incomplete_metric_history(ads_summary):
         lines.extend(
@@ -1404,13 +1427,19 @@ def _build_ads_block(records, summary_stats):
         title = html.escape(
             str(record.get("title") or record.get("campaignName") or "Без названия")
         )
-        reason = html.escape(
-            str(
-                record.get("problemLabel")
-                or record.get("problemType")
-                or "реклама стала неэффективной"
-            )
+        reason_text = str(
+            record.get("problemLabel")
+            or record.get("problemType")
+            or "реклама стала неэффективной"
         )
+        suppressed_metrics = record.get("suppressedAdsMetrics") or []
+        if suppressed_metrics:
+            reason_text = (
+                reason_text
+                + ": "
+                + ", ".join(str(metric) for metric in suppressed_metrics)
+            )
+        reason = html.escape(reason_text)
         problem_lines.append(
             f"— <b>{title}</b>\n"
             f"CTR рекламы: {_format_dynamic_value(record.get('ctr'))}\n"
