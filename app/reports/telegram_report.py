@@ -1,6 +1,7 @@
 import html
 import logging
 import os
+from datetime import date, datetime
 
 import requests
 
@@ -1437,7 +1438,24 @@ def _ads_summary_conclusion(ads_summary):
     return "Вывод по рекламе: " + "; ".join(parts) + "."
 
 
-def _ads_summary_lines(ads_summary):
+def _ads_campaigns_success_zero(summary_stats=None, ads_summary=None):
+    rate_limit = (summary_stats or {}).get("adsRateLimit") or {}
+    success = rate_limit.get("campaigns_success")
+    if success in (None, ""):
+        success = (ads_summary or {}).get("campaignsSuccess")
+    if success in (None, ""):
+        return False
+    attempted = (
+        rate_limit.get("campaigns_attempted")
+        or rate_limit.get("campaigns_requested")
+        or rate_limit.get("campaigns_selected")
+        or rate_limit.get("campaigns_total")
+        or (ads_summary or {}).get("activeCampaigns")
+    )
+    return to_number(success) == 0 and to_number(attempted) > 0
+
+
+def _ads_summary_lines(ads_summary, summary_stats=None):
     ads_summary = ads_summary or {}
     advertised_sku = ads_summary.get("advertisedSku")
     total_sku = ads_summary.get("totalSku")
@@ -1461,6 +1479,9 @@ def _ads_summary_lines(ads_summary):
         )
     if ads_summary.get("adsApiHad429") or ads_summary.get("hasApi429"):
         lines[0] += " Данные частичные: WB API 429."
+    if _ads_campaigns_success_zero(summary_stats, ads_summary):
+        lines.append("Актуальные данные рекламы отсутствуют. Анализ рекламы невозможен.")
+        return lines
     if _ads_has_incomplete_metric_history(ads_summary):
         lines.append("История короткая, выводы предварительные.")
         return lines
@@ -1490,7 +1511,7 @@ def _build_ads_block(records, summary_stats):
     active_campaigns = ads_summary.get("activeCampaigns", 0)
     problem_campaigns = ads_summary.get("problemCampaigns", 0)
     ads_problem_count = ads_summary.get("problems", len(ads_records))
-    block_lines = _ads_summary_lines(ads_summary)
+    block_lines = _ads_summary_lines(ads_summary, summary_stats)
     limitation_line = _ads_api_429_limitation_line(summary_stats)
     if limitation_line:
         block_lines.append(limitation_line)
@@ -2493,7 +2514,7 @@ def _product_ads_totals(product, summary_stats):
     if not matched_rows:
         return None
 
-    totals = {"rows": len(matched_rows)}
+    totals = {"rows": len(matched_rows), "matchedRows": matched_rows}
     campaign_ids = []
     campaign_types = []
     for row in matched_rows:
@@ -2568,6 +2589,69 @@ def _product_ads_totals(product, summary_stats):
     )
     return totals
 
+
+
+def _parse_ads_row_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.split("T", 1)[0].split(" ", 1)[0]
+    for separator in (" — ", " - ", "/"):
+        if separator in text:
+            text = text.split(separator, 1)[0].strip()
+    try:
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        return None
+
+
+def _ads_fallback_supabase_used(summary_stats):
+    summary_stats = summary_stats or {}
+    ads_summary = summary_stats.get("adsSummary") or {}
+    source = str(
+        ads_summary.get("source")
+        or ads_summary.get("adsSource")
+        or summary_stats.get("adsSource")
+        or ""
+    ).lower()
+    return bool(
+        ads_summary.get("fallbackUsed")
+        or summary_stats.get("adsFallbackUsed")
+        or "supabase" in source
+    )
+
+
+def _ads_row_data_date(row):
+    for key in ("date", "report_date", "reportDate", "selectedPeriod"):
+        parsed = _parse_ads_row_date((row or {}).get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _ads_fallback_data_is_stale(totals, summary_stats):
+    if not _ads_fallback_supabase_used(summary_stats):
+        return False
+    row_dates = [
+        _ads_row_data_date(row)
+        for row in totals.get("matchedRows") or []
+        if isinstance(row, dict)
+    ]
+    row_dates = [value for value in row_dates if value is not None]
+    if not row_dates:
+        ads_summary = (summary_stats or {}).get("adsSummary") or {}
+        row_dates = [
+            _parse_ads_row_date(ads_summary.get("selectedPeriod")),
+            _parse_ads_row_date(ads_summary.get("date")),
+        ]
+        row_dates = [value for value in row_dates if value is not None]
+    return bool(row_dates) and max(row_dates) < date.today()
 
 def _ads_metric_dynamic(totals, metric):
     previous = totals.get(f"previous_{metric}")
@@ -2738,6 +2822,12 @@ def _product_ads_conclusion(
 def _build_product_ads_breakdown(
     product, traffic_dynamic, orders_dynamic, summary_stats, open_count=None
 ):
+    ads_rows_count = ((summary_stats or {}).get("adsSummary") or {}).get("adsRows")
+    if ads_rows_count in (None, ""):
+        ads_rows_count = len((summary_stats or {}).get("adsRows") or [])
+    if to_number(ads_rows_count) == 0:
+        return ""
+
     totals = _product_ads_totals(product, summary_stats)
     if totals is None:
         return "   Рекламных данных по товару нет: товар не найден в рекламной статистике WB Ads."
@@ -2766,17 +2856,28 @@ def _build_product_ads_breakdown(
     logger.info(diagnostic)
     print(diagnostic)
 
+    if _ads_fallback_data_is_stale(totals, summary_stats):
+        return "\n".join(
+            [
+                "   📢 <b>Реклама по товару</b>",
+                "   Источник: история Supabase",
+                "   Актуальные данные рекламы не получены от WB Ads API.",
+            ]
+        )
+
     campaign_meta_lines = _format_ads_campaign_meta(totals)
-    return "\n".join(
-        [
-            "   📢 <b>Реклама по товару</b>",
-            *campaign_meta_lines,
-            f"   — Показы: {_format_number(totals.get('impressions'))}",
-            f"   — Клики рекламы: {_format_number(totals.get('clicks'))}",
-            f"   — Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}",
-            f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share, (summary_stats or {}).get('adsApiPartial'))}",
-        ]
-    )
+    lines = [
+        "   📢 <b>Реклама по товару</b>",
+        *campaign_meta_lines,
+        f"   — Показы: {_format_number(totals.get('impressions'))}",
+        f"   — Клики рекламы: {_format_number(totals.get('clicks'))}",
+        f"   — Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}",
+    ]
+    if (summary_stats or {}).get("adsCoverageConfidence") != "LOW":
+        lines.append(
+            f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share, (summary_stats or {}).get('adsApiPartial'))}"
+        )
+    return "\n".join(lines)
 
 
 def _build_top_drops_block(problem_products, summary_stats=None):
@@ -2852,7 +2953,7 @@ def _build_executive_ads_block(records, summary_stats):
             len({_problem_group_key(record) for record in ads_records}),
         )
         ads_summary.setdefault("problemSignals", len(ads_records))
-    lines = _ads_summary_lines(ads_summary)
+    lines = _ads_summary_lines(ads_summary, summary_stats)
 
     if not ads_records:
         limitation_line = _ads_api_429_limitation_line(summary_stats)
