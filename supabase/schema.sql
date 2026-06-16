@@ -206,6 +206,20 @@ create table if not exists daily_ads_metrics (
     unique(report_date, seller_id, campaign_id, nm_id)
 );
 
+create table if not exists ads_campaigns_cache (
+    id bigint generated always as identity primary key,
+    seller_id text,
+    campaign_id bigint,
+    campaign_name text,
+    campaign_status text,
+    campaign_type text,
+    last_seen_at timestamp default now(),
+    raw_json jsonb,
+    last_stats_at timestamp,
+    last_stats_status text,
+    unique (seller_id, campaign_id)
+);
+
 create table if not exists stocks_daily (
     id bigserial primary key,
     report_date date not null,
@@ -240,6 +254,12 @@ create index if not exists idx_daily_ads_metrics_campaign_nm
 
 create unique index if not exists daily_ads_metrics_unique_idx
     on daily_ads_metrics(report_date, seller_id, campaign_id, nm_id);
+
+create index if not exists idx_ads_campaigns_cache_seller_last_seen
+    on ads_campaigns_cache(seller_id, last_seen_at desc);
+
+create index if not exists idx_ads_campaigns_cache_seller_last_stats
+    on ads_campaigns_cache(seller_id, last_stats_at asc nulls first);
 
 create index if not exists idx_stocks_daily_report_date_seller_id
     on stocks_daily(report_date, seller_id);

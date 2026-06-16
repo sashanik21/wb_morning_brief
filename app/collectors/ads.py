@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -10,6 +10,7 @@ ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/co
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
 ADS_TIMEOUT_SECONDS = 60
 ADS_CAMPAIGN_BATCH_SIZE = 20
+ADS_CAMPAIGN_CACHE_TTL_HOURS = 12
 REPORTS_DIR = Path("reports")
 _ADS_API_HAD_429 = False
 _ADS_RATE_LIMIT_STATS = {}
@@ -31,23 +32,45 @@ def _mark_ads_api_status(status_code):
         _ADS_RATE_LIMIT_STATS["partial"] = True
 
 
-def _extract_campaign_ids(payload):
-    campaign_ids = []
+def _extract_campaign_records(payload):
+    records = []
+    seen = set()
+
+    def record_from_dict(value):
+        campaign_id = (
+            value.get("advertId") or value.get("campaignId") or value.get("id")
+        )
+        if campaign_id in (None, "") or str(campaign_id) in seen:
+            return
+        seen.add(str(campaign_id))
+        records.append(
+            {
+                "campaign_id": campaign_id,
+                "campaign_name": _campaign_name(value),
+                "campaign_status": _extract_status(value),
+                "campaign_type": value.get("type")
+                or value.get("campaignType")
+                or value.get("advertType")
+                or "",
+                "raw_json": value,
+            }
+        )
 
     def walk(value):
         if isinstance(value, dict):
-            for key, item in value.items():
-                if key in ("advertId", "campaignId", "id") and item not in (None, ""):
-                    campaign_ids.append(str(item))
-                else:
-                    walk(item)
+            record_from_dict(value)
+            for item in value.values():
+                walk(item)
         elif isinstance(value, list):
             for item in value:
                 walk(item)
 
     walk(payload)
+    return records
 
-    return list(dict.fromkeys(campaign_ids))
+
+def _extract_campaign_ids(payload):
+    return [str(row["campaign_id"]) for row in _extract_campaign_records(payload)]
 
 
 def _is_stub_status(status_code):
@@ -126,7 +149,7 @@ def _request_ads_campaign_ids(token):
         print("WB Ads campaigns API returned invalid JSON")
         return None, response.status_code
 
-    return _extract_campaign_ids(payload), response.status_code
+    return _extract_campaign_records(payload), response.status_code
 
 
 def _env_int(name, default):
@@ -496,7 +519,137 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date):
     return _merge_previous_period(current_rows, previous_rows)
 
 
-def collect_ads_stats(report_date=None):
+def _storage():
+    try:
+        from app.storage import supabase_storage as storage
+    except Exception as error:
+        print(f"WARNING: Ads Supabase storage unavailable: {error}")
+        return None
+    return storage
+
+
+def _env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "да"}
+
+
+def _parse_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _campaign_cache_age(campaigns):
+    timestamps = [_parse_datetime(row.get("last_seen_at")) for row in campaigns or []]
+    timestamps = [ts for ts in timestamps if ts]
+    if not timestamps:
+        return None
+    newest = max(timestamps)
+    return datetime.utcnow() - newest
+
+
+def _campaign_cache_is_fresh(campaigns):
+    age = _campaign_cache_age(campaigns)
+    return (
+        bool(campaigns)
+        and age is not None
+        and age <= timedelta(hours=ADS_CAMPAIGN_CACHE_TTL_HOURS)
+    )
+
+
+def _campaign_ids_from_records(records):
+    return [
+        str(row.get("campaign_id"))
+        for row in records or []
+        if row.get("campaign_id") not in (None, "")
+    ]
+
+
+def _campaign_cache_log(source, campaigns, force_refresh):
+    age = _campaign_cache_age(campaigns)
+    age_text = "n/a" if age is None else str(age).split(".")[0]
+    print("ADS CAMPAIGN CACHE:")
+    print(f"source: {source}")
+    print(f"campaigns: {len(campaigns or [])}")
+    print(f"cache age: {age_text}")
+    print(f"force refresh: {str(bool(force_refresh)).lower()}")
+
+
+def _load_campaigns(token, seller_id):
+    storage = _storage()
+    force_refresh = _env_bool("WB_ADS_FORCE_REFRESH_CAMPAIGNS", False)
+    cached_campaigns = []
+    if storage and hasattr(storage, "get_ads_campaigns_cache"):
+        cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
+    if not force_refresh and _campaign_cache_is_fresh(cached_campaigns):
+        _campaign_cache_log("cache", cached_campaigns, force_refresh)
+        return cached_campaigns, 200
+
+    api_campaigns, campaign_status = _request_ads_campaign_ids(token)
+    if api_campaigns is None:
+        _campaign_cache_log("api", cached_campaigns, force_refresh)
+        return None, campaign_status
+    if storage and hasattr(storage, "save_ads_campaigns_cache"):
+        storage.save_ads_campaigns_cache(seller_id, api_campaigns)
+        cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
+    campaigns = cached_campaigns or api_campaigns
+    _campaign_cache_log("api", campaigns, force_refresh)
+    return campaigns, campaign_status
+
+
+def _is_active_campaign(campaign):
+    status = str(campaign.get("campaign_status") or "").strip().lower()
+    return status in {"active", "running", "enabled", "9", "11", "активна", "активная"}
+
+
+def _select_staged_campaigns(campaigns):
+    max_per_run = max(1, _env_int("WB_ADS_MAX_CAMPAIGNS_PER_RUN", 20))
+
+    def sort_key(row):
+        last_stats = _parse_datetime(row.get("last_stats_at"))
+        never_updated_rank = 0 if last_stats is None else 1
+        return (
+            0 if _is_active_campaign(row) else 1,
+            never_updated_rank,
+            last_stats or datetime.min,
+            str(row.get("campaign_id")),
+        )
+
+    selected = sorted(campaigns or [], key=sort_key)[:max_per_run]
+    skipped = max(0, len(campaigns or []) - len(selected))
+    print("ADS STAGED COLLECTION:")
+    print(f"campaigns total: {len(campaigns or [])}")
+    print(f"campaigns selected: {len(selected)}")
+    print(f"campaigns skipped: {skipped}")
+    print(
+        "selection reason: active campaigns first, then oldest daily_ads_metrics/cache stats update"
+    )
+    return selected
+
+
+def _coverage_confidence(processed, total):
+    if not total:
+        return "HIGH"
+    coverage = processed / total
+    if coverage < 0.8:
+        return "LOW"
+    if coverage <= 0.95:
+        return "MEDIUM"
+    return "HIGH"
+
+
+def collect_ads_stats(report_date=None, seller_id=None):
     global _ADS_API_HAD_429, _ADS_RATE_LIMIT_STATS, _ADS_COLLECTOR_DEADLINE
     _ADS_API_HAD_429 = False
     _ADS_RATE_LIMIT_STATS = {
@@ -526,9 +679,12 @@ def collect_ads_stats(report_date=None):
         print("Ads rows: 0")
         return []
 
-    campaign_ids, campaign_status = _request_ads_campaign_ids(token)
+    seller_id = (
+        seller_id or os.getenv("SELLER_ID") or os.getenv("WB_SELLER_ID") or "default"
+    )
+    campaigns, campaign_status = _load_campaigns(token, seller_id)
 
-    if campaign_ids is None:
+    if campaigns is None:
         if _is_stub_status(campaign_status):
             print("Ads collector работает в stub mode")
         else:
@@ -536,13 +692,22 @@ def collect_ads_stats(report_date=None):
         print("Ads rows: 0")
         return []
 
-    print("ADS CAMPAIGN IDS SOURCE: api")
-    print(f"ADS CAMPAIGNS FOUND: {len(campaign_ids)}")
+    print(f"ADS CAMPAIGNS FOUND: {len(campaigns)}")
 
-    if not campaign_ids:
+    if not campaigns:
         print("Ads collector работает в stub mode")
         print("Ads rows: 0")
         return []
+
+    selected_campaigns = _select_staged_campaigns(campaigns)
+    campaign_ids = _campaign_ids_from_records(selected_campaigns)
+    _ADS_RATE_LIMIT_STATS["campaigns_total"] = len(campaigns)
+    _ADS_RATE_LIMIT_STATS["campaigns_selected"] = len(campaign_ids)
+    _ADS_RATE_LIMIT_STATS["campaigns_skipped"] = max(
+        0, len(campaigns) - len(campaign_ids)
+    )
+    if _ADS_RATE_LIMIT_STATS["campaigns_skipped"]:
+        _ADS_RATE_LIMIT_STATS["partial"] = True
 
     ads_rows = _collect_ads_stats_from_api(token, campaign_ids, report_date)
 
@@ -583,5 +748,27 @@ def collect_ads_stats(report_date=None):
     print(f"campaigns: {len(campaign_ids) or len(row_campaign_ids)}")
     print(f"ads rows: {len(ads_rows)}")
     print(f"unique nmIds: {len(unique_nmids)}")
+    total_campaigns = len(campaigns) or len(row_campaign_ids)
+    processed_campaigns = _ADS_RATE_LIMIT_STATS.get("campaigns_loaded") or len(
+        row_campaign_ids
+    )
+    confidence = _coverage_confidence(processed_campaigns, total_campaigns)
+    _ADS_RATE_LIMIT_STATS["adsCoverageConfidence"] = confidence
+    print(f"coverage confidence: {confidence}")
     print(f"Ads rows: {len(ads_rows)}")
+    storage = _storage()
+    if storage and hasattr(storage, "update_ads_campaign_stats_status"):
+        processed_ids = {
+            str(row.get("campaignId") or row.get("advertId"))
+            for row in ads_rows
+            if row.get("campaignId") or row.get("advertId")
+        }
+        failed_ids = set(campaign_ids) - processed_ids
+        if processed_ids:
+            storage.update_ads_campaign_stats_status(
+                seller_id, processed_ids, "success"
+            )
+        if failed_ids:
+            status = "partial" if _ADS_RATE_LIMIT_STATS.get("partial") else "error"
+            storage.update_ads_campaign_stats_status(seller_id, failed_ids, status)
     return ads_rows
