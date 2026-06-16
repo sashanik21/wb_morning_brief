@@ -217,6 +217,9 @@ create table if not exists ads_campaigns_cache (
     raw_json jsonb,
     last_stats_at timestamp,
     last_stats_status text,
+    last_stats_rows integer default 0,
+    last_error_code text,
+    consecutive_errors integer default 0,
     unique (seller_id, campaign_id)
 );
 
