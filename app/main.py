@@ -3,6 +3,7 @@ import os
 import pandas as pd
 
 from app.analyzers.ads_analyzer import (
+    aggregate_ads_rows,
     analyze_ads_problems,
     build_ads_summary,
     enrich_ads_time_series,
@@ -257,7 +258,13 @@ def main():
     print("=" * 50)
 
     ads_data = collect_ads_stats()
+    raw_ads_rows_count = len(ads_data or [])
     ads_data, ads_matching_debug = attribute_ads_rows(ads_data, wb_cards + products)
+    ads_data = aggregate_ads_rows(ads_data)
+    aggregated_ads_rows_count = len(ads_data or [])
+    advertised_sku_count = len(
+        {row.get("nmId") for row in ads_data if row.get("nmId") not in (None, "")}
+    )
     ads_data = enrich_ads_time_series(ads_data, storage=storage, seller_id=seller_id)
     funnel_report = flatten_sales_funnel_data(data)
     funnel_rows = funnel_report.to_dict("records")
@@ -280,6 +287,10 @@ def main():
     if qbiki_metrics and hasattr(storage, "save_daily_qbiki_metrics"):
         storage.save_daily_qbiki_metrics(qbiki_metrics)
     ads_summary = build_ads_summary(ads_data, ads_problems + qbiki_problems)
+    ads_summary["rawRows"] = raw_ads_rows_count
+    ads_summary["aggregatedRows"] = aggregated_ads_rows_count
+    ads_summary["advertisedSku"] = advertised_sku_count
+    ads_summary["totalSku"] = total_sku_from_api
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("ADS SUMMARY:")
     print(f"campaigns: {ads_summary['activeCampaigns']}")
@@ -359,6 +370,9 @@ def main():
     )
 
     summary_stats["adsSummary"] = ads_summary
+    summary_stats["adsRawRowsCount"] = raw_ads_rows_count
+    summary_stats["adsAggregatedRowsCount"] = aggregated_ads_rows_count
+    summary_stats["advertisedSkuCount"] = advertised_sku_count
     summary_stats["adsApiHad429"] = ads_api_had_429()
     summary_stats["qbikiMetrics"] = qbiki_metrics
     summary_stats["qbikiSourceStatus"] = qbiki_source_status

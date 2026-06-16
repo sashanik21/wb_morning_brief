@@ -155,6 +155,108 @@ def _average(values):
     return round(sum(numbers) / len(numbers), 2)
 
 
+def _weighted_average(weighted_pairs):
+    total_weight = sum(weight for _, weight in weighted_pairs if weight)
+    if not total_weight:
+        return None
+    return round(
+        sum(_to_number(value) * weight for value, weight in weighted_pairs if weight)
+        / total_weight,
+        2,
+    )
+
+
+def _recalculate_ads_ratios(row, prefix=""):
+    def metric_key(metric):
+        if not prefix:
+            return metric
+        return f"{prefix}{metric[0].upper()}{metric[1:]}"
+
+    impressions_key = metric_key("impressions")
+    clicks_key = metric_key("clicks")
+    spend_key = metric_key("spend")
+    revenue_key = metric_key("ordersSum")
+    ctr_key = metric_key("ctr")
+    cpc_key = metric_key("cpc")
+    drr_key = metric_key("drr")
+    cpm_key = metric_key("cpm")
+
+    impressions = _to_number(row.get(impressions_key))
+    clicks = _to_number(row.get(clicks_key))
+    spend = _to_number(row.get(spend_key))
+    revenue = _to_number(row.get(revenue_key))
+    row[ctr_key] = round(clicks / impressions * 100, 2) if impressions else 0
+    row[cpc_key] = round(spend / clicks, 2) if clicks else 0
+    row[drr_key] = round(spend / revenue * 100, 2) if revenue else 0
+    row[cpm_key] = round(spend / impressions * 1000, 2) if impressions else 0
+
+
+def aggregate_ads_rows(ads_rows):
+    """Aggregate WB Ads rows to the daily_ads_metrics unique key."""
+    grouped = {}
+    order = []
+    for row in ads_rows or []:
+        key = (
+            row.get("date") or row.get("report_date") or row.get("selectedPeriod"),
+            row.get("seller_id") or row.get("sellerId"),
+            row.get("campaignId") or row.get("campaign_id"),
+            row.get("nmId") or row.get("nm_id") or row.get("nm"),
+        )
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(row)
+
+    aggregated_rows = []
+    sum_metrics = ("impressions", "clicks", "spend", "orders", "ordersSum")
+    previous_sum_metrics = tuple(f"previous{m[0].upper()}{m[1:]}" for m in sum_metrics)
+
+    for key in order:
+        rows = grouped[key]
+        merged = rows[0].copy()
+        for metric in sum_metrics + previous_sum_metrics:
+            merged[metric] = round(sum(_to_number(row.get(metric)) for row in rows), 2)
+        for metric in ("impressions", "clicks", "orders"):
+            merged[metric] = int(merged.get(metric) or 0)
+        for metric in ("previousImpressions", "previousClicks", "previousOrders"):
+            merged[metric] = int(merged.get(metric) or 0)
+
+        bid_weight = [
+            (
+                row.get("bid"),
+                _to_number(row.get("clicks")) or _to_number(row.get("impressions")),
+            )
+            for row in rows
+        ]
+        avg_position_weight = [
+            (row.get("avgPosition"), _to_number(row.get("impressions"))) for row in rows
+        ]
+        bid = _weighted_average(bid_weight)
+        avg_position = _weighted_average(avg_position_weight)
+        if bid is not None:
+            merged["bid"] = bid
+        if avg_position is not None:
+            merged["avgPosition"] = avg_position
+
+        search_queries = []
+        for row in rows:
+            search_queries.extend(row.get("searchQueries") or [])
+        merged["searchQueries"] = search_queries
+        merged["adsRawRowsCount"] = len(rows)
+
+        _recalculate_ads_ratios(merged)
+        _recalculate_ads_ratios(merged, "previous")
+        aggregated_rows.append(merged)
+
+    raw_count = len(ads_rows or [])
+    aggregated_count = len(aggregated_rows)
+    print("ADS DEDUPLICATION:")
+    print(f"raw rows: {raw_count}")
+    print(f"aggregated rows: {aggregated_count}")
+    print(f"duplicates merged: {raw_count - aggregated_count}")
+    return aggregated_rows
+
+
 def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
     enriched_rows = []
     metrics = ("ctr", "cpc", "drr", "bid", "avgPosition")
@@ -621,8 +723,61 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
             if str(problem.get("nmId")) == str(row.get("nmId")):
                 _enrich_budget_waste_risk(problem, funnel_row)
 
+    problems = _suppress_ads_problem_duplicates(problems)
     print(f"Ads problems found: {len(problems)}")
     return problems
+
+
+def _suppress_ads_problem_duplicates(problems):
+    grouped = {}
+    order = []
+    for problem in problems or []:
+        key = (
+            problem.get("sellerName"),
+            problem.get("campaignId"),
+            problem.get("nmId"),
+        )
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(problem)
+
+    suppressed = []
+    priority = {
+        "ads_drr_growth": 0,
+        "ads_spend_without_orders": 1,
+        "ads_ctr_low": 2,
+        "ads_cpc_growth": 3,
+        "ads_ctr_drop": 4,
+        "ads_ineffective": 5,
+    }
+    for key in order:
+        items = grouped[key]
+        if len(items) == 1 or "adsRawRowsCount" not in items[0]:
+            suppressed.extend(items)
+            continue
+        base = sorted(
+            items,
+            key=lambda item: priority.get(str(item.get("problemType")), 99),
+        )[0].copy()
+        labels = []
+        metric_names = {"ctr": "CTR", "cpc": "CPC", "drr": "ДРР"}
+        for item in items:
+            label = metric_names.get(str(item.get("metric"))) or item.get(
+                "problemLabel"
+            )
+            if label and label not in labels:
+                labels.append(label)
+        base["problemLabel"] = "Реклама стала менее эффективной"
+        base["recommendation"] = (
+            "Проверить CTR, CPC и ДРР по товару: несколько рекламных сигналов "
+            "объединены в один блок."
+        )
+        base["suppressedProblemTypes"] = [item.get("problemType") for item in items]
+        base["suppressedAdsMetrics"] = labels
+        base["suppressedAdsProblemCount"] = len(items)
+        suppressed.append(base)
+    return suppressed
 
 
 def build_ads_summary(ads_rows, ads_problems):

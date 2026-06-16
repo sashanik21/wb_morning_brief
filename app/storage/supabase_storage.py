@@ -647,6 +647,12 @@ def _normalize_api_coverage_row(row):
         "funnel_problem_count": _to_int(
             _first_present(row, ["funnel_problem_count", "funnelProblemCount"])
         ),
+        "ads_campaign_count": _to_int(
+            _first_present(row, ["ads_campaign_count", "adsCampaignCount"])
+        ),
+        "ads_rows_count": _to_int(
+            _first_present(row, ["ads_rows_count", "adsRowsCount"])
+        ),
     }
 
 

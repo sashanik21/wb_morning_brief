@@ -299,6 +299,8 @@ create table if not exists api_coverage_daily (
     problem_count integer,
     ads_problem_count integer,
     funnel_problem_count integer,
+    ads_campaign_count integer,
+    ads_rows_count integer,
 
     created_at timestamp default now()
 );
