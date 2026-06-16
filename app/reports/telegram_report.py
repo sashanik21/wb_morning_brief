@@ -28,6 +28,15 @@ EXECUTIVE_PROBLEMS_LIMIT = 3
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 EXECUTIVE_ACTIONS_LIMIT = 5
 
+
+TOP_DROP_METRICS = (
+    ("orderCount", "Заказы"),
+    ("orderSum", "Выручка"),
+    ("openCount", "Переходы"),
+    ("cartCount", "Корзина"),
+    ("cartToOrderPercent", "Конверсия в заказ"),
+)
+
 FACTUAL_EXECUTIVE_METRICS = {
     "orderSum",
     "orderCount",
@@ -2187,23 +2196,103 @@ def _format_optional_dynamic(value):
     return _format_dynamic_value(value)
 
 
+def _merge_products_by_nm_id(problem_products):
+    grouped = {}
+    for index, product in enumerate(problem_products or []):
+        group_key = _problem_group_key(product)
+        if group_key not in grouped:
+            grouped[group_key] = {
+                **product,
+                "first_index": product.get("first_index", index),
+                "problems": [],
+            }
+        grouped[group_key]["problems"].extend(product.get("problems") or [])
+
+    for product in grouped.values():
+        has_positive_funnel_problem = any(
+            _is_funnel_problem(problem) and _business_impact_score(problem) > 0
+            for problem in product.get("problems") or []
+        )
+        product["problems"].sort(
+            key=lambda problem: _business_sort_key(problem, has_positive_funnel_problem)
+        )
+        product["businessImpactScore"] = max(
+            (_business_impact_score(problem) for problem in product["problems"]),
+            default=to_number(product.get("businessImpactScore")),
+        )
+    return list(grouped.values())
+
+
+def _top_drop_metric_dynamics(product):
+    dynamics = []
+    for metric, label in TOP_DROP_METRICS:
+        dynamic = _product_metric_dynamic(product, metric)
+        if dynamic is not None and dynamic < 0:
+            dynamics.append((metric, label, dynamic))
+    return dynamics
+
+
+def _top_drop_sort_key(product):
+    primary_problem = _product_primary_problem(product)
+    return (
+        _business_sort_key(primary_problem),
+        -_product_lost_revenue(product),
+        -_product_lost_orders(product),
+        product.get("first_index", 0),
+    )
+
+
+def _log_telegram_top_drops(raw_products, selected_products):
+    raw_problems = [
+        problem
+        for product in raw_products or []
+        for problem in product.get("problems") or []
+    ]
+    unique_nm_ids = []
+    for product in _merge_products_by_nm_id(raw_products):
+        nm_id = str(product.get("nmId") or "")
+        if nm_id and nm_id != "n/a":
+            unique_nm_ids.append(nm_id)
+    selected_nm_ids = [
+        str(product.get("nmId") or "") for product, *_ in selected_products
+    ]
+    selected_titles = [
+        str(product.get("title") or "Без названия") for product, *_ in selected_products
+    ]
+    diagnostic = (
+        "TELEGRAM TOP DROPS:\n"
+        f"raw problems: {len(raw_problems)}\n"
+        f"unique nmIds: {unique_nm_ids}\n"
+        f"selected nmIds: {selected_nm_ids}\n"
+        f"selected titles: {selected_titles}"
+    )
+    logger.info(diagnostic)
+    print(diagnostic)
+
+
 def _build_product_movement_block(problem_products, direction, summary_stats=None):
     products = []
-    for product in problem_products or []:
+    source_products = (
+        _merge_products_by_nm_id(problem_products)
+        if direction == "drop"
+        else problem_products or []
+    )
+    for product in source_products:
         revenue_dynamic = _product_metric_dynamic(product, "orderSum")
         orders_dynamic = _product_metric_dynamic(product, "orderCount")
         traffic_dynamic = _product_metric_dynamic(product, "openCount")
         open_count = _product_metric_current_value(product, "openCount")
         if direction == "drop":
+            metric_dynamics = _top_drop_metric_dynamics(product)
             if not (
-                (revenue_dynamic is not None and revenue_dynamic < 0)
-                or (orders_dynamic is not None and orders_dynamic < 0)
+                metric_dynamics
                 or _product_lost_revenue(product) > 0
                 or _product_lost_orders(product) > 0
             ):
                 continue
-            sort_key = _business_sort_key(_product_primary_problem(product))
+            sort_key = _top_drop_sort_key(product)
         else:
+            metric_dynamics = []
             if not (
                 (revenue_dynamic is not None and revenue_dynamic > 0)
                 and (orders_dynamic is not None and orders_dynamic > 0)
@@ -2219,6 +2308,7 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
                 revenue_dynamic,
                 traffic_dynamic,
                 open_count,
+                metric_dynamics,
             )
         )
 
@@ -2234,6 +2324,7 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
         :3
     ]
     if direction == "drop":
+        _log_telegram_top_drops(source_products, products)
         _log_telegram_ads_product_breakdown(products, summary_stats)
         logger.debug(
             "TOP DECLINES DEBUG: %s",
@@ -2257,14 +2348,23 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
         revenue_dynamic,
         traffic_dynamic,
         open_count,
+        metric_dynamics,
     ) in enumerate(products, start=1):
-        product_lines = [
-            f"{index}. <b>{_executive_problem_title(product)}</b>",
-            f"   Заказы: {_format_optional_dynamic(orders_dynamic)}",
-            f"   Выручка: {_format_optional_dynamic(revenue_dynamic)}",
-            f"   Переходы: {_format_optional_dynamic(traffic_dynamic)}",
-        ]
+        product_lines = [f"{index}. <b>{_executive_problem_title(product)}</b>"]
         if direction == "drop":
+            if metric_dynamics:
+                product_lines.extend(
+                    f"   {label}: {_format_optional_dynamic(dynamic)}"
+                    for _metric, label, dynamic in metric_dynamics
+                )
+            else:
+                product_lines.extend(
+                    [
+                        f"   Заказы: {_format_optional_dynamic(orders_dynamic)}",
+                        f"   Выручка: {_format_optional_dynamic(revenue_dynamic)}",
+                        f"   Переходы: {_format_optional_dynamic(traffic_dynamic)}",
+                    ]
+                )
             ads_breakdown = _build_product_ads_breakdown(
                 product, traffic_dynamic, orders_dynamic, summary_stats, open_count
             )
@@ -3550,9 +3650,10 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         if not priority_sku_count and below_fact_count
         else ""
     )
-    top_drops_block = _build_top_drops_block(problem_products, summary_stats)
+    top_drop_products = _group_problems_by_product(priority_records or factual_records)
+    top_drops_block = _build_top_drops_block(top_drop_products, summary_stats)
     top_drop_keys = (
-        {_problem_group_key(product) for product in problem_products[:3]}
+        {_problem_group_key(product) for product in top_drop_products[:3]}
         if top_drops_block
         else set()
     )
