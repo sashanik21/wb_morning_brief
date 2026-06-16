@@ -4,6 +4,10 @@ import os
 
 import requests
 
+from app.analyzers.business_ranking import (
+    business_ranking_key,
+    log_business_ranking,
+)
 from app.analyzers.severity import SEVERITY_LABELS, to_number
 from app.constants.problem_labels import get_problem_label
 from app.reports.evidence import (
@@ -483,7 +487,7 @@ def _group_problems_by_product(records):
     return sorted(
         grouped_products.values(),
         key=lambda product: (
-            _business_sort_key(
+            business_ranking_key(
                 _product_primary_problem(product), has_positive_funnel_product
             ),
             product["first_index"],
@@ -1035,6 +1039,8 @@ def _format_number(value):
 
 def _format_percent_one_decimal(value):
     number = to_number(value)
+    if value is None:
+        return "нет данных"
     if number <= 0:
         return "0%"
     if number < 1:
@@ -1245,10 +1251,7 @@ def _format_qbiki_product_line(index, row):
 
 def _ads_api_429_limitation_line(summary_stats):
     if (summary_stats or {}).get("adsApiHad429"):
-        return (
-            "Рекламная эффективность по аккаунту ухудшилась, но выводы ограничены: "
-            "WB Ads API вернул 429."
-        )
+        return "⚠️ Рекламные данные частичные: WB API ограничил часть запросов."
     return ""
 
 
@@ -1569,11 +1572,22 @@ def _baseline_context(summary_stats):
         or summary_stats.get("baselineType")
         or summary_stats.get("comparisonMode")
     )
-    if baseline_mode in {"previous_day", "prev_day"}:
-        return "сравнение с предыдущим днем"
+    baseline_counts = summary_stats.get("baselineTypeCounts") or {}
+    if baseline_mode == "avg_7d":
+        return "сравнение со средним за 7 дней"
+    if baseline_mode == "avg_3d":
+        return "сравнение со средним за 3 дня"
+    if baseline_mode in {"fallback_previous_day", "previous_day", "prev_day"}:
+        return "сравнение со вчерашним днём"
+    if baseline_counts:
+        dominant = max(baseline_counts, key=lambda key: baseline_counts.get(key) or 0)
+        if dominant == "avg_3d":
+            return "сравнение с доступной историей: в основном среднее за 3 дня"
+        if dominant == "fallback_previous_day":
+            return "сравнение с доступной историей: в основном вчерашний день"
     if baseline_mode:
         return f"сравнение: {html.escape(str(baseline_mode))}"
-    return "сравнение со средним за 7 дней"
+    return "сравнение с доступной историей"
 
 
 def _build_executive_header(summary_stats):
@@ -1987,7 +2001,9 @@ def _main_business_decline_product(problem_products):
         return None
     return sorted(
         candidates,
-        key=lambda product: _business_sort_key(_product_primary_problem(product)),
+        key=lambda product: business_ranking_key(
+            _product_primary_problem(product), True
+        ),
     )[0]
 
 
@@ -2449,14 +2465,9 @@ def _build_product_ads_breakdown(
     return "\n".join(
         [
             "   📢 <b>Реклама по товару</b>",
-            f"   — Показы: {_format_ads_metric_pair(totals, 'impressions')}",
-            f"   — Клики: {_format_ads_metric_pair(totals, 'clicks')}",
-            f"   — CTR рекламы: {_format_ads_metric_pair(totals, 'ctr', '%')}",
-            f"   — Стоимость клика: {_format_ads_metric_pair(totals, 'cpc', ' ₽')}",
-            f"   — ДРР: {_format_ads_metric_pair(totals, 'drr', '%')}",
-            f"   — Заказы с рекламы: {_format_ads_metric_pair(totals, 'orders')}",
+            f"   — Показы: {_format_number(totals.get('impressions'))}",
+            f"   — Клики рекламы: {_format_number(totals.get('clicks'))}",
             f"   — Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}",
-            f"   — Ставка средняя: {_format_ads_metric_pair(totals, 'bid', ' ₽')}",
             f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share)}",
         ]
     )
@@ -3449,8 +3460,7 @@ def _log_telegram_business_ranking(problems):
         and _is_factual_executive_problem(record)
         and _is_telegram_critical_block_problem(record)
     ]
-    products = _group_problems_by_product(critical_records)
-    top_problem = _product_primary_problem(products[0]) if products else {}
+    top_problem = log_business_ranking(critical_records, source="telegram")
     diagnostic = (
         "TELEGRAM BUSINESS RANKING:\n"
         f"top nmId: {top_problem.get('nmId') or 'n/a'}\n"

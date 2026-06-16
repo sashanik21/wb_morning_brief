@@ -10,6 +10,7 @@ from app.analyzers.ads_analyzer import (
     save_ads_report,
 )
 from app.analyzers.ads_attribution import attribute_ads_rows
+from app.analyzers.business_ranking import log_business_ranking, rank_problem_records
 from app.analyzers.decision_engine import apply_decision_engine
 from app.analyzers.forecast_engine import build_predictive_forecasts
 from app.analyzers.perfume_intelligence import (
@@ -20,7 +21,7 @@ from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.qbiki_metrics import build_qbiki_problems, enrich_qbiki_metrics
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 from app.analyzers.tasks_builder import build_tasks_from_problems
-from app.collectors.ads import ads_api_had_429, collect_ads_stats
+from app.collectors.ads import ads_api_had_429, ads_rate_limit_stats, collect_ads_stats
 from app.collectors.funnel import (
     build_top_funnel_drop_signals,
     calculate_funnel_summary_dynamics,
@@ -351,6 +352,8 @@ def main():
                 problem["adsConfidence"] = "LOW"
                 problem["impactConfidence"] = "LOW"
     all_problems = apply_decision_engine(all_problems)
+    all_problems = rank_problem_records(all_problems)
+    log_business_ranking(all_problems, source="main")
     if funnel_rows:
         storage.save_funnel_snapshot(funnel_rows)
     if all_problems:
@@ -375,6 +378,18 @@ def main():
     summary_stats["adsAggregatedRowsCount"] = aggregated_ads_rows_count
     summary_stats["advertisedSkuCount"] = advertised_sku_count
     summary_stats["adsApiHad429"] = ads_api_had_429()
+    summary_stats["adsApiPartial"] = ads_api_had_429()
+    summary_stats["adsRateLimit"] = ads_rate_limit_stats()
+    baseline_counts = {}
+    for problem in all_problems:
+        baseline_type = problem.get("baselineType") or problem.get("baseline_type")
+        if baseline_type:
+            baseline_counts[baseline_type] = baseline_counts.get(baseline_type, 0) + 1
+    summary_stats["baselineTypeCounts"] = baseline_counts
+    if baseline_counts:
+        summary_stats["baselineMode"] = max(
+            baseline_counts, key=lambda key: baseline_counts.get(key) or 0
+        )
     summary_stats["qbikiMetrics"] = qbiki_metrics
     summary_stats["qbikiSourceStatus"] = qbiki_source_status
     summary_stats["qbikiRowsLoaded"] = len(raw_qbiki_rows)

@@ -258,6 +258,14 @@ def aggregate_ads_rows(ads_rows):
 
         _recalculate_ads_ratios(merged)
         _recalculate_ads_ratios(merged, "previous")
+        calculated_cpc = (
+            round(_to_number(merged.get("spend")) / _to_number(merged.get("clicks")), 2)
+            if _to_number(merged.get("clicks"))
+            else 0
+        )
+        if abs(_to_number(merged.get("cpc")) - calculated_cpc) > 1:
+            merged["cpc"] = calculated_cpc
+        merged["calculatedCpc"] = calculated_cpc
         aggregated_rows.append(merged)
 
     raw_count = len(ads_rows or [])
@@ -266,6 +274,18 @@ def aggregate_ads_rows(ads_rows):
     print(f"raw rows: {raw_count}")
     print(f"aggregated rows: {aggregated_count}")
     print(f"duplicates merged: {raw_count - aggregated_count}")
+    top_row = max(
+        aggregated_rows, key=lambda row: _to_number(row.get("spend")), default={}
+    )
+    if top_row:
+        print("ADS PRODUCT CHECK:")
+        print(f"nmId: {top_row.get('nmId')}")
+        print(f"impressions: {top_row.get('impressions')}")
+        print(f"clicks: {top_row.get('clicks')}")
+        print(f"spend: {top_row.get('spend')}")
+        print(f"cpc: {top_row.get('cpc')}")
+        print(f"calculatedCpc: {top_row.get('calculatedCpc')}")
+        print(f"campaignRowsMerged: {top_row.get('adsRawRowsCount')}")
     return aggregated_rows
 
 
