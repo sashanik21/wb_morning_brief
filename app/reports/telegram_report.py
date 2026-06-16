@@ -1437,12 +1437,19 @@ def _ads_summary_lines(ads_summary):
         if advertised_sku is not None and total_sku is not None
         else "данные есть"
     )
+    source = ads_summary.get("source") or ads_summary.get("adsSource") or "WB Ads API"
     lines = [
         "📢 <b>Реклама:</b> "
         f"{coverage}, CTR {_format_number(ads_summary.get('currentCtr'))}%, "
         f"клик {_format_number(ads_summary.get('currentCpc'))} ₽, "
-        f"ДРР {_format_number(ads_summary.get('currentDrr'))}%."
+        f"ДРР {_format_number(ads_summary.get('currentDrr'))}%.",
+        f"Источник: {source}",
     ]
+    if ads_summary.get("fallbackUsed"):
+        lines.append(
+            "⚠️ Актуальные данные рекламы не получены от WB. "
+            "Используются последние доступные данные из истории."
+        )
     if ads_summary.get("adsApiHad429") or ads_summary.get("hasApi429"):
         lines[0] += " Данные частичные: WB API 429."
     if _ads_has_incomplete_metric_history(ads_summary):

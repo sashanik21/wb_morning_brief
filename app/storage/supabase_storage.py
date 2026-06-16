@@ -682,6 +682,28 @@ def get_ads_history(seller_id, campaign_id, nm_id=None, days=7):
     return _execute_read(query, "daily_ads_metrics")
 
 
+def get_latest_ads_metrics_by_nm_ids(seller_id, nm_ids):
+    rows = []
+    seen = set()
+    for nm_id in nm_ids or []:
+        normalized_nm_id = _to_int(nm_id)
+        if normalized_nm_id is None or normalized_nm_id in seen:
+            continue
+        seen.add(normalized_nm_id)
+        latest = _execute_read(
+            _get_client()
+            .table("daily_ads_metrics")
+            .select("*")
+            .eq("seller_id", _string_or_none(seller_id))
+            .eq("nm_id", normalized_nm_id)
+            .order("date", desc=True)
+            .limit(1),
+            "daily_ads_metrics",
+        )
+        rows.extend(latest or [])
+    return rows
+
+
 def save_daily_ads_metrics(rows):
     normalized_rows = _drop_empty_required(
         [_normalize_ads_metric_row(row) for row in rows],
