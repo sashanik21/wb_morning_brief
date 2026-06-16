@@ -1438,6 +1438,43 @@ def _ads_summary_conclusion(ads_summary):
     return "Вывод по рекламе: " + "; ".join(parts) + "."
 
 
+def _ads_rows_count(summary_stats=None, ads_summary=None):
+    ads_rows_count = (ads_summary or {}).get("adsRows")
+    if ads_rows_count in (None, ""):
+        ads_rows_count = ((summary_stats or {}).get("adsSummary") or {}).get("adsRows")
+    if ads_rows_count in (None, ""):
+        ads_rows_count = len((summary_stats or {}).get("adsRows") or [])
+    return to_number(ads_rows_count)
+
+
+def _ads_campaigns_coverage_line(summary_stats=None, ads_summary=None):
+    if _ads_rows_count(summary_stats, ads_summary) <= 0:
+        return None
+
+    rate_limit = (summary_stats or {}).get("adsRateLimit") or {}
+    processed = (
+        rate_limit.get("campaigns_success")
+        or (ads_summary or {}).get("campaignsSuccess")
+        or (ads_summary or {}).get("processedCampaigns")
+    )
+    total = (
+        rate_limit.get("campaigns_attempted")
+        or rate_limit.get("campaigns_requested")
+        or rate_limit.get("campaigns_selected")
+        or rate_limit.get("campaigns_total")
+        or (ads_summary or {}).get("activeCampaigns")
+    )
+    if processed in (None, "") or total in (None, ""):
+        return None
+
+    return (
+        f"⚠️ Реклама: обработано {_format_number(processed)} "
+        f"из {_format_number(total)} кампаний.\n"
+        "Покрытие рекламы низкое.\n"
+        "Выводы сделаны только по части рекламных данных."
+    )
+
+
 def _ads_campaigns_success_zero(summary_stats=None, ads_summary=None):
     rate_limit = (summary_stats or {}).get("adsRateLimit") or {}
     success = rate_limit.get("campaigns_success")
@@ -1470,8 +1507,9 @@ def _ads_summary_lines(ads_summary, summary_stats=None):
         f"{coverage}, CTR {_format_number(ads_summary.get('currentCtr'))}%, "
         f"клик {_format_number(ads_summary.get('currentCpc'))} ₽, "
         f"ДРР {_format_number(ads_summary.get('currentDrr'))}%.",
-        f"Источник: {source}",
     ]
+    if _ads_rows_count(summary_stats, ads_summary) > 0:
+        lines.append(f"Источник: {source}")
     if ads_summary.get("fallbackUsed"):
         lines.append(
             "⚠️ Актуальные данные рекламы не получены от WB. "
@@ -1479,8 +1517,12 @@ def _ads_summary_lines(ads_summary, summary_stats=None):
         )
     if ads_summary.get("adsApiHad429") or ads_summary.get("hasApi429"):
         lines[0] += " Данные частичные: WB API 429."
+    coverage_line = _ads_campaigns_coverage_line(summary_stats, ads_summary)
+    if coverage_line:
+        lines.append(coverage_line)
     if _ads_campaigns_success_zero(summary_stats, ads_summary):
-        lines.append("Актуальные данные рекламы отсутствуют. Анализ рекламы невозможен.")
+        if _ads_rows_count(summary_stats, ads_summary) == 0:
+            lines.append("Актуальные данные рекламы отсутствуют. Анализ рекламы невозможен.")
         return lines
     if _ads_has_incomplete_metric_history(ads_summary):
         lines.append("История короткая, выводы предварительные.")
@@ -1523,9 +1565,13 @@ def _build_ads_block(records, summary_stats):
 
     if not ads_records:
         block_lines.append(
-            "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
-            if limitation_line
-            else "Критичных рекламных проблем по доступным данным не найдено."
+            "Рекламные выводы ограничены из-за низкого покрытия данных."
+            if (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
+            else (
+                "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
+                if limitation_line
+                else "Критичных рекламных проблем по доступным данным не найдено."
+            )
         )
         return "\n".join(block_lines)
 
@@ -2822,10 +2868,7 @@ def _product_ads_conclusion(
 def _build_product_ads_breakdown(
     product, traffic_dynamic, orders_dynamic, summary_stats, open_count=None
 ):
-    ads_rows_count = ((summary_stats or {}).get("adsSummary") or {}).get("adsRows")
-    if ads_rows_count in (None, ""):
-        ads_rows_count = len((summary_stats or {}).get("adsRows") or [])
-    if to_number(ads_rows_count) == 0:
+    if _ads_rows_count(summary_stats) == 0:
         return ""
 
     totals = _product_ads_totals(product, summary_stats)
@@ -2960,15 +3003,24 @@ def _build_executive_ads_block(records, summary_stats):
         if limitation_line:
             lines.append(limitation_line)
         if problem_campaigns:
-            lines.append(
-                "Критичных рекламных проблем по доступным данным не найдено, "
-                f"но есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
-            )
+            if (summary_stats or {}).get("adsCoverageConfidence") == "LOW":
+                lines.append(
+                    "Рекламные выводы ограничены из-за низкого покрытия данных."
+                )
+            else:
+                lines.append(
+                    "Критичных рекламных проблем по доступным данным не найдено, "
+                    f"но есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
+                )
         else:
             lines.append(
-                "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
-                if limitation_line
-                else "Критичных рекламных проблем по доступным данным не найдено."
+                "Рекламные выводы ограничены из-за низкого покрытия данных."
+                if (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
+                else (
+                    "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
+                    if limitation_line
+                    else "Критичных рекламных проблем по доступным данным не найдено."
+                )
             )
         return "\n".join(lines)
 
