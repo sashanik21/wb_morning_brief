@@ -52,6 +52,10 @@ CRITICAL_CTR_THRESHOLD = 0.1
 HIGH_CPC_THRESHOLD = 1000
 LOW_ADS_TRAFFIC_SHARE_THRESHOLD = 10
 ADS_TRAFFIC_SHARE_IMPRESSIONS_THRESHOLD = 1000
+MAX_ADS_PROBLEMS_WHEN_PARTIAL = 20
+PARTIAL_STRONG_SPEND_WITHOUT_ORDERS_THRESHOLD = 1000
+PARTIAL_CRITICAL_CPC_THRESHOLD = 1000
+PARTIAL_CRITICAL_DRR_THRESHOLD = 80
 
 
 ADS_PROBLEM_LABELS = {
@@ -203,6 +207,36 @@ def _recalculate_ads_ratios(row, prefix=""):
     row[cpm_key] = round(spend / impressions * 1000, 2) if impressions else 0
 
 
+def _aggregate_ads_rows_by_nm(ads_rows):
+    grouped = {}
+    order = []
+    for row in ads_rows or []:
+        key = row.get("nmId") or row.get("nm_id") or row.get("nm")
+        if key in (None, ""):
+            continue
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(row)
+
+    product_rows = []
+    for key in order:
+        rows = grouped[key]
+        merged = rows[0].copy()
+        for metric in ("impressions", "clicks", "spend", "orders", "ordersSum"):
+            merged[metric] = round(sum(_to_number(row.get(metric)) for row in rows), 2)
+        for metric in ("impressions", "clicks", "orders"):
+            merged[metric] = int(merged.get(metric) or 0)
+        _recalculate_ads_ratios(merged)
+        merged["calculatedCpc"] = merged.get("cpc")
+        merged["source"] = "aggregated_ads_row"
+        merged["campaignRowsMerged"] = sum(
+            int(row.get("adsRawRowsCount") or 1) for row in rows
+        )
+        product_rows.append(merged)
+    return product_rows
+
+
 def aggregate_ads_rows(ads_rows):
     """Aggregate WB Ads rows to the daily_ads_metrics unique key."""
     grouped = {}
@@ -275,7 +309,9 @@ def aggregate_ads_rows(ads_rows):
     print(f"aggregated rows: {aggregated_count}")
     print(f"duplicates merged: {raw_count - aggregated_count}")
     top_row = max(
-        aggregated_rows, key=lambda row: _to_number(row.get("spend")), default={}
+        _aggregate_ads_rows_by_nm(aggregated_rows),
+        key=lambda row: _to_number(row.get("spend")),
+        default={},
     )
     if top_row:
         print("ADS PRODUCT CHECK:")
@@ -285,7 +321,8 @@ def aggregate_ads_rows(ads_rows):
         print(f"spend: {top_row.get('spend')}")
         print(f"cpc: {top_row.get('cpc')}")
         print(f"calculatedCpc: {top_row.get('calculatedCpc')}")
-        print(f"campaignRowsMerged: {top_row.get('adsRawRowsCount')}")
+        print(f"source: {top_row.get('source')}")
+        print(f"campaignRowsMerged: {top_row.get('campaignRowsMerged')}")
     return aggregated_rows
 
 
@@ -440,6 +477,8 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "adsRootCause": _ads_root_cause(problem_type, baseline_reliability),
         "dynamicPercent": dynamic_percent if dynamic_percent is not None else "",
         **severity_fields,
+        "impressions": row.get("impressions", 0),
+        "previousImpressions": _previous_value(row, "impressions"),
         "ctr": row.get("ctr", 0),
         "previousCtr": _previous_value(row, "ctr"),
         "cpc": row.get("cpc", 0),
@@ -633,7 +672,7 @@ def _enrich_budget_waste_risk(problem, funnel_row):
     return problem
 
 
-def analyze_ads_problems(ads_rows, funnel_rows=None):
+def analyze_ads_problems(ads_rows, funnel_rows=None, ads_api_partial=False):
     problems = []
     funnel_by_nm_id = _funnel_rows_by_nm_id(funnel_rows)
 
@@ -791,9 +830,57 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
                 _enrich_budget_waste_risk(problem, funnel_row)
 
     problems = _suppress_ads_problem_duplicates(problems)
+    if ads_api_partial:
+        before = len(problems)
+        problems = _suppress_partial_ads_problems(problems)
+        print("ADS PARTIAL SUPPRESSION:")
+        print(f"before: {before}")
+        print(f"after: {len(problems)}")
+        print(f"suppressed: {before - len(problems)}")
+        print("reason: partial API data")
     enrich_business_impact_scores(problems)
     print(f"Ads problems found: {len(problems)}")
     return problems
+
+
+def _is_strong_partial_ads_problem(problem):
+    problem_type = problem.get("problemType")
+    spend = _to_number(problem.get("spend"))
+    clicks = _to_number(problem.get("clicks"))
+    orders = _to_number(problem.get("orders"))
+    impressions = _to_number(problem.get("impressions"))
+    cpc = _to_number(problem.get("cpc"))
+    drr = _to_number(problem.get("drr"))
+    revenue = _to_number(problem.get("ordersSum"))
+
+    if problem.get("budgetWasteRisk"):
+        return True
+    if problem_type in {"ads_spend_without_orders", "ads_ineffective"}:
+        return spend > PARTIAL_STRONG_SPEND_WITHOUT_ORDERS_THRESHOLD and orders == 0
+    if problem_type == "ads_ctr_low":
+        return (
+            impressions > 1000
+            and _to_number(problem.get("ctr")) < CRITICAL_CTR_THRESHOLD
+        )
+    if problem_type == "ads_cpc_growth":
+        return clicks > 0 and cpc >= PARTIAL_CRITICAL_CPC_THRESHOLD
+    if problem_type == "ads_drr_growth":
+        return revenue > 0 and drr >= PARTIAL_CRITICAL_DRR_THRESHOLD
+    return False
+
+
+def _suppress_partial_ads_problems(problems):
+    strong = []
+    for problem in problems or []:
+        if not _is_strong_partial_ads_problem(problem):
+            continue
+        reduced = problem.copy()
+        reduced["adsConfidence"] = "LOW"
+        reduced["impactConfidence"] = "LOW"
+        reduced["severity"] = "low"
+        reduced["severityScore"] = min(_to_number(reduced.get("severityScore")), 20)
+        strong.append(reduced)
+    return strong[:MAX_ADS_PROBLEMS_WHEN_PARTIAL]
 
 
 def _suppress_ads_problem_duplicates(problems):

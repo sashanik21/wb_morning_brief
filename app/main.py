@@ -271,7 +271,9 @@ def main():
     funnel_rows = funnel_report.to_dict("records")
     for funnel_row in funnel_rows:
         funnel_row["seller_id"] = seller_id
-    ads_problems = analyze_ads_problems(ads_data, funnel_report)
+    ads_problems = analyze_ads_problems(
+        ads_data, funnel_report, ads_api_partial=ads_api_had_429()
+    )
     perfume_intelligence = build_perfume_intelligence(funnel_rows, ads_data)
     funnel_rows = perfume_intelligence["rows"]
     raw_qbiki_rows = collect_qbiki_metrics()
@@ -351,6 +353,10 @@ def main():
             if problem.get("problemCategory") == "ads":
                 problem["adsConfidence"] = "LOW"
                 problem["impactConfidence"] = "LOW"
+                problem["severity"] = "low"
+                problem["severityScore"] = min(
+                    float(problem.get("severityScore") or 0), 20
+                )
     all_problems = apply_decision_engine(all_problems)
     all_problems = rank_problem_records(all_problems)
     log_business_ranking(all_problems, source="main")
