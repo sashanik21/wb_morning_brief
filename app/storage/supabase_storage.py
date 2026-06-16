@@ -48,6 +48,18 @@ def _execute_write(query, table_name):
     try:
         query.execute()
     except Exception as error:
+        error_message = str(error)
+        if (
+            table_name == "problems"
+            and "business_impact_score" in error_message
+            and "schema cache" in error_message.lower()
+        ):
+            print(
+                "SUPABASE SCHEMA MISSING COLUMN: "
+                "problems.business_impact_score\n"
+                "Apply migration: "
+                "supabase/migrations/add_problem_business_impact_score.sql"
+            )
         print(f"WARNING: Supabase write failed for {table_name}: {error}")
 
 
