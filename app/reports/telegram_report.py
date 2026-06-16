@@ -1248,6 +1248,9 @@ def _format_ads_metric_transition(previous, current, suffix=""):
     if previous in (None, "") or current in (None, ""):
         return "н/д"
 
+    if to_number(previous) == to_number(current):
+        return f"{_format_number(current)}{suffix}"
+
     return f"{_format_number(previous)}{suffix} → {_format_number(current)}{suffix}"
 
 
@@ -1343,6 +1346,12 @@ def _ads_summary_lines(ads_summary):
             lines.append(
                 f"товаров с рекламой: {_format_number(advertised_sku)}{total_suffix}"
             )
+    problem_sku = ads_summary.get("problemSku") or ads_summary.get("problemAdsSku")
+    problem_signals = ads_summary.get("problemSignals") or ads_summary.get("problems")
+    if problem_sku is not None:
+        lines.append(f"Проблемных рекламных SKU: {_format_number(problem_sku)}")
+    if problem_signals is not None:
+        lines.append(f"Рекламных сигналов: {_format_number(problem_signals)}")
     lines.append("")
     if _ads_has_incomplete_metric_history(ads_summary):
         lines.extend(
@@ -1368,6 +1377,21 @@ def _ads_summary_lines(ads_summary):
             "— ДРР: "
             + _format_ads_metric_transition(
                 ads_summary.get("previousDrr"), ads_summary.get("currentDrr"), "%"
+            ),
+            (
+                "— Средняя ставка: "
+                + _format_ads_metric_transition(
+                    ads_summary.get("previousAvgBid") or ads_summary.get("previousBid"),
+                    ads_summary.get("currentAvgBid") or ads_summary.get("currentBid"),
+                    " ₽",
+                )
+                if (
+                    ads_summary.get("previousAvgBid")
+                    or ads_summary.get("previousBid")
+                    or ads_summary.get("currentAvgBid")
+                    or ads_summary.get("currentBid")
+                )
+                else ""
             ),
             "",
             _ads_summary_conclusion(ads_summary),
@@ -1953,12 +1977,20 @@ def _main_business_decline_product(problem_products):
         primary_metric = min(
             metric_problems, key=lambda metric: metric_priority[metric]
         )
+        revenue_problem = metric_problems.get("orderSum") or {}
+        orders_problem = metric_problems.get("orderCount") or {}
         candidates.append(
             (
                 product,
+                _absolute_metric_drop(revenue_problem)
+                or _problem_lost_revenue(revenue_problem),
+                _absolute_metric_drop(orders_problem)
+                or _problem_lost_orders(orders_problem),
+                max(
+                    to_number(problem.get("severityScore"))
+                    for problem in metric_problems.values()
+                ),
                 -metric_priority[primary_metric],
-                _absolute_metric_drop(metric_problems.get("orderSum") or {}),
-                _absolute_metric_drop(metric_problems.get("orderCount") or {}),
                 abs(
                     to_number(
                         (metric_problems.get("cartToOrderPercent") or {}).get(
@@ -2085,6 +2117,137 @@ def _build_executive_insight(problem_products, root_cause_insights, summary_stat
     return "🧠 <b>Главный инсайт:</b> критичный управленческий сигнал не выявлен."
 
 
+def _product_metric_problem(product, metric):
+    for problem in product.get("problems") or []:
+        if str(problem.get("metric") or "") == metric:
+            return problem
+    return None
+
+
+def _product_metric_dynamic(product, metric):
+    problem = _product_metric_problem(product, metric)
+    if not problem:
+        return None
+    dynamic = problem.get("dynamicPercent")
+    if _is_present(dynamic):
+        return to_number(dynamic)
+    selected = problem.get("selectedValue")
+    past = problem.get("pastValue")
+    if _is_present(selected) and _is_present(past) and to_number(past):
+        return (to_number(selected) - to_number(past)) / to_number(past) * 100
+    return None
+
+
+def _format_optional_dynamic(value):
+    if value is None:
+        return "н/д"
+    return _format_dynamic_value(value)
+
+
+def _build_product_movement_block(problem_products, direction):
+    products = []
+    for product in problem_products or []:
+        revenue_dynamic = _product_metric_dynamic(product, "orderSum")
+        orders_dynamic = _product_metric_dynamic(product, "orderCount")
+        traffic_dynamic = _product_metric_dynamic(product, "openCount")
+        revenue_problem = _product_metric_problem(product, "orderSum") or {}
+        orders_problem = _product_metric_problem(product, "orderCount") or {}
+
+        if direction == "drop":
+            if not (
+                (revenue_dynamic is not None and revenue_dynamic < 0)
+                or (orders_dynamic is not None and orders_dynamic < 0)
+            ):
+                continue
+            sort_key = (
+                _absolute_metric_drop(revenue_problem)
+                or _problem_lost_revenue(revenue_problem),
+                _absolute_metric_drop(orders_problem)
+                or _problem_lost_orders(orders_problem),
+            )
+        else:
+            if not (
+                (revenue_dynamic is not None and revenue_dynamic > 0)
+                and (orders_dynamic is not None and orders_dynamic > 0)
+            ):
+                continue
+            sort_key = (revenue_dynamic or 0, orders_dynamic or 0)
+
+        products.append(
+            (product, sort_key, orders_dynamic, revenue_dynamic, traffic_dynamic)
+        )
+
+    title = (
+        "🔴 <b>ТОП-3 просадки</b>" if direction == "drop" else "🟢 <b>ТОП-3 роста</b>"
+    )
+    if not products:
+        if direction == "growth":
+            return "🟢 За период товары с выраженным ростом не обнаружены."
+        return title + "\nПросадок заказов/выручки не найдено."
+
+    products = sorted(products, key=lambda item: item[1], reverse=True)[:3]
+    lines = []
+    for index, (
+        product,
+        _sort_key,
+        orders_dynamic,
+        revenue_dynamic,
+        traffic_dynamic,
+    ) in enumerate(products, start=1):
+        lines.append(
+            f"{index}. <b>{_executive_problem_title(product)}</b>\n"
+            f"   Заказы: {_format_optional_dynamic(orders_dynamic)}\n"
+            f"   Выручка: {_format_optional_dynamic(revenue_dynamic)}\n"
+            f"   Переходы: {_format_optional_dynamic(traffic_dynamic)}"
+        )
+    return title + "\n\n" + "\n\n".join(lines)
+
+
+def _build_top_drops_block(problem_products):
+    return _build_product_movement_block(problem_products, "drop")
+
+
+def _build_top_growth_block(problem_products):
+    return _build_product_movement_block(problem_products, "growth")
+
+
+def _build_stock_risks_block(records):
+    stock_records = [
+        record
+        for record in records
+        if record.get("daysUntilOOS") not in (None, "")
+        or str(record.get("forecastType") or "").upper() == "OOS"
+    ]
+    by_sku = {}
+    for record in stock_records:
+        key = _problem_group_key(record)
+        current = by_sku.get(key)
+        if current is None or (_forecast_eta_hours(record) or 9999) < (
+            _forecast_eta_hours(current) or 9999
+        ):
+            by_sku[key] = record
+    records_unique = list(by_sku.values())
+    less_1 = [r for r in records_unique if (_forecast_eta_hours(r) or 9999) < 24]
+    less_3 = [r for r in records_unique if (_forecast_eta_hours(r) or 9999) < 72]
+    critical = sorted(
+        records_unique, key=lambda item: _forecast_eta_hours(item) or 9999
+    )[:3]
+    lines = [
+        "📦 <b>Риски остатков</b>",
+        f"Остатков менее 1 дня: {_format_number(len(less_1))} товаров",
+        f"Остатков менее 3 дней: {_format_number(len(less_3))} товаров",
+    ]
+    if critical:
+        lines.append("Самые критичные SKU:")
+        for record in critical:
+            eta = (
+                _format_forecast_eta(record)
+                or f"≈{_format_number(record.get('daysUntilOOS'))} дня"
+            )
+            lines.append(f"- {_format_product_identity(record)}: {eta}")
+    return "\n".join(lines)
+
+
 def _build_perfume_intelligence_block(summary_stats):
     return ""
 
@@ -2106,6 +2269,13 @@ def _build_executive_ads_block(records, summary_stats):
     problem_campaigns = ads_summary.get(
         "problemCampaigns", ads_summary.get("problems", len(ads_records))
     )
+    if ads_records:
+        ads_summary = {**ads_summary}
+        ads_summary.setdefault(
+            "problemSku",
+            len({_problem_group_key(record) for record in ads_records}),
+        )
+        ads_summary.setdefault("problemSignals", len(ads_records))
     lines = _ads_summary_lines(ads_summary)
 
     if not ads_records:
@@ -2914,7 +3084,13 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     ]
     main_records = priority_records or factual_records
     problem_products = _group_problems_by_product(main_records)
-    priority_sku_count = _priority_sku_count(factual_records)
+    priority_source = (summary_stats or {}).get("priority_problems")
+    if priority_source is not None:
+        priority_sku_count = len(
+            _group_problems_by_product(_problems_to_records(priority_source))
+        )
+    else:
+        priority_sku_count = len(_group_problems_by_product(priority_records))
     trust_score = _report_trust_score(records)
     has_major_drop = (
         to_number((summary_stats or {}).get("orderSumDynamic")) <= -15
@@ -2949,8 +3125,10 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         priority_line,
         below_fact_line,
         _build_low_priority_signals_block(records),
-        _build_forecast_risks_block(records),
+        _build_top_drops_block(problem_products),
+        _build_top_growth_block(problem_products),
         _build_stock_eta_block(records),
+        _build_stock_risks_block(records),
         _build_api_coverage_debug_block(summary_stats),
     ]
 
@@ -2972,11 +3150,10 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
             _build_executive_insight(
                 problem_products, root_cause_insights, summary_stats
             ),
-            _build_perfume_intelligence_block(summary_stats),
             _build_executive_actions_block(main_records, root_cause_insights, records),
             _build_executive_top_problems(problem_products, root_cause_insights),
-            _build_executive_stocks_block(priority_records, summary_stats),
             _build_executive_ads_block(priority_records, summary_stats),
+            _build_executive_stocks_block(priority_records, summary_stats),
         ]
     )
 
