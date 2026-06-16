@@ -1431,6 +1431,18 @@ def _ads_summary_lines(ads_summary):
         lines.append(f"Проблемных рекламных SKU: {_format_number(problem_sku)}")
     if problem_signals is not None:
         lines.append(f"Рекламных сигналов: {_format_number(problem_signals)}")
+    lines.append(
+        "Товары с критически низким CTR рекламы: "
+        f"{_format_number(ads_summary.get('lowAdsCtrSku', 0))}"
+    )
+    lines.append(
+        "Товары с высокой стоимостью клика: "
+        f"{_format_number(ads_summary.get('highCpcSku', 0))}"
+    )
+    lines.append(
+        "Товары, где реклама почти не даёт переходов: "
+        f"{_format_number(ads_summary.get('lowAdsTrafficShareSku', 0))}"
+    )
     lines.append("")
     if _ads_has_incomplete_metric_history(ads_summary):
         lines.extend(
@@ -2390,11 +2402,65 @@ def _format_ads_metric_pair(totals, metric, suffix=""):
     return f"{_format_number(previous)}{suffix} → {_format_number(current)}{suffix}"
 
 
-def _product_ads_conclusion(totals, traffic_dynamic, orders_dynamic):
+def _product_ads_traffic_share(product, totals):
+    existing_share = product.get("adsTrafficShare") or product.get("ads_traffic_share")
+    if _is_present(existing_share):
+        return to_number(existing_share)
+    open_count = to_number(
+        product.get("openCount")
+        or product.get("selectedOpenCount")
+        or product.get("open_count")
+    )
+    if open_count <= 0:
+        return None
+    return round(to_number(totals.get("clicks")) / open_count * 100, 2)
+
+
+def _is_high_ads_cpc(value):
+    return to_number(value) >= 1000
+
+
+def _product_ads_conclusion(
+    totals, traffic_dynamic, orders_dynamic, ads_traffic_share=None
+):
+    impressions = to_number(totals.get("impressions"))
+    ctr = to_number(totals.get("ctr"))
+    cpc = to_number(totals.get("cpc"))
+    drr = to_number(totals.get("drr"))
     impressions_dynamic = _ads_metric_dynamic(totals, "impressions")
     ctr_dynamic = _ads_metric_dynamic(totals, "ctr")
     cpc_dynamic = _ads_metric_dynamic(totals, "cpc")
     ads_orders_dynamic = _ads_metric_dynamic(totals, "orders")
+    lines = []
+
+    if impressions > 1000 and ctr < 0.1:
+        lines.append(
+            "Реклама получила много показов, но почти не дала кликов. "
+            "Проверить релевантность запросов, позицию, ставку, цену и первое фото."
+        )
+    if (
+        ads_traffic_share is not None
+        and ads_traffic_share < 10
+        and traffic_dynamic is not None
+        and traffic_dynamic < 0
+    ):
+        lines.append(
+            "Просадка переходов скорее связана не с рекламой, а с органикой/позициями/карточкой: "
+            f"реклама дала только {_format_number(ads_traffic_share)}% переходов."
+        )
+    if ctr < 0.1 and _is_high_ads_cpc(cpc):
+        lines.append(
+            "Рекламный трафик неэффективен: низкий CTR и высокая стоимость клика."
+        )
+    if drr > 30:
+        lines.append("ДРР высокий, рекламу нужно проверить на окупаемость.")
+
+    if lines:
+        if ctr < 0.1 or _is_high_ads_cpc(cpc):
+            lines.append(
+                "Реклама не объясняет падение общего трафика, но сама работает неэффективно."
+            )
+        return " ".join(lines)
 
     if (
         traffic_dynamic is not None
@@ -2419,8 +2485,6 @@ def _product_ads_conclusion(totals, traffic_dynamic, orders_dynamic):
         return "Аукцион стал дороже: стоимость клика выросла."
     if ads_orders_dynamic is not None and ads_orders_dynamic < 0:
         return "Реклама стала хуже конвертировать в заказы."
-    if orders_dynamic is not None and orders_dynamic < 0:
-        return "Реклама не выглядит главной причиной просадки. Проверить карточку, цену, доставку и остатки."
     return "Реклама не выглядит главной причиной просадки. Проверить карточку, цену, доставку и остатки."
 
 
@@ -2431,6 +2495,8 @@ def _build_product_ads_breakdown(
     if totals is None:
         return "   Рекламных данных по товару нет: товар не найден в рекламной статистике WB Ads."
 
+    ads_traffic_share = _product_ads_traffic_share(product, totals)
+
     return "\n".join(
         [
             "   📢 <b>Реклама по товару</b>",
@@ -2440,8 +2506,9 @@ def _build_product_ads_breakdown(
             f"   — Стоимость клика: {_format_ads_metric_pair(totals, 'cpc', ' ₽')}",
             f"   — ДРР: {_format_ads_metric_pair(totals, 'drr', '%')}",
             f"   — Заказы с рекламы: {_format_ads_metric_pair(totals, 'orders')}",
+            f"   — Доля рекламы в переходах: {_format_number(ads_traffic_share)}%",
             f"   — Ставка средняя: {_format_ads_metric_pair(totals, 'bid', ' ₽')}",
-            f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic)}",
+            f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share)}",
         ]
     )
 

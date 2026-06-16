@@ -425,6 +425,21 @@ def _normalize_problem(problem):
         "ads_traffic_share": _to_number(
             _first_present(problem, ["ads_traffic_share", "adsTrafficShare"])
         ),
+        "low_ads_ctr_flag": _to_bool(
+            _first_present(
+                problem, ["low_ads_ctr_flag", "lowAdsCTRFlag"], default=False
+            )
+        ),
+        "high_cpc_flag": _to_bool(
+            _first_present(problem, ["high_cpc_flag", "highCPCFlag"], default=False)
+        ),
+        "low_ads_traffic_share_flag": _to_bool(
+            _first_present(
+                problem,
+                ["low_ads_traffic_share_flag", "lowAdsTrafficShareFlag"],
+                default=False,
+            )
+        ),
         "organic_traffic_share": _to_number(
             _first_present(problem, ["organic_traffic_share", "organicTrafficShare"])
         ),

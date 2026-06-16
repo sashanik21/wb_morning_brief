@@ -37,6 +37,10 @@ ADS_REPORT_COLUMNS = [
     "adsRootCause",
     "adsEfficiencyScore",
     "auctionTemperature",
+    "adsTrafficShare",
+    "lowAdsCTRFlag",
+    "highCPCFlag",
+    "lowAdsTrafficShareFlag",
 ]
 
 CTR_LOW_THRESHOLD = 3
@@ -44,6 +48,10 @@ CPC_GROWTH_THRESHOLD = 15
 CPM_GROWTH_THRESHOLD = 15
 DRR_HIGH_THRESHOLD = 30
 IMPRESSIONS_DROP_THRESHOLD = -20
+CRITICAL_CTR_THRESHOLD = 0.1
+HIGH_CPC_THRESHOLD = 1000
+LOW_ADS_TRAFFIC_SHARE_THRESHOLD = 10
+ADS_TRAFFIC_SHARE_IMPRESSIONS_THRESHOLD = 1000
 
 
 ADS_PROBLEM_LABELS = {
@@ -444,6 +452,10 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "positionDelta": row.get("positionDelta") or "",
         "adsEfficiencyScore": _ads_efficiency_score(row),
         "auctionTemperature": _auction_temperature(row),
+        "adsTrafficShare": row.get("adsTrafficShare", 0),
+        "lowAdsCTRFlag": row.get("lowAdsCTRFlag", False),
+        "highCPCFlag": row.get("highCPCFlag", False),
+        "lowAdsTrafficShareFlag": row.get("lowAdsTrafficShareFlag", False),
         "recommendation": ADS_RECOMMENDATIONS[problem_type],
     }
     problem["businessImpactScore"] = calculate_business_impact_score(problem)
@@ -494,6 +506,34 @@ def _funnel_rows_by_nm_id(funnel_rows):
         for row in records
         if row.get("nmId") not in (None, "")
     }
+
+
+def _enrich_ads_traffic_share(row, funnel_row):
+    open_count = _to_number(
+        (funnel_row or {}).get("openCount")
+        or (funnel_row or {}).get("selectedOpenCount")
+        or row.get("openCount")
+        or row.get("selectedOpenCount")
+    )
+    clicks = _to_number(row.get("clicks"))
+    existing_share = row.get("adsTrafficShare") or row.get("ads_traffic_share")
+    share = _to_number(existing_share) if existing_share not in (None, "") else 0
+    if open_count > 0:
+        share = round(clicks / open_count * 100, 2)
+
+    row["openCount"] = (
+        open_count or row.get("openCount") or row.get("selectedOpenCount") or 0
+    )
+    row["adsTrafficShare"] = share
+    row["lowAdsCTRFlag"] = (
+        _to_number(row.get("impressions")) > ADS_TRAFFIC_SHARE_IMPRESSIONS_THRESHOLD
+        and _to_number(row.get("ctr")) < CRITICAL_CTR_THRESHOLD
+    )
+    row["highCPCFlag"] = _to_number(row.get("cpc")) >= HIGH_CPC_THRESHOLD
+    row["lowAdsTrafficShareFlag"] = (
+        open_count > 0 or existing_share not in (None, "")
+    ) and share < LOW_ADS_TRAFFIC_SHARE_THRESHOLD
+    return row
 
 
 def _append_ads_funnel_links(problems, ads_row, funnel_row):
@@ -724,6 +764,7 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
             )
 
         funnel_row = funnel_by_nm_id.get(str(row.get("nmId")))
+        _enrich_ads_traffic_share(row, funnel_row)
         _append_ads_funnel_links(problems, row, funnel_row)
         for problem in problems:
             if str(problem.get("nmId")) == str(row.get("nmId")):
@@ -855,6 +896,19 @@ def build_ads_summary(ads_rows, ads_problems):
         "bestSku": best_sku,
         "worstSku": worst_sku,
         "overheatedCampaigns": len(overheating),
+        "lowAdsCtrSku": len(
+            {row.get("nmId") for row in ads_rows or [] if row.get("lowAdsCTRFlag")}
+        ),
+        "highCpcSku": len(
+            {row.get("nmId") for row in ads_rows or [] if row.get("highCPCFlag")}
+        ),
+        "lowAdsTrafficShareSku": len(
+            {
+                row.get("nmId")
+                for row in ads_rows or []
+                if row.get("lowAdsTrafficShareFlag")
+            }
+        ),
     }
 
 
@@ -902,6 +956,10 @@ def build_ads_report_rows(ads_rows, ads_problems):
                 or _ads_efficiency_score(row),
                 "auctionTemperature": row.get("auctionTemperature")
                 or _auction_temperature(row),
+                "adsTrafficShare": row.get("adsTrafficShare", 0),
+                "lowAdsCTRFlag": row.get("lowAdsCTRFlag", False),
+                "highCPCFlag": row.get("highCPCFlag", False),
+                "lowAdsTrafficShareFlag": row.get("lowAdsTrafficShareFlag", False),
                 "problemType": problem.get("problemLabel") or "",
                 "recommendation": problem.get("recommendation") or "",
                 "baselineReliability": problem.get("baselineReliability") or "",
