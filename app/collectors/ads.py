@@ -423,23 +423,49 @@ def _merge_previous_period(current_rows, previous_rows):
     return current_rows
 
 
+def _append_campaign_rows(target_rows, campaign):
+    campaign_rows = []
+    nm_rows = _flatten_nm_stats(campaign)
+    if nm_rows:
+        campaign_rows.extend(
+            _aggregate_campaign(campaign, nm_row) for nm_row in nm_rows
+        )
+    else:
+        campaign_rows.append(_aggregate_campaign(campaign))
+    target_rows.extend(campaign_rows)
+    return campaign_rows
+
+
+def _log_ads_campaign_result(campaign_id, status, rows):
+    print("ADS CAMPAIGN RESULT:")
+    print(f"campaign_id: {campaign_id}")
+    print(f"status: {status}")
+    print(f"rows: {rows}")
+
+
 def _collect_ads_stats_from_api(token, campaign_ids, report_date):
     current_date = report_date.strftime("%Y-%m-%d")
     previous_date = (report_date - timedelta(days=1)).strftime("%Y-%m-%d")
     current_rows = []
     previous_rows = []
 
-    batch_size = max(1, _env_int("WB_ADS_BATCH_SIZE", ADS_CAMPAIGN_BATCH_SIZE))
     request_sleep = _env_int("WB_ADS_REQUEST_SLEEP_SECONDS", 2)
     loaded_campaign_ids = set()
+    attempted_campaign_ids = set()
+    success_campaign_ids = set()
+    partial_campaign_ids = set()
+    failed_campaign_ids = set()
     global _ADS_RATE_LIMIT_STATS
-    for campaign_id_batch in _chunked(campaign_ids, batch_size):
+    for campaign_id in campaign_ids or []:
+        attempted_campaign_ids.add(str(campaign_id))
         if _ads_collect_time_exceeded():
             _ADS_RATE_LIMIT_STATS["partial"] = True
             _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = True
+            failed_campaign_ids.add(str(campaign_id))
+            _log_ads_campaign_result(campaign_id, "error", 0)
             break
         current_payload, current_status = _request_ads_fullstats(
-            token, campaign_id_batch, current_date, current_date
+            token, [campaign_id], current_date, current_date
         )
         _ads_sleep(request_sleep)
         if _ads_collect_time_exceeded():
@@ -447,67 +473,52 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date):
             _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = True
             previous_payload = None
         else:
-            previous_payload, _ = _request_ads_fullstats(
-                token, campaign_id_batch, previous_date, previous_date
+            previous_payload, previous_status = _request_ads_fullstats(
+                token, [campaign_id], previous_date, previous_date
             )
         _ads_sleep(request_sleep)
 
         if current_payload is None:
-            if current_status == 429 and len(campaign_id_batch) > 1:
-                for single_campaign_id in campaign_id_batch:
-                    single_payload, single_status = _request_ads_fullstats(
-                        token, [single_campaign_id], current_date, current_date
-                    )
-                    _ads_sleep(request_sleep)
-                    if _ads_collect_time_exceeded():
-                        _ADS_RATE_LIMIT_STATS["partial"] = True
-                        _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = True
-                        break
-                    if single_payload is None:
-                        if single_status == 429:
-                            _ADS_RATE_LIMIT_STATS["partial"] = True
-                        continue
-                    for campaign in single_payload:
-                        loaded_campaign_ids.add(
-                            str(_campaign_id(campaign) or single_campaign_id)
-                        )
-                        nm_rows = _flatten_nm_stats(campaign)
-                        if nm_rows:
-                            current_rows.extend(
-                                _aggregate_campaign(campaign, nm_row)
-                                for nm_row in nm_rows
-                            )
-                        else:
-                            current_rows.append(_aggregate_campaign(campaign))
-                continue
             _ADS_RATE_LIMIT_STATS["partial"] = True
+            if current_status == 429:
+                partial_campaign_ids.add(str(campaign_id))
+                _log_ads_campaign_result(campaign_id, "partial", 0)
+            else:
+                failed_campaign_ids.add(str(campaign_id))
+                _log_ads_campaign_result(campaign_id, "error", 0)
             continue
 
         _debug_ads_raw(current_payload, report_date)
+        rows_before = len(current_rows)
         for campaign in current_payload:
-            loaded_campaign_ids.add(str(_campaign_id(campaign) or ""))
-            nm_rows = _flatten_nm_stats(campaign)
-            if nm_rows:
-                current_rows.extend(
-                    _aggregate_campaign(campaign, nm_row) for nm_row in nm_rows
-                )
-            else:
-                current_rows.append(_aggregate_campaign(campaign))
+            loaded_campaign_ids.add(str(_campaign_id(campaign) or campaign_id))
+            _append_campaign_rows(current_rows, campaign)
+
+        campaign_rows_count = len(current_rows) - rows_before
+        if previous_payload is None and (
+            _ADS_RATE_LIMIT_STATS.get("stopped_by_time_limit") or previous_status == 429
+        ):
+            _ADS_RATE_LIMIT_STATS["partial"] = True
+            partial_campaign_ids.add(str(campaign_id))
+            result_status = "partial"
+        else:
+            result_status = "success"
+            success_campaign_ids.add(str(campaign_id))
 
         if previous_payload:
             for campaign in previous_payload:
-                nm_rows = _flatten_nm_stats(campaign)
-                if nm_rows:
-                    previous_rows.extend(
-                        _aggregate_campaign(campaign, nm_row) for nm_row in nm_rows
-                    )
-                else:
-                    previous_rows.append(_aggregate_campaign(campaign))
+                _append_campaign_rows(previous_rows, campaign)
+
+        _log_ads_campaign_result(campaign_id, result_status, campaign_rows_count)
 
     _ADS_RATE_LIMIT_STATS["campaigns_requested"] = len(campaign_ids or [])
     _ADS_RATE_LIMIT_STATS["campaigns_loaded"] = len(
         {cid for cid in loaded_campaign_ids if cid}
     )
+    _ADS_RATE_LIMIT_STATS["campaigns_attempted"] = len(attempted_campaign_ids)
+    _ADS_RATE_LIMIT_STATS["campaigns_success"] = len(success_campaign_ids)
+    _ADS_RATE_LIMIT_STATS["campaigns_partial"] = len(partial_campaign_ids)
+    _ADS_RATE_LIMIT_STATS["campaigns_failed"] = len(failed_campaign_ids)
     _ADS_RATE_LIMIT_STATS["partial"] = bool(_ADS_RATE_LIMIT_STATS.get("partial"))
     _ADS_RATE_LIMIT_STATS["partial_rows_saved"] = len(current_rows)
 
@@ -732,6 +743,14 @@ def collect_ads_stats(report_date=None, seller_id=None):
     print(
         f"campaigns loaded: {_ADS_RATE_LIMIT_STATS.get('campaigns_loaded') or len(row_campaign_ids)}"
     )
+    print("ADS COLLECTION SUMMARY:")
+    print(
+        f"campaigns attempted: {_ADS_RATE_LIMIT_STATS.get('campaigns_attempted', len(campaign_ids))}"
+    )
+    print(f"campaigns success: {_ADS_RATE_LIMIT_STATS.get('campaigns_success', 0)}")
+    print(f"campaigns partial: {_ADS_RATE_LIMIT_STATS.get('campaigns_partial', 0)}")
+    print(f"campaigns failed: {_ADS_RATE_LIMIT_STATS.get('campaigns_failed', 0)}")
+    print(f"ads rows total: {len(ads_rows)}")
     elapsed = round(time.monotonic() - collect_started_at, 2)
     _ADS_RATE_LIMIT_STATS["elapsed_seconds"] = elapsed
     print("ADS COLLECTOR TIME LIMIT:")
