@@ -258,7 +258,7 @@ def main():
     sku_not_in_products = len(enriched_products) - sku_in_products
     print("=" * 50)
 
-    ads_data = collect_ads_stats()
+    ads_data = collect_ads_stats(seller_id=seller_id)
     raw_ads_rows_count = len(ads_data or [])
     ads_data, ads_matching_debug = attribute_ads_rows(ads_data, wb_cards + products)
     ads_data = aggregate_ads_rows(ads_data)
@@ -386,6 +386,11 @@ def main():
     summary_stats["adsApiHad429"] = ads_api_had_429()
     summary_stats["adsApiPartial"] = ads_api_had_429()
     summary_stats["adsRateLimit"] = ads_rate_limit_stats()
+    summary_stats["adsCoverageConfidence"] = ads_rate_limit_stats().get(
+        "adsCoverageConfidence"
+    )
+    if isinstance(ads_summary, dict):
+        ads_summary["adsCoverageConfidence"] = summary_stats["adsCoverageConfidence"]
     baseline_counts = {}
     for problem in all_problems:
         baseline_type = problem.get("baselineType") or problem.get("baseline_type")

@@ -1,5 +1,5 @@
 import os
-from datetime import date
+from datetime import date, datetime
 from urllib.parse import urlsplit, urlunsplit
 
 from supabase import create_client
@@ -562,6 +562,77 @@ def _normalize_ads_metric_row(row):
         ),
         "raw_json": row,
     }
+
+
+def _normalize_ads_campaign_cache_row(seller_id, row):
+    return {
+        "seller_id": _string_or_none(seller_id),
+        "campaign_id": _to_int(
+            row.get("campaign_id") or row.get("campaignId") or row.get("advertId")
+        ),
+        "campaign_name": _first_present(
+            row, ["campaign_name", "campaignName", "advertName", "name", "title"]
+        ),
+        "campaign_status": _first_present(
+            row, ["campaign_status", "campaignStatus", "status", "state"]
+        ),
+        "campaign_type": _first_present(
+            row, ["campaign_type", "campaignType", "type", "advertType"]
+        ),
+        "last_seen_at": datetime.now().isoformat(),
+        "raw_json": row.get("raw_json") or row,
+    }
+
+
+def get_ads_campaigns_cache(seller_id):
+    rows = _execute_read(
+        _get_client()
+        .table("ads_campaigns_cache")
+        .select("*")
+        .eq("seller_id", _string_or_none(seller_id))
+        .order("last_stats_at", desc=False, nullsfirst=True),
+        "ads_campaigns_cache",
+    )
+    return rows
+
+
+def save_ads_campaigns_cache(seller_id, campaigns):
+    normalized_rows = _drop_empty_required(
+        [_normalize_ads_campaign_cache_row(seller_id, row) for row in campaigns or []],
+        ["seller_id", "campaign_id"],
+    )
+    print(f"SUPABASE SAVE ADS CAMPAIGNS CACHE: {len(normalized_rows)} rows")
+    if normalized_rows:
+        _execute_write(
+            _get_client()
+            .table("ads_campaigns_cache")
+            .upsert(normalized_rows, on_conflict="seller_id,campaign_id"),
+            "ads_campaigns_cache",
+        )
+
+
+def update_ads_campaign_stats_status(seller_id, campaign_ids, status):
+    normalized_ids = [
+        cid
+        for cid in (_to_int(value) for value in campaign_ids or [])
+        if cid is not None
+    ]
+    if not normalized_ids:
+        return
+    print(
+        "SUPABASE UPDATE ADS CAMPAIGN STATS STATUS: "
+        f"{len(normalized_ids)} rows status={status}"
+    )
+    _execute_write(
+        _get_client()
+        .table("ads_campaigns_cache")
+        .update(
+            {"last_stats_at": datetime.now().isoformat(), "last_stats_status": status}
+        )
+        .eq("seller_id", _string_or_none(seller_id))
+        .in_("campaign_id", normalized_ids),
+        "ads_campaigns_cache",
+    )
 
 
 def get_ads_history(seller_id, campaign_id, nm_id=None, days=7):

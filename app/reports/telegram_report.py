@@ -1250,9 +1250,27 @@ def _format_qbiki_product_line(index, row):
 
 
 def _ads_api_429_limitation_line(summary_stats):
-    if (summary_stats or {}).get("adsApiPartial"):
+    summary_stats = summary_stats or {}
+    rate_limit = summary_stats.get("adsRateLimit") or {}
+    total = rate_limit.get("campaigns_total") or rate_limit.get("campaigns_requested")
+    processed = rate_limit.get("campaigns_loaded") or 0
+    confidence = summary_stats.get("adsCoverageConfidence") or rate_limit.get(
+        "adsCoverageConfidence"
+    )
+    if total and processed < total:
+        confidence_label = {
+            "LOW": "низкая",
+            "MEDIUM": "средняя",
+            "HIGH": "высокая",
+        }.get(confidence, "н/д")
+        return (
+            f"⚠️ Реклама: обработано {_format_number(processed)} из {_format_number(total)} кампаний. "
+            f"Данные частичные. Надежность рекламного блока: {confidence_label} — "
+            f"обработано {_format_number(processed)} из {_format_number(total)} кампаний."
+        )
+    if summary_stats.get("adsApiPartial"):
         return "⚠️ Реклама: данные частичные, часть запросов WB API не успела/не смогла выполниться."
-    if (summary_stats or {}).get("adsApiHad429"):
+    if summary_stats.get("adsApiHad429"):
         return "⚠️ Рекламные данные частичные: WB API вернул ошибку или ограничил часть запросов."
     return ""
 
@@ -1302,6 +1320,8 @@ def _build_qbiki_ads_profitability_block(summary_stats):
         )
     if len(lines) == 1:
         lines.append("данных для вывода по прибыльности рекламы недостаточно")
+    if limitation_line:
+        lines.append(limitation_line)
     return "\n".join(lines)
 
 
@@ -1358,6 +1378,8 @@ def _metric_change_state(previous, current, stable_threshold=5):
 
 def _ads_summary_conclusion(ads_summary):
     ads_summary = ads_summary or {}
+    if ads_summary.get("adsCoverageConfidence") == "LOW":
+        return "По обработанной части рекламных кампаний критичных изменений не видно, но покрытие рекламы низкое."
     if _ads_has_incomplete_metric_history(ads_summary):
         return "История рекламы пока короткая, выводы предварительные."
     ctr = _metric_change_state(
