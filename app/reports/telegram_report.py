@@ -1033,6 +1033,15 @@ def _format_number(value):
     return f"{number:,.2f}".replace(",", " ").replace(".", ",")
 
 
+def _format_percent_one_decimal(value):
+    number = to_number(value)
+    if number <= 0:
+        return "0%"
+    if number < 1:
+        return "<1%"
+    return f"{number:.1f}".replace(".", ",") + "%"
+
+
 def _build_summary_block(summary_stats):
     if not summary_stats:
         return ""
@@ -1394,100 +1403,26 @@ def _ads_summary_conclusion(ads_summary):
 
 def _ads_summary_lines(ads_summary):
     ads_summary = ads_summary or {}
-    lines = ["📢 <b>Реклама</b>"]
-    selected_period = ads_summary.get("selectedPeriod")
-    past_period = ads_summary.get("pastPeriod")
-    if selected_period and past_period:
-        lines.append(
-            "Период: "
-            f"{html.escape(str(selected_period))}, сравнение с {html.escape(str(past_period))}"
-        )
-    raw_rows = ads_summary.get("rawRows")
-    aggregated_rows = ads_summary.get("aggregatedRows")
     advertised_sku = ads_summary.get("advertisedSku")
     total_sku = ads_summary.get("totalSku")
-    if (
-        raw_rows is not None
-        or aggregated_rows is not None
-        or advertised_sku is not None
-    ):
-        lines.extend(["Данные рекламы:"])
-        if raw_rows is not None:
-            lines.append(f"сырых строк: {_format_number(raw_rows)}")
-        if aggregated_rows is not None:
-            lines.append(
-                f"агрегировано до: {_format_number(aggregated_rows)} товаров/кампаний"
-            )
-        if advertised_sku is not None:
-            total_suffix = (
-                f"/{_format_number(total_sku)}" if total_sku is not None else ""
-            )
-            lines.append(
-                f"товаров с рекламой: {_format_number(advertised_sku)}{total_suffix}"
-            )
-    problem_sku = ads_summary.get("problemSku") or ads_summary.get("problemAdsSku")
-    problem_signals = ads_summary.get("problemSignals") or ads_summary.get("problems")
-    if problem_sku is not None:
-        lines.append(f"Проблемных рекламных SKU: {_format_number(problem_sku)}")
-    if problem_signals is not None:
-        lines.append(f"Рекламных сигналов: {_format_number(problem_signals)}")
-    lines.append(
-        "Товары с критически низким CTR рекламы: "
-        f"{_format_number(ads_summary.get('lowAdsCtrSku', 0))}"
+    coverage = (
+        f"{_format_number(advertised_sku)}/{_format_number(total_sku)} товаров"
+        if advertised_sku is not None and total_sku is not None
+        else "данные есть"
     )
-    lines.append(
-        "Товары с высокой стоимостью клика: "
-        f"{_format_number(ads_summary.get('highCpcSku', 0))}"
-    )
-    lines.append(
-        "Товары, где реклама почти не даёт переходов: "
-        f"{_format_number(ads_summary.get('lowAdsTrafficShareSku', 0))}"
-    )
-    lines.append("")
+    lines = [
+        "📢 <b>Реклама:</b> "
+        f"{coverage}, CTR {_format_number(ads_summary.get('currentCtr'))}%, "
+        f"клик {_format_number(ads_summary.get('currentCpc'))} ₽, "
+        f"ДРР {_format_number(ads_summary.get('currentDrr'))}%."
+    ]
+    if ads_summary.get("adsApiHad429") or ads_summary.get("hasApi429"):
+        lines[0] += " Данные частичные: WB API 429."
     if _ads_has_incomplete_metric_history(ads_summary):
-        lines.extend(
-            [
-                "История рекламы пока короткая, динамика ещё накапливается.",
-                _format_ads_current_metrics(ads_summary),
-                "История рекламы пока короткая, выводы предварительные.",
-            ]
-        )
+        lines.append("История короткая, выводы предварительные.")
         return lines
 
-    lines.extend(
-        [
-            "Общие показатели:",
-            "— CTR рекламы: "
-            + _format_ads_metric_transition(
-                ads_summary.get("previousCtr"), ads_summary.get("currentCtr"), "%"
-            ),
-            "— Стоимость клика: "
-            + _format_ads_metric_transition(
-                ads_summary.get("previousCpc"), ads_summary.get("currentCpc"), " ₽"
-            ),
-            "— ДРР: "
-            + _format_ads_metric_transition(
-                ads_summary.get("previousDrr"), ads_summary.get("currentDrr"), "%"
-            ),
-            (
-                "— Средняя ставка: "
-                + _format_ads_metric_transition(
-                    ads_summary.get("previousAvgBid") or ads_summary.get("previousBid"),
-                    ads_summary.get("currentAvgBid") or ads_summary.get("currentBid"),
-                    " ₽",
-                )
-                if (
-                    ads_summary.get("previousAvgBid")
-                    or ads_summary.get("previousBid")
-                    or ads_summary.get("currentAvgBid")
-                    or ads_summary.get("currentBid")
-                )
-                else ""
-            ),
-            "",
-            _ads_summary_conclusion(ads_summary),
-        ]
-    )
+    lines.append(_ads_summary_conclusion(ads_summary))
     return lines
 
 
@@ -1878,14 +1813,18 @@ def _build_executive_actions_block(
     return "✅ <b>Что делать сегодня</b>\n" + "\n".join(lines)
 
 
-def _build_executive_top_problems(problem_products, root_cause_insights):
+def _build_executive_top_problems(
+    problem_products, root_cause_insights, exclude_keys=None
+):
     if not problem_products:
         return ""
 
+    exclude_keys = exclude_keys or set()
     insights_by_key = _build_insights_by_key(root_cause_insights)
     top_products = [
         product
         for product in problem_products
+        if _problem_group_key(product) not in exclude_keys
         if _has_executive_problem_text(_product_primary_problem(product))
     ][:EXECUTIVE_PROBLEMS_LIMIT]
     if not top_products:
@@ -2434,10 +2373,24 @@ def _product_ads_conclusion(
     lines = []
 
     if impressions > 1000 and ctr < 0.1:
-        lines.append(
-            "Реклама получила много показов, но почти не дала кликов. "
-            "Проверить релевантность запросов, позицию, ставку, цену и первое фото."
+        clicks = to_number(totals.get("clicks"))
+        if (
+            ads_traffic_share is not None
+            and ads_traffic_share < 10
+            and traffic_dynamic is not None
+            and traffic_dynamic < 0
+        ):
+            return (
+                "реклама почти не даёт переходов — "
+                f"{_format_number(clicks)} клика при {_format_number(impressions)} показах. "
+                "Просадка переходов скорее в органике/позициях/карточке, "
+                "но сама реклама неэффективна."
+            )
+        return (
+            "реклама получила много показов, но почти не дала кликов — "
+            f"{_format_number(clicks)} клика при {_format_number(impressions)} показах."
         )
+
     if (
         ads_traffic_share is not None
         and ads_traffic_share < 10
@@ -2446,7 +2399,7 @@ def _product_ads_conclusion(
     ):
         lines.append(
             "Просадка переходов скорее связана не с рекламой, а с органикой/позициями/карточкой: "
-            f"реклама дала только {_format_number(ads_traffic_share)}% переходов."
+            f"реклама дала только {_format_percent_one_decimal(ads_traffic_share)} переходов."
         )
     if ctr < 0.1 and _is_high_ads_cpc(cpc):
         lines.append(
@@ -2456,11 +2409,7 @@ def _product_ads_conclusion(
         lines.append("ДРР высокий, рекламу нужно проверить на окупаемость.")
 
     if lines:
-        if ctr < 0.1 or _is_high_ads_cpc(cpc):
-            lines.append(
-                "Реклама не объясняет падение общего трафика, но сама работает неэффективно."
-            )
-        return " ".join(lines)
+        return lines[0]
 
     if (
         traffic_dynamic is not None
@@ -2506,7 +2455,7 @@ def _build_product_ads_breakdown(
             f"   — Стоимость клика: {_format_ads_metric_pair(totals, 'cpc', ' ₽')}",
             f"   — ДРР: {_format_ads_metric_pair(totals, 'drr', '%')}",
             f"   — Заказы с рекламы: {_format_ads_metric_pair(totals, 'orders')}",
-            f"   — Доля рекламы в переходах: {_format_number(ads_traffic_share)}%",
+            f"   — Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}",
             f"   — Ставка средняя: {_format_ads_metric_pair(totals, 'bid', ' ₽')}",
             f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share)}",
         ]
@@ -2672,7 +2621,8 @@ def _build_executive_stocks_block(records, summary_stats=None):
 
     if not stock_records:
         logistics_text = _format_logistics_pipeline(summary_pipeline)
-        return f"📦 <b>Остатки:</b> критичных сигналов нет\n{logistics_text}"
+        logistics_summary = logistics_text.replace("\n- ", "; ")
+        return f"📦 <b>Остатки:</b> критичных сигналов нет\n{logistics_summary}"
 
     records_pipeline = {
         "incoming": sum(
@@ -2703,7 +2653,7 @@ def _build_executive_stocks_block(records, summary_stats=None):
         "📦 <b>Остатки:</b> "
         f"критичных товаров {_format_number(len(stock_records))}. "
         f"Фокус: {title} — {recommendation}"
-        f"\n{_format_logistics_pipeline(pipeline)}"
+        f"\n{_format_logistics_pipeline(pipeline).replace(chr(10) + '- ', '; ')}"
     )
 
 
@@ -3218,7 +3168,7 @@ def _build_stock_eta_block(records):
         stock_forecasts, key=lambda item: _forecast_eta_hours(item) or 9999
     )
     lines = []
-    for record in stock_forecasts[:FORECAST_ALERT_LIMIT]:
+    for record in stock_forecasts[:2]:
         eta = (
             _format_forecast_eta(record)
             or f"≈{_format_number(record.get('daysUntilOOS'))} дня"
@@ -3440,15 +3390,20 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         if not priority_sku_count and below_fact_count
         else ""
     )
+    top_drops_block = _build_top_drops_block(problem_products, summary_stats)
+    top_drop_keys = (
+        {_problem_group_key(product) for product in problem_products[:3]}
+        if top_drops_block
+        else set()
+    )
     message_parts = [
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
         f"Надежность оценки: {html.escape(_format_report_trust_score(trust_score))}",
         priority_line,
         below_fact_line,
-        f"Низкоприоритетных сигналов: {_format_number(sum(1 for record in records if _is_below_abc_threshold(record)))}",
         _build_low_priority_signals_block(records),
-        _build_top_drops_block(problem_products, summary_stats),
+        top_drops_block,
         _build_top_growth_block(problem_products),
         _build_stock_eta_block(records),
         _build_stock_risks_block(records),
@@ -3474,7 +3429,9 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
                 problem_products, root_cause_insights, summary_stats
             ),
             _build_executive_actions_block(main_records, root_cause_insights, records),
-            _build_executive_top_problems(problem_products, root_cause_insights),
+            _build_executive_top_problems(
+                problem_products, root_cause_insights, top_drop_keys
+            ),
             _build_executive_ads_block(priority_records, summary_stats),
             _build_executive_stocks_block(priority_records, summary_stats),
         ]
