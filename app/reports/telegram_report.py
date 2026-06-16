@@ -1492,6 +1492,129 @@ def _ads_campaigns_success_zero(summary_stats=None, ads_summary=None):
     return to_number(success) == 0 and to_number(attempted) > 0
 
 
+def _ads_processed_campaigns_count(summary_stats=None, ads_summary=None):
+    rate_limit = (summary_stats or {}).get("adsRateLimit") or {}
+    value = (
+        rate_limit.get("campaigns_success")
+        or rate_limit.get("campaigns_loaded")
+        or (ads_summary or {}).get("campaignsSuccess")
+        or (ads_summary or {}).get("processedCampaigns")
+        or (ads_summary or {}).get("campaigns")
+    )
+    return to_number(value)
+
+
+def _ads_list_values(value):
+    if value in (None, ""):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_values = value
+    else:
+        raw_values = str(value).replace(";", ",").split(",")
+    return [str(item).strip() for item in raw_values if str(item).strip()]
+
+
+def _ads_row_campaign_ids(row):
+    values = []
+    for key in ("campaignId", "advertId", "campaign_id", "campaignIds", "campaign_ids"):
+        for value in _ads_list_values((row or {}).get(key)):
+            if value not in values:
+                values.append(value)
+    return values
+
+
+def _ads_row_campaign_types(row):
+    values = []
+    for key in ("campaignType", "campaign_type", "campaignTypes", "campaign_types"):
+        for value in _ads_list_values((row or {}).get(key)):
+            label = _ads_campaign_type_label(value)
+            if label not in values:
+                values.append(label)
+    if not values:
+        values.append(_ads_campaign_type_label(None))
+    return values
+
+
+def _ads_row_product_title(row):
+    for key in (
+        "title",
+        "productName",
+        "product_name",
+        "name",
+        "subject",
+        "campaignName",
+    ):
+        value = (row or {}).get(key)
+        if value not in (None, ""):
+            return html.escape(str(value))
+    nm_id = (row or {}).get("nmId") or (row or {}).get("nm_id")
+    if nm_id not in (None, ""):
+        return f"WB {html.escape(str(nm_id))}"
+    return "Без названия"
+
+
+def _ads_processed_campaign_lines(summary_stats=None, ads_summary=None):
+    rows = [
+        row
+        for row in (summary_stats or {}).get("adsRows") or []
+        if isinstance(row, dict)
+    ]
+    if _ads_processed_campaigns_count(summary_stats, ads_summary) <= 0 and not rows:
+        return []
+
+    lines = ["Обработанные кампании:"]
+    if not rows:
+        lines.append("Данные по ID кампаний не получены от WB Ads API.")
+        return lines
+
+    grouped_rows = {}
+    for row in rows:
+        campaign_ids = _ads_row_campaign_ids(row)
+        key = tuple(campaign_ids) if campaign_ids else ("row", id(row))
+        if key not in grouped_rows:
+            grouped_rows[key] = {
+                "campaignIds": campaign_ids,
+                "campaignTypes": _ads_row_campaign_types(row),
+                "title": _ads_row_product_title(row),
+                "impressions": 0,
+                "clicks": 0,
+                "spend": 0,
+                "ordersSum": 0,
+            }
+        grouped_rows[key]["impressions"] += to_number(row.get("impressions"))
+        grouped_rows[key]["clicks"] += to_number(row.get("clicks"))
+        grouped_rows[key]["spend"] += to_number(row.get("spend"))
+        grouped_rows[key]["ordersSum"] += to_number(row.get("ordersSum"))
+
+    for index, campaign in enumerate(list(grouped_rows.values())[:5], start=1):
+        campaign_ids = campaign["campaignIds"]
+        campaign_types = campaign["campaignTypes"] or [_ads_campaign_type_label(None)]
+        drr = (
+            campaign["spend"] / campaign["ordersSum"] * 100
+            if campaign["ordersSum"]
+            else 0
+        )
+        if len(campaign_ids) > 1:
+            id_line = f"ID кампаний: {html.escape(', '.join(campaign_ids))}"
+        elif campaign_ids:
+            id_line = f"ID кампании: {html.escape(campaign_ids[0])}"
+        else:
+            id_line = "ID кампании: не получен от WB Ads API"
+        unique_types = list(dict.fromkeys(campaign_types))
+        type_label = html.escape(", ".join(unique_types))
+        type_line = "Типы кампаний" if len(unique_types) > 1 else "Тип кампании"
+        lines.append(
+            f"{index}. {id_line}\n"
+            f"   {type_line}: {type_label}\n"
+            f"   Товар: {campaign['title']}\n"
+            f"   Показы: {_format_number(campaign['impressions'])}\n"
+            f"   Клики: {_format_number(campaign['clicks'])}\n"
+            f"   Расход: {_format_money(campaign['spend'])}\n"
+            f"   ДРР: {_format_number(drr)}%"
+        )
+    return lines
+
+
 def _ads_summary_lines(ads_summary, summary_stats=None):
     ads_summary = ads_summary or {}
     advertised_sku = ads_summary.get("advertisedSku")
@@ -1508,8 +1631,10 @@ def _ads_summary_lines(ads_summary, summary_stats=None):
         f"клик {_format_number(ads_summary.get('currentCpc'))} ₽, "
         f"ДРР {_format_number(ads_summary.get('currentDrr'))}%.",
     ]
-    if _ads_rows_count(summary_stats, ads_summary) > 0:
+    processed_campaign_lines = _ads_processed_campaign_lines(summary_stats, ads_summary)
+    if _ads_rows_count(summary_stats, ads_summary) > 0 or processed_campaign_lines:
         lines.append(f"Источник: {source}")
+    lines.extend(processed_campaign_lines)
     if ads_summary.get("fallbackUsed"):
         lines.append(
             "⚠️ Актуальные данные рекламы не получены от WB. "
@@ -2725,10 +2850,13 @@ def _ads_campaign_type_label(value):
         "auction": "Аукцион",
         "auto": "Автоматическая кампания",
         "automatic": "Автоматическая кампания",
+        "search": "Поиск",
+        "catalog": "Каталог",
         "search_catalog": "Поиск + каталог",
         "search+catalog": "Поиск + каталог",
+        "unknown": "Тип не определён",
     }
-    return mapping.get(text.lower(), text or "не указан")
+    return mapping.get(text.lower(), text or "Тип не определён")
 
 
 def _format_ads_campaign_meta(totals):
