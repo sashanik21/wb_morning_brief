@@ -2126,6 +2126,16 @@ def _product_metric_problem(product, metric):
     return None
 
 
+def _product_metric_current_value(product, metric):
+    problem = _product_metric_problem(product, metric)
+    if not problem:
+        return None
+    selected = problem.get("selectedValue")
+    if _is_present(selected):
+        return to_number(selected)
+    return None
+
+
 def _product_metric_dynamic(product, metric):
     problem = _product_metric_problem(product, metric)
     if not problem:
@@ -2152,6 +2162,7 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
         revenue_dynamic = _product_metric_dynamic(product, "orderSum")
         orders_dynamic = _product_metric_dynamic(product, "orderCount")
         traffic_dynamic = _product_metric_dynamic(product, "openCount")
+        open_count = _product_metric_current_value(product, "openCount")
         if direction == "drop":
             if not (
                 (revenue_dynamic is not None and revenue_dynamic < 0)
@@ -2170,7 +2181,14 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
             sort_key = (revenue_dynamic or 0, orders_dynamic or 0)
 
         products.append(
-            (product, sort_key, orders_dynamic, revenue_dynamic, traffic_dynamic)
+            (
+                product,
+                sort_key,
+                orders_dynamic,
+                revenue_dynamic,
+                traffic_dynamic,
+                open_count,
+            )
         )
 
     title = (
@@ -2207,6 +2225,7 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
         orders_dynamic,
         revenue_dynamic,
         traffic_dynamic,
+        open_count,
     ) in enumerate(products, start=1):
         product_lines = [
             f"{index}. <b>{_executive_problem_title(product)}</b>",
@@ -2216,7 +2235,7 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
         ]
         if direction == "drop":
             ads_breakdown = _build_product_ads_breakdown(
-                product, traffic_dynamic, orders_dynamic, summary_stats
+                product, traffic_dynamic, orders_dynamic, summary_stats, open_count
             )
             if ads_breakdown:
                 product_lines.append(ads_breakdown)
@@ -2359,15 +2378,17 @@ def _format_ads_metric_pair(totals, metric, suffix=""):
     return f"{_format_number(previous)}{suffix} → {_format_number(current)}{suffix}"
 
 
-def _product_ads_open_count(product):
+def _product_ads_open_count(product, fallback_open_count=None):
+    if _is_present(fallback_open_count):
+        return to_number(fallback_open_count)
     for key in ("openCount", "selectedOpenCount", "open_count"):
         if _is_present(product.get(key)):
             return to_number(product.get(key))
-    return None
+    return _product_metric_current_value(product, "openCount")
 
 
-def _product_ads_traffic_share(product, totals):
-    open_count = _product_ads_open_count(product)
+def _product_ads_traffic_share(product, totals, open_count=None):
+    open_count = _product_ads_open_count(product, open_count)
     if open_count is None or open_count <= 0:
         return None
     clicks = to_number(totals.get("clicks"))
@@ -2466,25 +2487,27 @@ def _product_ads_conclusion(
 
 
 def _build_product_ads_breakdown(
-    product, traffic_dynamic, orders_dynamic, summary_stats
+    product, traffic_dynamic, orders_dynamic, summary_stats, open_count=None
 ):
     totals = _product_ads_totals(product, summary_stats)
     if totals is None:
         return "   Рекламных данных по товару нет: товар не найден в рекламной статистике WB Ads."
 
-    ads_traffic_share = _product_ads_traffic_share(product, totals)
-    open_count = _product_ads_open_count(product)
-    print("TELEGRAM ADS PRODUCT DATA:")
-    print(f"nmId: {product.get('nmId')}")
-    print("source: aggregated_ads_row")
-    print(f"impressions: {totals.get('impressions')}")
-    print(f"clicks: {totals.get('clicks')}")
-    print(f"spend: {totals.get('spend')}")
-    print(f"cpc: {totals.get('cpc')}")
-    print(f"openCount: {open_count if open_count is not None else ''}")
-    print(
+    open_count = _product_ads_open_count(product, open_count)
+    ads_traffic_share = _product_ads_traffic_share(product, totals, open_count)
+    diagnostic = (
+        "TELEGRAM ADS PRODUCT DATA:\n"
+        f"nmId: {product.get('nmId')}\n"
+        "source: aggregated_ads_row\n"
+        f"impressions: {totals.get('impressions')}\n"
+        f"clicks: {totals.get('clicks')}\n"
+        f"spend: {totals.get('spend')}\n"
+        f"cpc: {totals.get('cpc')}\n"
+        f"openCount: {open_count if open_count is not None else ''}\n"
         f"adsTrafficShare: {ads_traffic_share if ads_traffic_share is not None else ''}"
     )
+    logger.info(diagnostic)
+    print(diagnostic)
 
     return "\n".join(
         [
