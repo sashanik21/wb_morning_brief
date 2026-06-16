@@ -204,7 +204,11 @@ def _is_below_abc_threshold(problem):
 
 def _is_critical_telegram_problem(problem):
     severity = str(problem.get("severity") or "").lower()
-    return severity == "critical" and not _is_below_abc_threshold(problem)
+    return severity == "critical" and _is_telegram_critical_block_problem(problem)
+
+
+def _is_telegram_critical_block_problem(problem):
+    return not _is_below_abc_threshold(problem)
 
 
 def _is_forecast_signal(problem):
@@ -2030,9 +2034,10 @@ def _main_business_decline_product(problem_products):
     ]
     if not candidates:
         return None
-    return max(
-        candidates, key=lambda product: to_number(product.get("businessImpactScore"))
-    )
+    return sorted(
+        candidates,
+        key=lambda product: _business_sort_key(_product_primary_problem(product)),
+    )[0]
 
 
 def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
@@ -2178,9 +2183,6 @@ def _build_product_movement_block(problem_products, direction):
         revenue_dynamic = _product_metric_dynamic(product, "orderSum")
         orders_dynamic = _product_metric_dynamic(product, "orderCount")
         traffic_dynamic = _product_metric_dynamic(product, "openCount")
-        revenue_problem = _product_metric_problem(product, "orderSum") or {}
-        orders_problem = _product_metric_problem(product, "orderCount") or {}
-
         if direction == "drop":
             if not (
                 (revenue_dynamic is not None and revenue_dynamic < 0)
@@ -2189,14 +2191,7 @@ def _build_product_movement_block(problem_products, direction):
                 or _product_lost_orders(product) > 0
             ):
                 continue
-            sort_key = (
-                to_number(product.get("businessImpactScore")),
-                _product_impact_value(product),
-                _product_lost_revenue(product),
-                _product_lost_orders(product),
-                _absolute_metric_drop(revenue_problem),
-                _absolute_metric_drop(orders_problem),
-            )
+            sort_key = _business_sort_key(_product_primary_problem(product))
         else:
             if not (
                 (revenue_dynamic is not None and revenue_dynamic > 0)
@@ -2217,7 +2212,9 @@ def _build_product_movement_block(problem_products, direction):
             return "🟢 За период товары с выраженным ростом не обнаружены."
         return title + "\nПросадок заказов/выручки не найдено."
 
-    products = sorted(products, key=lambda item: item[1], reverse=True)[:3]
+    products = sorted(products, key=lambda item: item[1], reverse=direction != "drop")[
+        :3
+    ]
     if direction == "drop":
         logger.debug(
             "TOP DECLINES DEBUG: %s",
@@ -2225,9 +2222,10 @@ def _build_product_movement_block(problem_products, direction):
                 {
                     "nmId": product.get("nmId"),
                     "title": product.get("title"),
-                    "impact": sort_key[0],
-                    "lostRevenue": sort_key[2],
-                    "lostOrders": sort_key[3],
+                    "businessImpactScore": product.get("businessImpactScore"),
+                    "rankingKey": sort_key,
+                    "lostRevenue": _product_lost_revenue(product),
+                    "lostOrders": _product_lost_orders(product),
                 }
                 for product, sort_key, *_ in products
             ],
@@ -3132,13 +3130,23 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     priority_records = [
         record for record in factual_records if _is_priority_telegram_problem(record)
     ]
-    main_records = priority_records or factual_records
+    critical_priority_records = [
+        record
+        for record in priority_records
+        if _is_telegram_critical_block_problem(record)
+    ]
+    critical_factual_records = [
+        record
+        for record in factual_records
+        if _is_telegram_critical_block_problem(record)
+    ]
+    main_records = critical_priority_records or critical_factual_records
     problem_products = _group_problems_by_product(main_records)
     priority_source = (summary_stats or {}).get("priority_problems")
     if priority_source is not None:
         priority_sku_count = _unique_nmid_count(_problems_to_records(priority_source))
     else:
-        priority_sku_count = _unique_nmid_count(priority_records)
+        priority_sku_count = _unique_nmid_count(critical_priority_records)
     trust_score = _report_trust_score(records)
     has_major_drop = (
         to_number((summary_stats or {}).get("orderSumDynamic")) <= -15
@@ -3209,6 +3217,29 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     return _trim_telegram_message("\n\n".join(part for part in message_parts if part))
 
 
+def _log_telegram_business_ranking(problems):
+    records = _problems_to_records(problems)
+    critical_records = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and _is_factual_executive_problem(record)
+        and _is_telegram_critical_block_problem(record)
+    ]
+    products = _group_problems_by_product(critical_records)
+    top_problem = _product_primary_problem(products[0]) if products else {}
+    diagnostic = (
+        "TELEGRAM BUSINESS RANKING:\n"
+        f"top nmId: {top_problem.get('nmId') or 'n/a'}\n"
+        f"top title: {top_problem.get('title') or 'n/a'}\n"
+        f"businessImpactScore: {top_problem.get('businessImpactScore') or 0}\n"
+        f"isBelowAbcThreshold: {top_problem.get('isBelowAbcThreshold') or False}\n"
+        f"metric: {top_problem.get('metric') or 'n/a'}"
+    )
+    logger.info(diagnostic)
+    print(diagnostic)
+
+
 def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insights=None):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -3222,6 +3253,7 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
         summary_stats=summary_stats,
         root_cause_insights=root_cause_insights,
     )
+    _log_telegram_business_ranking(problems)
     url = TELEGRAM_API_URL.format(token=token)
     message_parts = split_telegram_message(message)
     total_parts = len(message_parts)
