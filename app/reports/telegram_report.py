@@ -1265,8 +1265,8 @@ def _ads_api_429_limitation_line(summary_stats):
         }.get(confidence, "н/д")
         return (
             f"⚠️ Реклама: обработано {_format_number(processed)} из {_format_number(total)} кампаний. "
-            f"Данные частичные. Надежность рекламного блока: {confidence_label} — "
-            f"обработано {_format_number(processed)} из {_format_number(total)} кампаний."
+            f"Надежность рекламного блока {confidence_label}. "
+            "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
         )
     if summary_stats.get("adsApiPartial"):
         return "⚠️ Реклама: данные частичные, часть запросов WB API не успела/не смогла выполниться."
@@ -1486,7 +1486,9 @@ def _build_ads_block(records, summary_stats):
 
     if not ads_records:
         block_lines.append(
-            "Критичных рекламных проблем по доступным данным не найдено."
+            "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
+            if limitation_line
+            else "Критичных рекламных проблем по доступным данным не найдено."
         )
         return "\n".join(block_lines)
 
@@ -2635,7 +2637,11 @@ def _build_executive_ads_block(records, summary_stats):
                 f"но есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
             )
         else:
-            lines.append("Критичных рекламных проблем по доступным данным не найдено.")
+            lines.append(
+                "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
+                if limitation_line
+                else "Критичных рекламных проблем по доступным данным не найдено."
+            )
         return "\n".join(lines)
 
     first_problem = ads_records[0]

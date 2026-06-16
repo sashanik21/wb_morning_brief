@@ -258,7 +258,12 @@ def main():
     sku_not_in_products = len(enriched_products) - sku_in_products
     print("=" * 50)
 
-    ads_data = collect_ads_stats(seller_id=seller_id)
+    top_drop_nm_ids = [
+        signal.get("nmId") or signal.get("nm_id")
+        for signal in build_top_funnel_drop_signals(data)
+        if isinstance(signal, dict)
+    ]
+    ads_data = collect_ads_stats(seller_id=seller_id, top_drop_nm_ids=top_drop_nm_ids)
     raw_ads_rows_count = len(ads_data or [])
     ads_data, ads_matching_debug = attribute_ads_rows(ads_data, wb_cards + products)
     ads_data = aggregate_ads_rows(ads_data)

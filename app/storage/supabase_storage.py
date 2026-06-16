@@ -611,7 +611,9 @@ def save_ads_campaigns_cache(seller_id, campaigns):
         )
 
 
-def update_ads_campaign_stats_status(seller_id, campaign_ids, status):
+def update_ads_campaign_stats_status(
+    seller_id, campaign_ids, status, rows=0, error_code=None
+):
     normalized_ids = [
         cid
         for cid in (_to_int(value) for value in campaign_ids or [])
@@ -623,12 +625,41 @@ def update_ads_campaign_stats_status(seller_id, campaign_ids, status):
         "SUPABASE UPDATE ADS CAMPAIGN STATS STATUS: "
         f"{len(normalized_ids)} rows status={status}"
     )
+    update_payload = {
+        "last_stats_at": datetime.now().isoformat(),
+        "last_stats_status": status,
+        "last_stats_rows": _to_int(rows) or 0,
+        "last_error_code": error_code,
+        "consecutive_errors": 0 if status == "success" else 1,
+    }
+    if status != "success":
+        for campaign_id in normalized_ids:
+            current = _execute_read(
+                _get_client()
+                .table("ads_campaigns_cache")
+                .select("consecutive_errors")
+                .eq("seller_id", _string_or_none(seller_id))
+                .eq("campaign_id", campaign_id)
+                .limit(1),
+                "ads_campaigns_cache",
+            )
+            previous_errors = (
+                _to_int((current or [{}])[0].get("consecutive_errors")) or 0
+            )
+            update_payload["consecutive_errors"] = previous_errors + 1
+            _execute_write(
+                _get_client()
+                .table("ads_campaigns_cache")
+                .update(update_payload)
+                .eq("seller_id", _string_or_none(seller_id))
+                .eq("campaign_id", campaign_id),
+                "ads_campaigns_cache",
+            )
+        return
     _execute_write(
         _get_client()
         .table("ads_campaigns_cache")
-        .update(
-            {"last_stats_at": datetime.now().isoformat(), "last_stats_status": status}
-        )
+        .update(update_payload)
         .eq("seller_id", _string_or_none(seller_id))
         .in_("campaign_id", normalized_ids),
         "ads_campaigns_cache",
