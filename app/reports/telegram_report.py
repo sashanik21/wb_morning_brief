@@ -440,6 +440,34 @@ def _group_problems_by_product(records):
     )
 
 
+def _unique_nmid_count(records):
+    return len(
+        {
+            str(record.get("nmId"))
+            for record in records or []
+            if record.get("nmId") not in (None, "", "n/a")
+        }
+    )
+
+
+def _product_lost_revenue(product):
+    return sum(
+        _problem_lost_revenue(problem) for problem in product.get("problems") or []
+    )
+
+
+def _product_lost_orders(product):
+    return sum(
+        _problem_lost_orders(problem) for problem in product.get("problems") or []
+    )
+
+
+def _product_impact_value(product):
+    return sum(
+        _problem_impact_value(problem) for problem in product.get("problems") or []
+    )
+
+
 def _human_readable_problem_type(problem):
     problem_label = str(problem.get("problemLabel") or "").strip()
     metric = str(problem.get("metric") or "").strip()
@@ -1949,57 +1977,23 @@ def _product_problem_summary(product):
 
 def _main_business_decline_product(problem_products):
     candidates = []
-    metric_priority = {
-        "orderSum": 0,
-        "orderCount": 1,
-        "cartToOrderPercent": 2,
-        "openCount": 3,
-        "cartCount": 4,
-        "addToCartPercent": 4,
-    }
     for product in problem_products or []:
-        metric_problems = {
-            metric: _problem_by_metric(product, metric)
-            for metric in (
-                "orderSum",
-                "orderCount",
-                "cartToOrderPercent",
-                "openCount",
-                "cartCount",
-                "addToCartPercent",
-            )
-        }
-        metric_problems = {
-            metric: problem for metric, problem in metric_problems.items() if problem
-        }
-        if not metric_problems:
+        revenue_loss = _product_lost_revenue(product)
+        orders_loss = _product_lost_orders(product)
+        if not revenue_loss and not orders_loss:
+            revenue_problem = _problem_by_metric(product, "orderSum") or {}
+            orders_problem = _problem_by_metric(product, "orderCount") or {}
+            revenue_loss = _absolute_metric_drop(revenue_problem)
+            orders_loss = _absolute_metric_drop(orders_problem)
+        if not revenue_loss and not orders_loss:
             continue
-        primary_metric = min(
-            metric_problems, key=lambda metric: metric_priority[metric]
-        )
-        revenue_problem = metric_problems.get("orderSum") or {}
-        orders_problem = metric_problems.get("orderCount") or {}
         candidates.append(
             (
                 product,
-                _absolute_metric_drop(revenue_problem)
-                or _problem_lost_revenue(revenue_problem),
-                _absolute_metric_drop(orders_problem)
-                or _problem_lost_orders(orders_problem),
-                max(
-                    to_number(problem.get("severityScore"))
-                    for problem in metric_problems.values()
-                ),
-                -metric_priority[primary_metric],
-                abs(
-                    to_number(
-                        (metric_problems.get("cartToOrderPercent") or {}).get(
-                            "dynamicPercent"
-                        )
-                    )
-                ),
-                _absolute_metric_drop(metric_problems.get("openCount") or {}),
-                _absolute_metric_drop(metric_problems.get("cartCount") or {}),
+                revenue_loss,
+                orders_loss,
+                _product_impact_value(product),
+                to_number(product.get("severityScore")),
             )
         )
     if not candidates:
@@ -2157,13 +2151,16 @@ def _build_product_movement_block(problem_products, direction):
             if not (
                 (revenue_dynamic is not None and revenue_dynamic < 0)
                 or (orders_dynamic is not None and orders_dynamic < 0)
+                or _product_lost_revenue(product) > 0
+                or _product_lost_orders(product) > 0
             ):
                 continue
             sort_key = (
-                _absolute_metric_drop(revenue_problem)
-                or _problem_lost_revenue(revenue_problem),
-                _absolute_metric_drop(orders_problem)
-                or _problem_lost_orders(orders_problem),
+                _product_impact_value(product),
+                _product_lost_revenue(product),
+                _product_lost_orders(product),
+                _absolute_metric_drop(revenue_problem),
+                _absolute_metric_drop(orders_problem),
             )
         else:
             if not (
@@ -2186,6 +2183,20 @@ def _build_product_movement_block(problem_products, direction):
         return title + "\nПросадок заказов/выручки не найдено."
 
     products = sorted(products, key=lambda item: item[1], reverse=True)[:3]
+    if direction == "drop":
+        logger.debug(
+            "TOP DECLINES DEBUG: %s",
+            [
+                {
+                    "nmId": product.get("nmId"),
+                    "title": product.get("title"),
+                    "impact": sort_key[0],
+                    "lostRevenue": sort_key[1],
+                    "lostOrders": sort_key[2],
+                }
+                for product, sort_key, *_ in products
+            ],
+        )
     lines = []
     for index, (
         product,
@@ -3086,11 +3097,9 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     problem_products = _group_problems_by_product(main_records)
     priority_source = (summary_stats or {}).get("priority_problems")
     if priority_source is not None:
-        priority_sku_count = len(
-            _group_problems_by_product(_problems_to_records(priority_source))
-        )
+        priority_sku_count = _unique_nmid_count(_problems_to_records(priority_source))
     else:
-        priority_sku_count = len(_group_problems_by_product(priority_records))
+        priority_sku_count = _unique_nmid_count(priority_records)
     trust_score = _report_trust_score(records)
     has_major_drop = (
         to_number((summary_stats or {}).get("orderSumDynamic")) <= -15
