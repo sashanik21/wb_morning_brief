@@ -235,3 +235,7 @@ def save_daily_qbiki_metrics(rows):
 
 def save_api_coverage_daily(rows):
     print(f"STUB SAVE API COVERAGE DAILY: {len(rows)} rows")
+
+
+def get_latest_ads_metrics_by_nm_ids(seller_id, nm_ids):
+    return []

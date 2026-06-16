@@ -81,6 +81,93 @@ def _to_float(value):
         return 0
 
 
+def _normalize_nm_id(value):
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return str(value).strip() or None
+
+
+def _extract_nm_ids(*collections):
+    nm_ids = []
+    seen = set()
+    for collection in collections:
+        for item in collection or []:
+            if not isinstance(item, dict):
+                continue
+            product = item.get("product", item)
+            if not isinstance(product, dict):
+                product = item
+            nm_id = _normalize_nm_id(
+                product.get("nmId") or product.get("nm_id") or product.get("nm")
+            )
+            if nm_id is not None and str(nm_id) not in seen:
+                seen.add(str(nm_id))
+                nm_ids.append(nm_id)
+    return nm_ids
+
+
+def _ads_history_row_to_report_row(row, seller_id=None):
+    if not isinstance(row, dict):
+        return {}
+    clicks = _to_float(row.get("clicks"))
+    impressions = _to_float(row.get("impressions"))
+    spend = _to_float(row.get("spend"))
+    orders_sum = _to_float(row.get("ordersSum") or row.get("revenue"))
+    return {
+        "date": row.get("date") or row.get("report_date") or row.get("reportDate"),
+        "selectedPeriod": row.get("date")
+        or row.get("report_date")
+        or row.get("reportDate"),
+        "seller_id": seller_id or row.get("seller_id") or row.get("sellerId"),
+        "campaignId": row.get("campaignId") or row.get("campaign_id"),
+        "campaignName": row.get("campaignName") or row.get("campaign_name"),
+        "campaignStatus": row.get("campaignStatus") or row.get("campaign_status"),
+        "campaignType": row.get("campaignType") or row.get("campaign_type"),
+        "nmId": row.get("nmId") or row.get("nm_id") or row.get("nm"),
+        "vendorCode": row.get("vendorCode") or row.get("vendor_code"),
+        "title": row.get("title"),
+        "impressions": impressions,
+        "clicks": clicks,
+        "ctr": (
+            row.get("ctr")
+            if row.get("ctr") not in (None, "")
+            else (clicks / impressions * 100 if impressions else 0)
+        ),
+        "cpc": (
+            row.get("cpc")
+            if row.get("cpc") not in (None, "")
+            else (spend / clicks if clicks else 0)
+        ),
+        "spend": spend,
+        "orders": row.get("orders")
+        or row.get("orders_count")
+        or row.get("ordersCount")
+        or 0,
+        "ordersSum": orders_sum,
+        "drr": (
+            row.get("drr")
+            if row.get("drr") not in (None, "")
+            else (spend / orders_sum * 100 if orders_sum else 0)
+        ),
+        "bid": row.get("bid"),
+        "avgPosition": row.get("avgPosition") or row.get("avg_position"),
+        "source": "supabase_ads_history",
+        "adsSource": "history_supabase",
+    }
+
+
+def _load_ads_history_fallback(storage, seller_id, nm_ids):
+    if not (storage and hasattr(storage, "get_latest_ads_metrics_by_nm_ids")):
+        return []
+    rows = storage.get_latest_ads_metrics_by_nm_ids(seller_id, nm_ids)
+    return [
+        _ads_history_row_to_report_row(row, seller_id=seller_id) for row in rows or []
+    ]
+
+
 def _sum_report_column(dataframe, column_name):
     if column_name not in dataframe:
         return 0
@@ -283,6 +370,20 @@ def main():
         seller_id=seller_id, top_drop_nm_ids=top_drop_nm_ids, oos_nm_ids=oos_nm_ids
     )
     raw_ads_rows_count = len(ads_data or [])
+    ads_source = "WB Ads API"
+    ads_fallback_used = False
+    if raw_ads_rows_count == 0:
+        fallback_nm_ids = _extract_nm_ids(wb_cards, products)
+        fallback_ads_data = _load_ads_history_fallback(
+            storage, seller_id, fallback_nm_ids
+        )
+        print("ADS FALLBACK ACTIVATED")
+        print("ADS FALLBACK SOURCE: SUPABASE")
+        print(f"ADS FALLBACK ROWS: {len(fallback_ads_data)}")
+        if fallback_ads_data:
+            ads_data = fallback_ads_data
+            ads_source = "история Supabase"
+            ads_fallback_used = True
     ads_data, ads_matching_debug = attribute_ads_rows(ads_data, wb_cards + products)
     ads_data = aggregate_ads_rows(ads_data)
     aggregated_ads_rows_count = len(ads_data or [])
@@ -317,6 +418,9 @@ def main():
     ads_summary["aggregatedRows"] = aggregated_ads_rows_count
     ads_summary["advertisedSku"] = advertised_sku_count
     ads_summary["totalSku"] = total_sku_from_api
+    ads_summary["source"] = ads_source
+    ads_summary["adsSource"] = ads_source
+    ads_summary["fallbackUsed"] = ads_fallback_used
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("ADS SUMMARY:")
     print(f"campaigns: {ads_summary['activeCampaigns']}")
@@ -408,6 +512,8 @@ def main():
     summary_stats["advertisedSkuCount"] = advertised_sku_count
     summary_stats["adsApiHad429"] = ads_api_had_429()
     summary_stats["adsApiPartial"] = ads_api_had_429()
+    summary_stats["adsSource"] = ads_source
+    summary_stats["adsFallbackUsed"] = ads_fallback_used
     summary_stats["adsRateLimit"] = ads_rate_limit_stats()
     summary_stats["adsCoverageConfidence"] = ads_rate_limit_stats().get(
         "adsCoverageConfidence"
