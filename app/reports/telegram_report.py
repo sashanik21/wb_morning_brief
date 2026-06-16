@@ -78,14 +78,42 @@ def _absolute_metric_drop(problem):
     return max(to_number(past) - to_number(selected), 0)
 
 
-def _business_sort_key(record):
+def _is_ads_problem(record):
+    problem_type = str(record.get("problemType") or "")
+    return record.get("problemCategory") == "ads" or problem_type.startswith("ads_")
+
+
+def _is_funnel_problem(record):
+    return not _is_ads_problem(record) and not _is_stock_impact_problem(record)
+
+
+def _is_stock_allowed_above_funnel(record):
+    eta_hours = _forecast_eta_hours(record)
+    return (eta_hours is not None and eta_hours <= 24) or _problem_blocked_revenue(
+        record
+    ) > 0
+
+
+def _business_impact_score(record):
+    return to_number(record.get("businessImpactScore"))
+
+
+def _business_sort_key(record, has_positive_funnel_problem=False):
+    source_penalty = 0
+    if has_positive_funnel_problem:
+        if _is_ads_problem(record):
+            source_penalty = 1
+        elif _is_stock_impact_problem(record) and not _is_stock_allowed_above_funnel(
+            record
+        ):
+            source_penalty = 1
+
     return (
-        _metric_priority_rank(record),
-        -_problem_lost_revenue(record),
-        -_problem_lost_orders(record),
-        -_absolute_metric_drop(record),
-        -to_number(record.get("businessPriorityScore")),
+        _is_below_abc_threshold(record),
+        source_penalty,
+        -_business_impact_score(record),
         -to_number(record.get("severityScore")),
+        to_number(record.get("dynamicPercent")),
     )
 
 
@@ -421,9 +449,19 @@ def _group_problems_by_product(records):
         grouped_products[group_key]["problems"].append(problem)
 
     for product in grouped_products.values():
-        product["problems"].sort(key=_business_sort_key)
+        has_positive_funnel_problem = any(
+            _is_funnel_problem(problem) and _business_impact_score(problem) > 0
+            for problem in product["problems"]
+        )
+        product["problems"].sort(
+            key=lambda problem: _business_sort_key(problem, has_positive_funnel_problem)
+        )
         product["severityScore"] = to_number(
             product["problems"][0].get("severityScore") if product["problems"] else 0
+        )
+        product["businessImpactScore"] = max(
+            (_business_impact_score(problem) for problem in product["problems"]),
+            default=0,
         )
         product["businessPriorityScore"] = to_number(
             product["problems"][0].get("businessPriorityScore")
@@ -431,10 +469,19 @@ def _group_problems_by_product(records):
             else 0
         )
 
+    has_positive_funnel_product = any(
+        any(
+            _is_funnel_problem(problem) and _business_impact_score(problem) > 0
+            for problem in product.get("problems") or []
+        )
+        for product in grouped_products.values()
+    )
     return sorted(
         grouped_products.values(),
         key=lambda product: (
-            _business_sort_key(_product_primary_problem(product)),
+            _business_sort_key(
+                _product_primary_problem(product), has_positive_funnel_product
+            ),
             product["first_index"],
         ),
     )
@@ -1976,29 +2023,16 @@ def _product_problem_summary(product):
 
 
 def _main_business_decline_product(problem_products):
-    candidates = []
-    for product in problem_products or []:
-        revenue_loss = _product_lost_revenue(product)
-        orders_loss = _product_lost_orders(product)
-        if not revenue_loss and not orders_loss:
-            revenue_problem = _problem_by_metric(product, "orderSum") or {}
-            orders_problem = _problem_by_metric(product, "orderCount") or {}
-            revenue_loss = _absolute_metric_drop(revenue_problem)
-            orders_loss = _absolute_metric_drop(orders_problem)
-        if not revenue_loss and not orders_loss:
-            continue
-        candidates.append(
-            (
-                product,
-                revenue_loss,
-                orders_loss,
-                _product_impact_value(product),
-                to_number(product.get("severityScore")),
-            )
-        )
+    candidates = [
+        product
+        for product in problem_products or []
+        if to_number(product.get("businessImpactScore")) > 0
+    ]
     if not candidates:
         return None
-    return max(candidates, key=lambda item: item[1:])[0]
+    return max(
+        candidates, key=lambda product: to_number(product.get("businessImpactScore"))
+    )
 
 
 def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
@@ -2156,6 +2190,7 @@ def _build_product_movement_block(problem_products, direction):
             ):
                 continue
             sort_key = (
+                to_number(product.get("businessImpactScore")),
                 _product_impact_value(product),
                 _product_lost_revenue(product),
                 _product_lost_orders(product),
@@ -2191,8 +2226,8 @@ def _build_product_movement_block(problem_products, direction):
                     "nmId": product.get("nmId"),
                     "title": product.get("title"),
                     "impact": sort_key[0],
-                    "lostRevenue": sort_key[1],
-                    "lostOrders": sort_key[2],
+                    "lostRevenue": sort_key[2],
+                    "lostOrders": sort_key[3],
                 }
                 for product, sort_key, *_ in products
             ],
@@ -3080,11 +3115,15 @@ def _build_api_coverage_debug_block(summary_stats):
 
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = _problems_to_records(problems)
+    has_positive_funnel_problem = any(
+        _is_funnel_problem(record) and _business_impact_score(record) > 0
+        for record in records
+    )
     records = sorted(
         records,
         key=lambda record: (
             record.get("isSuppressed") is True,
-            _business_sort_key(record),
+            _business_sort_key(record, has_positive_funnel_problem),
         ),
     )
     factual_records = [
@@ -3133,6 +3172,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         f"Надежность оценки: {html.escape(_format_report_trust_score(trust_score))}",
         priority_line,
         below_fact_line,
+        f"Низкоприоритетных сигналов: {_format_number(sum(1 for record in records if _is_below_abc_threshold(record)))}",
         _build_low_priority_signals_block(records),
         _build_top_drops_block(problem_products),
         _build_top_growth_block(problem_products),
