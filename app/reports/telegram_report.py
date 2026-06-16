@@ -2326,6 +2326,19 @@ def _product_ads_totals(product, summary_stats):
         return None
 
     totals = {"rows": len(matched_rows)}
+    campaign_ids = []
+    campaign_types = []
+    for row in matched_rows:
+        campaign_id = (
+            row.get("campaignId") or row.get("advertId") or row.get("campaign_id")
+        )
+        if campaign_id not in (None, "") and str(campaign_id) not in campaign_ids:
+            campaign_ids.append(str(campaign_id))
+        campaign_type = row.get("campaignType") or row.get("campaign_type")
+        if campaign_type not in (None, "") and str(campaign_type) not in campaign_types:
+            campaign_types.append(str(campaign_type))
+    totals["campaignIds"] = campaign_ids
+    totals["campaignTypes"] = campaign_types
     for metric in ("impressions", "clicks", "spend", "orders", "ordersSum", "bid"):
         current_values = [to_number(row.get(metric)) for row in matched_rows]
         previous_values = [_ads_previous_value(row, metric) for row in matched_rows]
@@ -2400,6 +2413,50 @@ def _format_ads_metric_pair(totals, metric, suffix=""):
     previous = totals.get(f"previous_{metric}")
     current = totals.get(metric)
     return f"{_format_number(previous)}{suffix} → {_format_number(current)}{suffix}"
+
+
+def _ads_campaign_type_label(value):
+    text = str(value or "").strip()
+    mapping = {
+        "4": "Поиск + каталог",
+        "5": "Аукцион",
+        "6": "Автоматическая кампания",
+        "7": "Автоматическая кампания",
+        "8": "Автоматическая кампания",
+        "9": "Аукцион",
+        "auction": "Аукцион",
+        "auto": "Автоматическая кампания",
+        "automatic": "Автоматическая кампания",
+        "search_catalog": "Поиск + каталог",
+        "search+catalog": "Поиск + каталог",
+    }
+    return mapping.get(text.lower(), text or "не указан")
+
+
+def _format_ads_campaign_meta(totals):
+    campaign_ids = [
+        str(value)
+        for value in totals.get("campaignIds") or []
+        if value not in (None, "")
+    ]
+    campaign_types = [
+        _ads_campaign_type_label(value)
+        for value in totals.get("campaignTypes") or []
+        if value not in (None, "")
+    ]
+    if not campaign_ids and not campaign_types:
+        return []
+    lines = []
+    if len(campaign_ids) > 1:
+        lines.append(f"   ID кампаний: {html.escape(', '.join(campaign_ids))}")
+    elif campaign_ids:
+        lines.append(f"   ID кампании: {html.escape(campaign_ids[0])}")
+    unique_types = list(dict.fromkeys(campaign_types))
+    if len(unique_types) > 1:
+        lines.append(f"   Типы: {html.escape(', '.join(unique_types))}")
+    elif unique_types:
+        lines.append(f"   Тип кампании: {html.escape(unique_types[0])}")
+    return lines
 
 
 def _product_ads_open_count(product, fallback_open_count=None):
@@ -2541,9 +2598,11 @@ def _build_product_ads_breakdown(
     logger.info(diagnostic)
     print(diagnostic)
 
+    campaign_meta_lines = _format_ads_campaign_meta(totals)
     return "\n".join(
         [
             "   📢 <b>Реклама по товару</b>",
+            *campaign_meta_lines,
             f"   — Показы: {_format_number(totals.get('impressions'))}",
             f"   — Клики рекламы: {_format_number(totals.get('clicks'))}",
             f"   — Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}",
@@ -3499,8 +3558,6 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         _build_low_priority_signals_block(records),
         top_drops_block,
         _build_top_growth_block(problem_products),
-        _build_stock_eta_block(records),
-        _build_stock_risks_block(records),
         _build_api_coverage_debug_block(summary_stats),
     ]
 
@@ -3510,7 +3567,6 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
                 _build_no_problem_executive_block(summary_stats),
                 _build_perfume_intelligence_block(summary_stats),
                 _build_executive_ads_block(priority_records, summary_stats),
-                _build_executive_stocks_block(priority_records, summary_stats),
             ]
         )
         return _trim_telegram_message(
@@ -3522,12 +3578,10 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
             _build_executive_insight(
                 problem_products, root_cause_insights, summary_stats
             ),
-            _build_executive_actions_block(main_records, root_cause_insights, records),
             _build_executive_top_problems(
                 problem_products, root_cause_insights, top_drop_keys
             ),
             _build_executive_ads_block(priority_records, summary_stats),
-            _build_executive_stocks_block(priority_records, summary_stats),
         ]
     )
 

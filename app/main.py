@@ -203,6 +203,16 @@ def _matched_qbiki_nm_ids(qbiki_rows, funnel_rows, ads_rows):
     )
 
 
+def _iter_nested_dicts(value):
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _iter_nested_dicts(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_nested_dicts(item)
+
+
 def main():
 
     print("MAIN VERSION: TELEGRAM ENABLED")
@@ -263,7 +273,15 @@ def main():
         for signal in build_top_funnel_drop_signals(data)
         if isinstance(signal, dict)
     ]
-    ads_data = collect_ads_stats(seller_id=seller_id, top_drop_nm_ids=top_drop_nm_ids)
+    oos_nm_ids = [
+        row.get("nmId") or row.get("nm_id")
+        for row in _iter_nested_dicts(data)
+        if str(row.get("forecastType") or "").upper() == "OOS"
+        or row.get("daysUntilOOS") not in (None, "")
+    ]
+    ads_data = collect_ads_stats(
+        seller_id=seller_id, top_drop_nm_ids=top_drop_nm_ids, oos_nm_ids=oos_nm_ids
+    )
     raw_ads_rows_count = len(ads_data or [])
     ads_data, ads_matching_debug = attribute_ads_rows(ads_data, wb_cards + products)
     ads_data = aggregate_ads_rows(ads_data)

@@ -164,7 +164,7 @@ def _env_int(name, default):
 
 def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=None):
     global _ADS_RATE_LIMIT_STATS
-    retry_count = _env_int("WB_ADS_RETRY_COUNT", 1)
+    retry_count = _env_int("WB_ADS_RETRY_COUNT", 3)
     retry_sleep = _env_int("WB_ADS_RETRY_SLEEP_SECONDS", 10)
     response = None
 
@@ -204,7 +204,19 @@ def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=N
                 _ADS_RATE_LIMIT_STATS["retries_used"] = (
                     _ADS_RATE_LIMIT_STATS.get("retries_used", 0) + 1
                 )
-                _ads_sleep(retry_sleep * (attempt + 1), deadline=deadline)
+                backoff_seconds = retry_sleep * (2**attempt)
+                _ADS_RATE_LIMIT_STATS["request_sleep_seconds"] = max(
+                    _ADS_RATE_LIMIT_STATS.get("request_sleep_seconds", 0),
+                    backoff_seconds,
+                )
+                print("ADS BACKOFF:")
+                print(f"campaign_ids: {', '.join(str(cid) for cid in campaign_ids)}")
+                print(f"attempt: {attempt + 1}/{retry_count + 1}")
+                print(f"sleep_seconds: {backoff_seconds}")
+                _ads_sleep(backoff_seconds, deadline=deadline)
+                print("ADS CAMPAIGN RETRY:")
+                print(f"campaign_ids: {', '.join(str(cid) for cid in campaign_ids)}")
+                print(f"next_attempt: {attempt + 2}")
                 continue
         break
 
@@ -408,6 +420,10 @@ def _aggregate_campaign(campaign, nm_row=None):
         "searchQueries": _extract_search_queries(campaign),
         "subject": _extract_subject(campaign),
         "campaignStatus": _extract_status(campaign),
+        "campaignType": campaign.get("type")
+        or campaign.get("campaignType")
+        or campaign.get("advertType")
+        or "",
     }
 
 
@@ -498,12 +514,15 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date, seller_id=None
         if _ads_collect_time_exceeded():
             _ADS_RATE_LIMIT_STATS["partial"] = True
             _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = True
-            failed_campaign_ids.add(str(campaign_id))
-            _log_ads_campaign_result(campaign_id, "error", 0)
+            partial_campaign_ids.add(str(campaign_id))
+            print("ADS CAMPAIGN NEXT RUN:")
+            print(f"campaign_id: {campaign_id}")
+            print("reason: collector time limit reached")
+            _log_ads_campaign_result(campaign_id, "timeout", 0)
             _update_campaign_health(
-                seller_id, campaign_id, "error", error_code="time_limit"
+                seller_id, campaign_id, "timeout", error_code="time_limit"
             )
-            break
+            continue
         previous_status = None
         current_payload, current_status = _request_ads_fullstats(
             token, [campaign_id], current_date, current_date, deadline=campaign_deadline
@@ -735,11 +754,12 @@ def _is_repeated_error_cooldown(campaign, now=None):
     return (now or datetime.utcnow()) - last_stats < timedelta(hours=24)
 
 
-def _select_staged_campaigns(campaigns, top_drop_nm_ids=None):
+def _select_staged_campaigns(campaigns, top_drop_nm_ids=None, oos_nm_ids=None):
     max_per_run = max(1, _env_int("WB_ADS_MAX_CAMPAIGNS_PER_RUN", 8))
     top_drop_nm_ids = {
         str(value) for value in top_drop_nm_ids or [] if value not in (None, "")
     }
+    oos_nm_ids = {str(value) for value in oos_nm_ids or [] if value not in (None, "")}
     now = datetime.utcnow()
     eligible_campaigns = []
     cooldown_skipped = 0
@@ -755,11 +775,14 @@ def _select_staged_campaigns(campaigns, top_drop_nm_ids=None):
     def sort_key(row):
         last_stats = _parse_datetime(row.get("last_stats_at"))
         never_updated_rank = 0 if last_stats is None else 1
-        has_rows_rank = 0 if _to_number(row.get("last_stats_rows")) > 0 else 1
-        top_drop_rank = 0 if top_drop_nm_ids & _campaign_nm_ids(row) else 1
+        no_stats_rank = 0 if _to_number(row.get("last_stats_rows")) <= 0 else 1
+        nm_ids = _campaign_nm_ids(row)
+        top_drop_rank = 0 if top_drop_nm_ids & nm_ids else 1
+        oos_rank = 0 if oos_nm_ids & nm_ids else 1
         return (
-            has_rows_rank,
             top_drop_rank,
+            oos_rank,
+            no_stats_rank,
             never_updated_rank,
             last_stats or datetime.min,
             0 if _is_active_campaign(row) else 1,
@@ -768,15 +791,22 @@ def _select_staged_campaigns(campaigns, top_drop_nm_ids=None):
 
     selected = sorted(eligible_campaigns, key=sort_key)[:max_per_run]
     skipped = max(0, len(campaigns or []) - len(selected))
-    print("ADS STAGED COLLECTION:")
+    print("ADS PRIORITY QUEUE:")
     print(f"campaigns total: {len(campaigns or [])}")
     print(f"campaigns selected: {len(selected)}")
     print(f"campaigns skipped: {skipped}")
     print(
-        "selection reason: previous rows, funnel TOP drops match, oldest stats update, then active status"
+        "selection reason: TOP drops, OOS forecast, no stats, oldest stats update, then active status"
     )
     if cooldown_skipped:
         print(f"campaigns skipped by repeated errors cooldown: {cooldown_skipped}")
+    selected_ids = {str(row.get("campaign_id")) for row in selected}
+    for campaign in eligible_campaigns:
+        campaign_id = str(campaign.get("campaign_id"))
+        if campaign_id and campaign_id not in selected_ids:
+            print("ADS CAMPAIGN NEXT RUN:")
+            print(f"campaign_id: {campaign_id}")
+            print("reason: campaign remains queued for a future run")
     return selected
 
 
@@ -791,7 +821,9 @@ def _coverage_confidence(processed, total):
     return "HIGH"
 
 
-def collect_ads_stats(report_date=None, seller_id=None, top_drop_nm_ids=None):
+def collect_ads_stats(
+    report_date=None, seller_id=None, top_drop_nm_ids=None, oos_nm_ids=None
+):
     global _ADS_API_HAD_429, _ADS_RATE_LIMIT_STATS, _ADS_COLLECTOR_DEADLINE
     _ADS_API_HAD_429 = False
     _ADS_RATE_LIMIT_STATS = {
@@ -842,7 +874,7 @@ def collect_ads_stats(report_date=None, seller_id=None, top_drop_nm_ids=None):
         return []
 
     selected_campaigns = _select_staged_campaigns(
-        campaigns, top_drop_nm_ids=top_drop_nm_ids
+        campaigns, top_drop_nm_ids=top_drop_nm_ids, oos_nm_ids=oos_nm_ids
     )
     campaign_ids = _campaign_ids_from_records(selected_campaigns)
     _ADS_RATE_LIMIT_STATS["campaigns_total"] = len(campaigns)
