@@ -1,5 +1,6 @@
 import html
 import logging
+import re
 import os
 from datetime import date, datetime
 
@@ -49,6 +50,32 @@ FACTUAL_EXECUTIVE_METRICS = {
 FACTUAL_EXECUTIVE_TYPES = {"sellableOutOfStock"}
 FORECAST_SIGNAL_TYPES = {"STOCK_FORECAST", "ADS_FORECAST", "ORGANIC_FORECAST"}
 logger = logging.getLogger(__name__)
+
+
+def sanitize_telegram_text(text):
+    if text is None:
+        return ""
+
+    text = str(text).replace("<1%", "менее 1%")
+    allowed_tags = {"b"}
+    protected_tags = {}
+
+    def protect_allowed_tag(match):
+        tag_name = match.group(1).lower()
+        if tag_name not in allowed_tags:
+            return match.group(0).replace("<", "‹").replace(">", "›")
+        token = f"__TELEGRAM_ALLOWED_TAG_{len(protected_tags)}__"
+        protected_tags[token] = match.group(0)
+        return token
+
+    text = re.sub(r"</?([A-Za-z][A-Za-z0-9]*)\b[^<>]*>", protect_allowed_tag, text)
+    text = re.sub(r"&(?!#\d+;|#x[0-9A-Fa-f]+;|amp;|lt;|gt;|quot;)", "&amp;", text)
+    text = text.replace("<", "‹").replace(">", "›")
+
+    for token, tag in protected_tags.items():
+        text = text.replace(token, tag)
+
+    return text
 
 
 BUSINESS_METRIC_PRIORITY = {
@@ -1054,7 +1081,7 @@ def _format_percent_one_decimal(value):
     if number <= 0:
         return "0%"
     if number < 1:
-        return "<1%"
+        return "менее 1%"
     return f"{number:.1f}".replace(".", ",") + "%"
 
 
@@ -4055,7 +4082,7 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
     )
     _log_telegram_business_ranking(problems)
     url = TELEGRAM_API_URL.format(token=token)
-    message_parts = split_telegram_message(message)
+    message_parts = split_telegram_message(sanitize_telegram_text(message))
     total_parts = len(message_parts)
 
     for part_index, message_part in enumerate(message_parts, start=1):
