@@ -311,3 +311,15 @@ create table if not exists api_coverage_daily (
 
 create unique index if not exists api_coverage_daily_unique_idx
 on api_coverage_daily (report_date, seller_name, nm_id);
+
+alter table if exists public.sellers enable row level security;
+alter table if exists public.products enable row level security;
+alter table if exists public.change_log enable row level security;
+alter table if exists public.tasks enable row level security;
+alter table if exists public.ads_daily enable row level security;
+alter table if exists public.stocks_daily enable row level security;
+alter table if exists public.problems enable row level security;
+alter table if exists public.daily_funnel enable row level security;
+alter table if exists public.daily_ads_metrics enable row level security;
+alter table if exists public.api_coverage_daily enable row level security;
+alter table if exists public.daily_qbiki_metrics enable row level security;
