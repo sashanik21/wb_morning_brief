@@ -16,7 +16,7 @@ _ADS_RATE_LIMIT_STATS = {}
 
 
 def ads_api_had_429():
-    return _ADS_API_HAD_429
+    return _ADS_API_HAD_429 or bool(_ADS_RATE_LIMIT_STATS.get("partial"))
 
 
 def ads_rate_limit_stats():
@@ -25,8 +25,9 @@ def ads_rate_limit_stats():
 
 def _mark_ads_api_status(status_code):
     global _ADS_API_HAD_429
-    if status_code == 429:
+    if status_code == 429 or (status_code is not None and status_code >= 500):
         _ADS_API_HAD_429 = True
+        _ADS_RATE_LIMIT_STATS["partial"] = True
 
 
 def _extract_campaign_ids(payload):

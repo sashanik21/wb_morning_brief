@@ -1250,8 +1250,10 @@ def _format_qbiki_product_line(index, row):
 
 
 def _ads_api_429_limitation_line(summary_stats):
-    if (summary_stats or {}).get("adsApiHad429"):
-        return "⚠️ Рекламные данные частичные: WB API ограничил часть запросов."
+    if (summary_stats or {}).get("adsApiPartial") or (summary_stats or {}).get(
+        "adsApiHad429"
+    ):
+        return "⚠️ Рекламные данные частичные: WB API вернул ошибку или ограничил часть запросов."
     return ""
 
 
@@ -2357,18 +2359,21 @@ def _format_ads_metric_pair(totals, metric, suffix=""):
     return f"{_format_number(previous)}{suffix} → {_format_number(current)}{suffix}"
 
 
+def _product_ads_open_count(product):
+    for key in ("openCount", "selectedOpenCount", "open_count"):
+        if _is_present(product.get(key)):
+            return to_number(product.get(key))
+    return None
+
+
 def _product_ads_traffic_share(product, totals):
-    existing_share = product.get("adsTrafficShare") or product.get("ads_traffic_share")
-    if _is_present(existing_share):
-        return to_number(existing_share)
-    open_count = to_number(
-        product.get("openCount")
-        or product.get("selectedOpenCount")
-        or product.get("open_count")
-    )
-    if open_count <= 0:
+    open_count = _product_ads_open_count(product)
+    if open_count is None or open_count <= 0:
         return None
-    return round(to_number(totals.get("clicks")) / open_count * 100, 2)
+    clicks = to_number(totals.get("clicks"))
+    if clicks >= 0:
+        return round(clicks / open_count * 100, 2)
+    return None
 
 
 def _is_high_ads_cpc(value):
@@ -2376,8 +2381,15 @@ def _is_high_ads_cpc(value):
 
 
 def _product_ads_conclusion(
-    totals, traffic_dynamic, orders_dynamic, ads_traffic_share=None
+    totals,
+    traffic_dynamic,
+    orders_dynamic,
+    ads_traffic_share=None,
+    ads_api_partial=False,
 ):
+    if ads_api_partial:
+        return "По доступным данным реклама стабильна, но вывод ограничен: часть рекламных данных не получена от WB API."
+
     impressions = to_number(totals.get("impressions"))
     ctr = to_number(totals.get("ctr"))
     cpc = to_number(totals.get("cpc"))
@@ -2461,6 +2473,18 @@ def _build_product_ads_breakdown(
         return "   Рекламных данных по товару нет: товар не найден в рекламной статистике WB Ads."
 
     ads_traffic_share = _product_ads_traffic_share(product, totals)
+    open_count = _product_ads_open_count(product)
+    print("TELEGRAM ADS PRODUCT DATA:")
+    print(f"nmId: {product.get('nmId')}")
+    print("source: aggregated_ads_row")
+    print(f"impressions: {totals.get('impressions')}")
+    print(f"clicks: {totals.get('clicks')}")
+    print(f"spend: {totals.get('spend')}")
+    print(f"cpc: {totals.get('cpc')}")
+    print(f"openCount: {open_count if open_count is not None else ''}")
+    print(
+        f"adsTrafficShare: {ads_traffic_share if ads_traffic_share is not None else ''}"
+    )
 
     return "\n".join(
         [
@@ -2468,7 +2492,7 @@ def _build_product_ads_breakdown(
             f"   — Показы: {_format_number(totals.get('impressions'))}",
             f"   — Клики рекламы: {_format_number(totals.get('clicks'))}",
             f"   — Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}",
-            f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share)}",
+            f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share, (summary_stats or {}).get('adsApiPartial'))}",
         ]
     )
 
