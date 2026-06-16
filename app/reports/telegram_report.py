@@ -2177,7 +2177,7 @@ def _format_optional_dynamic(value):
     return _format_dynamic_value(value)
 
 
-def _build_product_movement_block(problem_products, direction):
+def _build_product_movement_block(problem_products, direction, summary_stats=None):
     products = []
     for product in problem_products or []:
         revenue_dynamic = _product_metric_dynamic(product, "orderSum")
@@ -2216,6 +2216,7 @@ def _build_product_movement_block(problem_products, direction):
         :3
     ]
     if direction == "drop":
+        _log_telegram_ads_product_breakdown(products, summary_stats)
         logger.debug(
             "TOP DECLINES DEBUG: %s",
             [
@@ -2238,17 +2239,215 @@ def _build_product_movement_block(problem_products, direction):
         revenue_dynamic,
         traffic_dynamic,
     ) in enumerate(products, start=1):
-        lines.append(
-            f"{index}. <b>{_executive_problem_title(product)}</b>\n"
-            f"   Заказы: {_format_optional_dynamic(orders_dynamic)}\n"
-            f"   Выручка: {_format_optional_dynamic(revenue_dynamic)}\n"
-            f"   Переходы: {_format_optional_dynamic(traffic_dynamic)}"
-        )
+        product_lines = [
+            f"{index}. <b>{_executive_problem_title(product)}</b>",
+            f"   Заказы: {_format_optional_dynamic(orders_dynamic)}",
+            f"   Выручка: {_format_optional_dynamic(revenue_dynamic)}",
+            f"   Переходы: {_format_optional_dynamic(traffic_dynamic)}",
+        ]
+        if direction == "drop":
+            ads_breakdown = _build_product_ads_breakdown(
+                product, traffic_dynamic, orders_dynamic, summary_stats
+            )
+            if ads_breakdown:
+                product_lines.append(ads_breakdown)
+        lines.append("\n".join(product_lines))
     return title + "\n\n" + "\n\n".join(lines)
 
 
-def _build_top_drops_block(problem_products):
-    return _build_product_movement_block(problem_products, "drop")
+def _log_telegram_ads_product_breakdown(products, summary_stats):
+    checked = len(products or [])
+    with_ads = 0
+    without_ads = 0
+    for product, *_ in products or []:
+        if _product_ads_totals(product, summary_stats) is None:
+            without_ads += 1
+        else:
+            with_ads += 1
+    diagnostic = (
+        "TELEGRAM ADS PRODUCT BREAKDOWN:\n"
+        f"top drop products checked: {checked}\n"
+        f"with ads data: {with_ads}\n"
+        f"without ads data: {without_ads}"
+    )
+    logger.info(diagnostic)
+    print(diagnostic)
+
+
+def _normalize_ads_nm_id(value):
+    if value in (None, "", "n/a"):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value).strip()
+    if number.is_integer():
+        return str(int(number))
+    return str(value).strip()
+
+
+def _ads_previous_value(row, metric):
+    candidates = [
+        f"previous{metric[0].upper()}{metric[1:]}",
+        f"previous_{metric}",
+        f"past{metric[0].upper()}{metric[1:]}",
+    ]
+    for key in candidates:
+        value = row.get(key)
+        if _is_present(value):
+            return to_number(value)
+    return 0
+
+
+def _product_ads_totals(product, summary_stats):
+    nm_id = _normalize_ads_nm_id(product.get("nmId"))
+    if not nm_id:
+        return None
+
+    matched_rows = [
+        row
+        for row in (summary_stats or {}).get("adsRows") or []
+        if isinstance(row, dict)
+        and _normalize_ads_nm_id(row.get("nmId") or row.get("nm_id")) == nm_id
+    ]
+    if not matched_rows:
+        return None
+
+    totals = {"rows": len(matched_rows)}
+    for metric in ("impressions", "clicks", "spend", "orders", "ordersSum", "bid"):
+        current_values = [to_number(row.get(metric)) for row in matched_rows]
+        previous_values = [_ads_previous_value(row, metric) for row in matched_rows]
+        if metric == "bid":
+            weighted_current = [
+                (
+                    row.get(metric),
+                    to_number(row.get("clicks")) or to_number(row.get("impressions")),
+                )
+                for row in matched_rows
+            ]
+            weighted_previous = [
+                (
+                    _ads_previous_value(row, metric),
+                    _ads_previous_value(row, "clicks")
+                    or _ads_previous_value(row, "impressions"),
+                )
+                for row in matched_rows
+            ]
+            current_weight = sum(weight for _, weight in weighted_current)
+            previous_weight = sum(weight for _, weight in weighted_previous)
+            totals[metric] = (
+                sum(to_number(value) * weight for value, weight in weighted_current)
+                / current_weight
+                if current_weight
+                else sum(current_values) / len(current_values)
+            )
+            totals[f"previous_{metric}"] = (
+                sum(to_number(value) * weight for value, weight in weighted_previous)
+                / previous_weight
+                if previous_weight
+                else sum(previous_values) / len(previous_values)
+            )
+        else:
+            totals[metric] = sum(current_values)
+            totals[f"previous_{metric}"] = sum(previous_values)
+
+    totals["ctr"] = (
+        totals["clicks"] / totals["impressions"] * 100 if totals["impressions"] else 0
+    )
+    totals["previous_ctr"] = (
+        totals["previous_clicks"] / totals["previous_impressions"] * 100
+        if totals["previous_impressions"]
+        else 0
+    )
+    totals["cpc"] = totals["spend"] / totals["clicks"] if totals["clicks"] else 0
+    totals["previous_cpc"] = (
+        totals["previous_spend"] / totals["previous_clicks"]
+        if totals["previous_clicks"]
+        else 0
+    )
+    totals["drr"] = (
+        totals["spend"] / totals["ordersSum"] * 100 if totals["ordersSum"] else 0
+    )
+    totals["previous_drr"] = (
+        totals["previous_spend"] / totals["previous_ordersSum"] * 100
+        if totals["previous_ordersSum"]
+        else 0
+    )
+    return totals
+
+
+def _ads_metric_dynamic(totals, metric):
+    previous = totals.get(f"previous_{metric}")
+    current = totals.get(metric)
+    if previous in (None, "") or to_number(previous) == 0:
+        return None
+    return (to_number(current) - to_number(previous)) / to_number(previous) * 100
+
+
+def _format_ads_metric_pair(totals, metric, suffix=""):
+    previous = totals.get(f"previous_{metric}")
+    current = totals.get(metric)
+    return f"{_format_number(previous)}{suffix} → {_format_number(current)}{suffix}"
+
+
+def _product_ads_conclusion(totals, traffic_dynamic, orders_dynamic):
+    impressions_dynamic = _ads_metric_dynamic(totals, "impressions")
+    ctr_dynamic = _ads_metric_dynamic(totals, "ctr")
+    cpc_dynamic = _ads_metric_dynamic(totals, "cpc")
+    ads_orders_dynamic = _ads_metric_dynamic(totals, "orders")
+
+    if (
+        traffic_dynamic is not None
+        and traffic_dynamic < 0
+        and impressions_dynamic is not None
+        and impressions_dynamic < 0
+    ):
+        return "Просадка связана с падением рекламного трафика."
+    if (
+        impressions_dynamic is not None
+        and abs(impressions_dynamic) <= 5
+        and ctr_dynamic is not None
+        and ctr_dynamic < 0
+    ):
+        return "Проблема в кликабельности рекламы: показы есть, но клики просели."
+    if (
+        ctr_dynamic is not None
+        and abs(ctr_dynamic) <= 5
+        and cpc_dynamic is not None
+        and cpc_dynamic > 0
+    ):
+        return "Аукцион стал дороже: стоимость клика выросла."
+    if ads_orders_dynamic is not None and ads_orders_dynamic < 0:
+        return "Реклама стала хуже конвертировать в заказы."
+    if orders_dynamic is not None and orders_dynamic < 0:
+        return "Реклама не выглядит главной причиной просадки. Проверить карточку, цену, доставку и остатки."
+    return "Реклама не выглядит главной причиной просадки. Проверить карточку, цену, доставку и остатки."
+
+
+def _build_product_ads_breakdown(
+    product, traffic_dynamic, orders_dynamic, summary_stats
+):
+    totals = _product_ads_totals(product, summary_stats)
+    if totals is None:
+        return "   Рекламных данных по товару нет: товар не найден в рекламной статистике WB Ads."
+
+    return "\n".join(
+        [
+            "   📢 <b>Реклама по товару</b>",
+            f"   — Показы: {_format_ads_metric_pair(totals, 'impressions')}",
+            f"   — Клики: {_format_ads_metric_pair(totals, 'clicks')}",
+            f"   — CTR рекламы: {_format_ads_metric_pair(totals, 'ctr', '%')}",
+            f"   — Стоимость клика: {_format_ads_metric_pair(totals, 'cpc', ' ₽')}",
+            f"   — ДРР: {_format_ads_metric_pair(totals, 'drr', '%')}",
+            f"   — Заказы с рекламы: {_format_ads_metric_pair(totals, 'orders')}",
+            f"   — Ставка средняя: {_format_ads_metric_pair(totals, 'bid', ' ₽')}",
+            f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic)}",
+        ]
+    )
+
+
+def _build_top_drops_block(problem_products, summary_stats=None):
+    return _build_product_movement_block(problem_products, "drop", summary_stats)
 
 
 def _build_top_growth_block(problem_products):
@@ -3182,7 +3381,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         below_fact_line,
         f"Низкоприоритетных сигналов: {_format_number(sum(1 for record in records if _is_below_abc_threshold(record)))}",
         _build_low_priority_signals_block(records),
-        _build_top_drops_block(problem_products),
+        _build_top_drops_block(problem_products, summary_stats),
         _build_top_growth_block(problem_products),
         _build_stock_eta_block(records),
         _build_stock_risks_block(records),

@@ -83,7 +83,7 @@ create table if not exists problems (
     root_recommendation text,
     severity text,
     severity_score numeric,
-    business_impact_score numeric default 0,
+    business_impact_score numeric,
     is_below_abc_threshold boolean default false,
     lost_orders numeric,
     lost_order_sum numeric,

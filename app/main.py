@@ -370,6 +370,7 @@ def main():
     )
 
     summary_stats["adsSummary"] = ads_summary
+    summary_stats["adsRows"] = ads_data
     summary_stats["adsRawRowsCount"] = raw_ads_rows_count
     summary_stats["adsAggregatedRowsCount"] = aggregated_ads_rows_count
     summary_stats["advertisedSkuCount"] = advertised_sku_count
