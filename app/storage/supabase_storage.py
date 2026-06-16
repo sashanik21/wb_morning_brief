@@ -344,6 +344,11 @@ def _normalize_problem(problem):
         "severity_score": _to_number(
             _first_present(problem, ["severity_score", "severityScore"])
         ),
+        "business_impact_score": _to_number(
+            _first_present(
+                problem, ["business_impact_score", "businessImpactScore"], default=0
+            )
+        ),
         "is_below_abc_threshold": _to_bool(
             _first_present(
                 problem,

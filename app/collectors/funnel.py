@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.analyzers.business_impact import enrich_business_impact_scores
 from app.analyzers.severity import calculate_problem_severity, downgrade_severity
 from app.analyzers.stock_states import (
     NO_VISIBLE_SUPPLY_REASON,
@@ -75,6 +76,7 @@ PROBLEMS_REPORT_COLUMNS = [
     "dynamicPercent",
     "severity",
     "severityScore",
+    "businessImpactScore",
     "isBelowAbcThreshold",
     "lostOrders",
     "lostOrderSum",
@@ -1436,6 +1438,7 @@ def analyze_funnel_problems(
 
         problem_rows.extend(record_problem_rows)
 
+    enrich_business_impact_scores(problem_rows)
     priority_problem_count = len(problem_rows) - below_threshold_problem_count
 
     print("ABC PRIORITY FILTER:")

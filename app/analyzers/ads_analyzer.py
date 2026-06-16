@@ -3,6 +3,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.analyzers.business_impact import (
+    calculate_business_impact_score,
+    enrich_business_impact_scores,
+)
 from app.analyzers.severity import calculate_problem_severity
 from app.seller_config import SELLER_NAME
 
@@ -388,7 +392,7 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         severity_fields["severityScore"] = 0
         severity_fields["severity"] = "low"
 
-    return {
+    problem = {
         "sellerName": row.get("sellerName") or SELLER_NAME,
         "problemCategory": "ads",
         "campaignId": row.get("campaignId") or "",
@@ -442,6 +446,8 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "auctionTemperature": _auction_temperature(row),
         "recommendation": ADS_RECOMMENDATIONS[problem_type],
     }
+    problem["businessImpactScore"] = calculate_business_impact_score(problem)
+    return problem
 
 
 def _is_funnel_open_drop(row):
@@ -724,6 +730,7 @@ def analyze_ads_problems(ads_rows, funnel_rows=None):
                 _enrich_budget_waste_risk(problem, funnel_row)
 
     problems = _suppress_ads_problem_duplicates(problems)
+    enrich_business_impact_scores(problems)
     print(f"Ads problems found: {len(problems)}")
     return problems
 

@@ -1,6 +1,7 @@
 import pandas as pd
 
 from app.analyzers.ads_analyzer import _funnel_rows_by_nm_id, analyze_ads_problems
+from app.analyzers.business_impact import calculate_business_impact_score
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.root_cause_analyzer import analyze_root_causes
 
@@ -280,3 +281,42 @@ def test_cards_collector_stops_at_max_pages(monkeypatch):
 
     assert result == {"cards": [{"nmID": 1}, {"nmID": 2}, {"nmID": 3}]}
     assert len(client_stub.requests) == 3
+
+
+def test_business_impact_score_increases_with_revenue_loss():
+    low = calculate_business_impact_score(
+        {"metric": "orderSum", "potentialRevenueLoss": 10, "severityScore": 1}
+    )
+    high = calculate_business_impact_score(
+        {"metric": "orderSum", "potentialRevenueLoss": 20, "severityScore": 1}
+    )
+
+    assert high > low
+
+
+def test_business_impact_score_prioritizes_order_sum_over_open_count():
+    order_sum = calculate_business_impact_score(
+        {"metric": "orderSum", "potentialRevenueLoss": 10, "severityScore": 1}
+    )
+    open_count = calculate_business_impact_score(
+        {"metric": "openCount", "potentialRevenueLoss": 10, "severityScore": 1}
+    )
+
+    assert order_sum > open_count
+
+
+def test_business_impact_score_handles_empty_values():
+    score = calculate_business_impact_score(
+        {
+            "metric": "orderSum",
+            "potentialRevenueLoss": None,
+            "lostOrderSum": "",
+            "blockedRevenuePerDay": "not-a-number",
+            "potentialOrdersLoss": None,
+            "lostOrders": "",
+            "blockedOrdersPerDay": "not-a-number",
+            "severityScore": None,
+        }
+    )
+
+    assert score == 100
