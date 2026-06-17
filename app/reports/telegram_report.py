@@ -1604,39 +1604,118 @@ def _format_ads_bid_delta(value):
     return f"{sign}{_format_money(abs(delta))}"
 
 
-def _ads_product_diagnosis_status(totals, orders_dynamic=None, ads_traffic_share=None):
+def _ads_product_diagnosis(totals, orders_dynamic=None, ads_traffic_share=None, open_count=None):
+    totals = totals or {}
+    if not totals:
+        return {
+            "status": "yellow",
+            "reason": "🟡 Нет данных",
+            "confirmation": ["Данных по рекламе нет."],
+            "conclusion": "Невозможно проверить влияние рекламы на просадку.",
+        }
+
     clicks = to_number(totals.get("clicks"))
     impressions = to_number(totals.get("impressions"))
+    ctr = to_number(totals.get("ctr"))
     drr = to_number(totals.get("drr"))
     previous_clicks = totals.get("previous_clicks")
     previous_impressions = totals.get("previous_impressions")
     previous_drr = totals.get("previous_drr")
 
     if clicks == 0:
-        return "red", "🔴 реклама не даёт переходов"
-    if ads_traffic_share is not None and ads_traffic_share < 10:
-        return "yellow", "🟡 реклама почти не влияет, основная просадка не в рекламе"
+        return {
+            "status": "red",
+            "reason": "🔴 Реклама",
+            "confirmation": [
+                f"Реклама получила {_format_number(impressions)} показов, но не дала переходов."
+            ],
+            "conclusion": "Реклама не даёт переходов. Проверить ставку, размещение, карточку и релевантность товара.",
+        }
+    if impressions > 1000 and ctr < 0.5:
+        return {
+            "status": "red",
+            "reason": "🔴 Реклама",
+            "confirmation": [
+                f"Реклама получила {_format_number(impressions)} показов, но CTR всего {_format_number(ctr)}%."
+            ],
+            "conclusion": "Реклама получает показы, но не получает клики. Проверить ставку, главное фото, цену и позицию товара.",
+        }
     if _is_present(previous_clicks) and to_number(previous_clicks) > 0:
         if clicks < to_number(previous_clicks) * 0.8:
-            return "red", "🔴 рекламный трафик просел"
+            return {
+                "status": "red",
+                "reason": "🔴 Реклама",
+                "confirmation": ["Рекламные клики снизились более чем на 20%."],
+                "conclusion": "Просадка может быть связана с потерей рекламного трафика.",
+            }
     if _is_present(previous_impressions) and to_number(previous_impressions) > 0:
         if impressions < to_number(previous_impressions) * 0.8:
-            return "red", "🔴 показы рекламы просели"
+            return {
+                "status": "red",
+                "reason": "🔴 Реклама",
+                "confirmation": ["Показы рекламы снизились более чем на 20%."],
+                "conclusion": "Просадка может быть связана с потерей рекламических показов.",
+            }
     if _is_present(previous_drr) and to_number(previous_drr) > 0:
         if drr > to_number(previous_drr) * 1.2:
-            return "red", "🔴 реклама стала дороже, проверить ставки и ДРР"
+            return {
+                "status": "red",
+                "reason": "🔴 Реклама",
+                "confirmation": ["ДРР вырос более чем на 20%."],
+                "conclusion": "Реклама стала дороже. Проверить ставки, CPC и эффективность кампаний.",
+            }
     if orders_dynamic is not None and orders_dynamic < 0:
-        if not _is_present(previous_clicks) or clicks >= to_number(previous_clicks) * 0.8:
-            return (
-                "yellow",
-                "🟡 реклама даёт трафик, проблема вероятнее в карточке, цене или конверсии",
-            )
+        clicks_stable_or_growing = (
+            not _is_present(previous_clicks) or clicks >= to_number(previous_clicks)
+        )
+        if clicks_stable_or_growing:
+            return {
+                "status": "yellow",
+                "reason": "🟡 Карточка / цена / конверсия",
+                "confirmation": [
+                    "Рекламные клики не просели, но заказы товара снизились."
+                ],
+                "conclusion": "Реклама даёт трафик, проблема вероятнее в карточке, цене или конверсии.",
+            }
+    if ads_traffic_share is not None and ads_traffic_share < 10:
+        confirmation = [
+            f"Реклама дала {_format_number(clicks)} кликов из {_format_number(open_count)} переходов."
+            if open_count is not None and open_count > 0
+            else f"Реклама дала {_format_number(clicks)} кликов."
+        ]
+        confirmation.append(
+            f"Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}."
+        )
+        return {
+            "status": "yellow",
+            "reason": "🟡 Органика",
+            "confirmation": confirmation,
+            "conclusion": "Просадка вызвана органическим трафиком, а не рекламой.",
+        }
+
     clicks_stable = not _is_present(previous_clicks) or clicks >= to_number(previous_clicks) * 0.8
     impressions_stable = not _is_present(previous_impressions) or impressions >= to_number(previous_impressions) * 0.8
     drr_stable = not _is_present(previous_drr) or to_number(previous_drr) <= 0 or drr <= to_number(previous_drr) * 1.2
     if impressions_stable and clicks_stable and drr_stable:
-        return "green", "🟢 реклама работает стабильно"
-    return "yellow", "🟡 данных по рекламе недостаточно для точного вывода"
+        return {
+            "status": "green",
+            "reason": "🟢 Реклама работает стабильно",
+            "confirmation": ["Рекламные показатели не показывают критичной просадки."],
+            "conclusion": "По доступным данным реклама работает стабильно.",
+        }
+    return {
+        "status": "yellow",
+        "reason": "🟡 Органика / карточка / цена / конверсия",
+        "confirmation": ["Рекламные данные не подтверждают прямую рекламную причину просадки."],
+        "conclusion": "Просадка вызвана не рекламой, а органическим трафиком / карточкой / ценой / конверсией.",
+    }
+
+
+def _ads_product_diagnosis_status(totals, orders_dynamic=None, ads_traffic_share=None):
+    diagnosis = _ads_product_diagnosis(
+        totals, orders_dynamic=orders_dynamic, ads_traffic_share=ads_traffic_share
+    )
+    return diagnosis["status"], diagnosis["conclusion"]
 
 
 def _aggregate_ads_rows_by_product(summary_stats):
@@ -1692,9 +1771,9 @@ def _ads_diagnosis_lines(ads_summary, summary_stats=None):
     if counters["green"] > counters["yellow"] and counters["green"] > counters["red"]:
         conclusion = "По доступным данным реклама работает стабильно."
     elif counters["red"] > counters["green"] and counters["red"] > counters["yellow"]:
-        conclusion = "Реклама требует проверки: часть товаров теряет рекламный трафик или клики."
+        conclusion = "Реклама требует проверки: часть товаров теряет рекламный трафик, клики или эффективность."
     else:
-        conclusion = "Реклама не выглядит главной причиной просадки, нужно проверять карточки, цену, органику и остатки."
+        conclusion = "Реклама не выглядит главной причиной просадки. Нужно проверять органику, карточки, цену, конверсию и остатки."
 
     coverage = (
         f"{_format_number(advertised_sku)}/{_format_number(total_sku)}"
@@ -1710,9 +1789,9 @@ def _ads_diagnosis_lines(ads_summary, summary_stats=None):
         f"Средний CPC: {_format_number(ads_summary.get('currentCpc'))} ₽",
         f"Средний ДРР: {_format_number(ads_summary.get('currentDrr'))}%",
         "",
-        f"🟢 Реклама помогает / работает стабильно: {_format_number(counters['green'])}",
-        f"🟡 Реклама нейтральна или данных мало: {_format_number(counters['yellow'])}",
-        f"🔴 Реклама просела или не даёт трафик: {_format_number(counters['red'])}",
+        f"🟢 Реклама работает стабильно: {_format_number(counters['green'])}",
+        f"🟡 Реклама нейтральна / причина не в рекламе: {_format_number(counters['yellow'])}",
+        f"🔴 Реклама требует проверки: {_format_number(counters['red'])}",
         "",
         "Вывод по рекламе:",
         conclusion,
@@ -3136,18 +3215,31 @@ def _format_optional_ads_line(label, value, suffix=""):
     return f"   {label}: {_format_number(value)}{suffix}"
 
 
+def _format_product_ads_diagnosis_block(diagnosis):
+    lines = [
+        "   📢 <b>Рекламный диагноз</b>",
+        "",
+        "   Причина просадки:",
+        f"   {diagnosis['reason']}",
+        "",
+        "   Подтверждение:",
+    ]
+    lines.extend(f"   {line}" for line in diagnosis.get("confirmation") or [])
+    lines.extend(
+        [
+            "",
+            "   Вывод:",
+            f"   {diagnosis['conclusion']}",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _build_product_ads_breakdown(
     product, traffic_dynamic, orders_dynamic, summary_stats, open_count=None
 ):
-    no_data_block = "\n".join(
-        [
-            "   📢 <b>Реклама по товару</b>",
-            "",
-            "   Данных по рекламе нет.",
-            "",
-            "   Оценка:",
-            "   🟡 невозможно проверить влияние рекламы на просадку",
-        ]
+    no_data_block = _format_product_ads_diagnosis_block(
+        _ads_product_diagnosis(None, orders_dynamic=orders_dynamic)
     )
     if _ads_rows_count(summary_stats) == 0:
         return no_data_block
@@ -3173,41 +3265,26 @@ def _build_product_ads_breakdown(
     )
 
     if _ads_fallback_data_is_stale(totals, summary_stats):
-        return "\n".join(
-            [
-                "   📢 <b>Реклама по товару</b>",
-                "   Источник: история Supabase",
-                "   Актуальные данные рекламы не получены от WB Ads API.",
-            ]
+        return _format_product_ads_diagnosis_block(
+            _ads_product_diagnosis(None, orders_dynamic=orders_dynamic)
         )
 
-    lines = [
-        "   📢 <b>Реклама по товару</b>",
-        "",
-        f"   Показы: {_format_number(totals.get('impressions'))}",
-        f"   Клики: {_format_number(totals.get('clicks'))}",
-        f"   CTR: {_format_number(totals.get('ctr'))}%",
-        f"   CPC: {_format_number(totals.get('cpc'))} ₽",
-        f"   Расход: {_format_number(totals.get('spend'))} ₽",
-        f"   ДРР: {_format_number(totals.get('drr'))}%",
-    ]
-    if ads_traffic_share is not None:
-        lines.append(
-            f"   Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}"
-        )
-    if _is_present(totals.get("bid")) and to_number(totals.get("bid")) != 0:
-        lines.append(f"   Ставка: {_format_number(totals.get('bid'))} ₽")
-    if _is_present(totals.get("previous_bid")):
+    diagnosis = _ads_product_diagnosis(
+        totals,
+        orders_dynamic=orders_dynamic,
+        ads_traffic_share=ads_traffic_share,
+        open_count=current_open_count,
+    )
+    lines = [_format_product_ads_diagnosis_block(diagnosis)]
+
+    if (
+        _is_present(totals.get("bid"))
+        and _is_present(totals.get("previous_bid"))
+        and to_number(totals.get("bid")) != to_number(totals.get("previous_bid"))
+    ):
         bid_delta = to_number(totals.get("bid")) - to_number(totals.get("previous_bid"))
         sign = "+" if bid_delta > 0 else ""
-        lines.append(f"   Изменение ставки: {sign}{_format_number(bid_delta)} ₽")
-    lines.extend(
-        [
-            "",
-            "   Оценка:",
-            f"   {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share, (summary_stats or {}).get('adsApiPartial'))}",
-        ]
-    )
+        lines.extend(["", f"   Изменение ставки: {sign}{_format_number(bid_delta)} ₽"])
     return "\n".join(lines)
 
 
@@ -3287,15 +3364,6 @@ def _build_executive_ads_block(records, summary_stats):
     lines = _ads_summary_lines(ads_summary, summary_stats)
 
     if not ads_records:
-        if problem_campaigns:
-            lines.append(
-                "Критичных рекламных проблем по доступным данным не найдено, "
-                f"но есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
-            )
-        else:
-            lines.append(
-                "Критичных рекламных проблем по доступным данным не найдено."
-            )
         return "\n".join(lines)
 
     first_problem = ads_records[0]
