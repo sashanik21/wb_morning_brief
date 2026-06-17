@@ -1304,29 +1304,41 @@ def _format_qbiki_product_line(index, row):
 
 
 def _ads_api_429_limitation_line(summary_stats):
-    summary_stats = summary_stats or {}
-    rate_limit = summary_stats.get("adsRateLimit") or {}
-    total = rate_limit.get("campaigns_total") or rate_limit.get("campaigns_requested")
-    processed = rate_limit.get("campaigns_loaded") or 0
-    confidence = summary_stats.get("adsCoverageConfidence") or rate_limit.get(
-        "adsCoverageConfidence"
-    )
-    if total and processed < total:
-        confidence_label = {
-            "LOW": "низкая",
-            "MEDIUM": "средняя",
-            "HIGH": "высокая",
-        }.get(confidence, "н/д")
-        return (
-            f"⚠️ Реклама: обработано {_format_number(processed)} из {_format_number(total)} кампаний. "
-            f"Надежность рекламного блока {confidence_label}. "
-            "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
-        )
-    if summary_stats.get("adsApiPartial"):
-        return "⚠️ Реклама: данные частичные, часть запросов WB API не успела/не смогла выполниться."
-    if summary_stats.get("adsApiHad429"):
-        return "⚠️ Рекламные данные частичные: WB API вернул ошибку или ограничил часть запросов."
+    if _has_partial_ads_data(summary_stats):
+        return "⚠️ Данные рекламы частичные."
     return ""
+
+
+def _has_partial_ads_data(summary_stats=None, ads_summary=None):
+    summary_stats = summary_stats or {}
+    ads_summary = ads_summary or summary_stats.get("adsSummary") or {}
+    rate_limit = summary_stats.get("adsRateLimit") or {}
+    if (
+        summary_stats.get("adsApiHad429")
+        or summary_stats.get("hasApi429")
+        or summary_stats.get("adsApiPartial")
+        or ads_summary.get("adsApiHad429")
+        or ads_summary.get("hasApi429")
+        or ads_summary.get("adsApiPartial")
+    ):
+        return True
+
+    processed = (
+        rate_limit.get("campaigns_success")
+        or rate_limit.get("campaigns_loaded")
+        or (ads_summary or {}).get("campaignsSuccess")
+        or (ads_summary or {}).get("processedCampaigns")
+    )
+    total = (
+        rate_limit.get("campaigns_attempted")
+        or rate_limit.get("campaigns_requested")
+        or rate_limit.get("campaigns_selected")
+        or rate_limit.get("campaigns_total")
+        or (ads_summary or {}).get("activeCampaigns")
+    )
+    if processed in (None, "") or total in (None, ""):
+        return False
+    return to_number(processed) < to_number(total)
 
 
 def _build_qbiki_ads_profitability_block(summary_stats):
@@ -1433,7 +1445,7 @@ def _metric_change_state(previous, current, stable_threshold=5):
 def _ads_summary_conclusion(ads_summary):
     ads_summary = ads_summary or {}
     if ads_summary.get("adsCoverageConfidence") == "LOW":
-        return "По обработанной части рекламных кампаний критичных изменений не видно, но покрытие рекламы низкое."
+        return "Критичных изменений по рекламе не видно."
     if _ads_has_incomplete_metric_history(ads_summary):
         return "История рекламы пока короткая, выводы предварительные."
     ctr = _metric_change_state(
@@ -1492,31 +1504,9 @@ def _ads_rows_count(summary_stats=None, ads_summary=None):
 
 
 def _ads_campaigns_coverage_line(summary_stats=None, ads_summary=None):
-    if _ads_rows_count(summary_stats, ads_summary) <= 0:
-        return None
-
-    rate_limit = (summary_stats or {}).get("adsRateLimit") or {}
-    processed = (
-        rate_limit.get("campaigns_success")
-        or (ads_summary or {}).get("campaignsSuccess")
-        or (ads_summary or {}).get("processedCampaigns")
-    )
-    total = (
-        rate_limit.get("campaigns_attempted")
-        or rate_limit.get("campaigns_requested")
-        or rate_limit.get("campaigns_selected")
-        or rate_limit.get("campaigns_total")
-        or (ads_summary or {}).get("activeCampaigns")
-    )
-    if processed in (None, "") or total in (None, ""):
-        return None
-
-    return (
-        f"⚠️ Реклама: обработано {_format_number(processed)} "
-        f"из {_format_number(total)} кампаний.\n"
-        "Покрытие рекламы низкое.\n"
-        "Выводы сделаны только по части рекламных данных."
-    )
+    if _has_partial_ads_data(summary_stats, ads_summary):
+        return "⚠️ Данные рекламы частичные."
+    return None
 
 
 def _ads_campaigns_success_zero(summary_stats=None, ads_summary=None):
@@ -1572,8 +1562,6 @@ def _ads_row_campaign_types(row):
     for label in _resolve_ads_row_campaign_types(row):
         if label not in values:
             values.append(label)
-    if not values:
-        values.append(_ads_campaign_type_label(None))
     return values
 
 
@@ -1662,12 +1650,7 @@ def _ads_processed_campaign_lines(summary_stats=None, ads_summary=None):
 
     for index, campaign in enumerate(list(grouped_rows.values())[:5], start=1):
         campaign_ids = campaign["campaignIds"]
-        campaign_types = campaign["campaignTypes"] or [_ads_campaign_type_label(None)]
-        drr = (
-            campaign["spend"] / campaign["ordersSum"] * 100
-            if campaign["ordersSum"]
-            else 0
-        )
+        campaign_types = campaign["campaignTypes"]
         if len(campaign_ids) > 1:
             id_line = f"ID кампаний: {html.escape(', '.join(campaign_ids))}"
         elif campaign_ids:
@@ -1677,11 +1660,9 @@ def _ads_processed_campaign_lines(summary_stats=None, ads_summary=None):
         unique_types = list(dict.fromkeys(campaign_types))
         type_label = html.escape(", ".join(unique_types))
         type_line = "Типы кампаний" if len(unique_types) > 1 else "Тип кампании"
-        campaign_lines = [
-            f"{index}. {id_line}",
-            f"   {type_line}: {type_label}",
-            f"   Товар: {campaign['title']}",
-        ]
+        campaign_lines = [f"{index}. {id_line}"]
+        if type_label:
+            campaign_lines.append(f"   {type_line}: {type_label}")
         if _is_present(campaign["dataDate"]):
             campaign_lines.append(
                 f"   Дата данных: {html.escape(str(campaign['dataDate']))}"
@@ -1691,14 +1672,6 @@ def _ads_processed_campaign_lines(summary_stats=None, ads_summary=None):
         bid_delta = _format_ads_bid_delta(campaign["bidDelta"])
         if bid_delta:
             campaign_lines.append(f"   Изменение ставки: {bid_delta}")
-        campaign_lines.extend(
-            [
-                f"   Показы: {_format_number(campaign['impressions'])}",
-                f"   Клики: {_format_number(campaign['clicks'])}",
-                f"   Расход: {_format_money(campaign['spend'])}",
-                f"   ДРР: {_format_number(drr)}%",
-            ]
-        )
         lines.append("\n".join(campaign_lines))
     return lines
 
@@ -1728,8 +1701,6 @@ def _ads_summary_lines(ads_summary, summary_stats=None):
             "⚠️ Актуальные данные рекламы не получены от WB. "
             "Используются последние доступные данные из истории."
         )
-    if ads_summary.get("adsApiHad429") or ads_summary.get("hasApi429"):
-        lines[0] += " Данные частичные: WB API 429."
     coverage_line = _ads_campaigns_coverage_line(summary_stats, ads_summary)
     if coverage_line:
         lines.append(coverage_line)
@@ -1767,9 +1738,6 @@ def _build_ads_block(records, summary_stats):
     problem_campaigns = ads_summary.get("problemCampaigns", 0)
     ads_problem_count = ads_summary.get("problems", len(ads_records))
     block_lines = _ads_summary_lines(ads_summary, summary_stats)
-    limitation_line = _ads_api_429_limitation_line(summary_stats)
-    if limitation_line:
-        block_lines.append(limitation_line)
     block_lines.append(f"проблем рекламы: {_format_number(ads_problem_count)}")
     block_lines.append(f"проблемных кампаний: {_format_number(problem_campaigns)}")
     qbiki_line = _qbiki_unavailable_line(summary_stats)
@@ -1778,13 +1746,7 @@ def _build_ads_block(records, summary_stats):
 
     if not ads_records:
         block_lines.append(
-            "Рекламные выводы ограничены из-за низкого покрытия данных."
-            if (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
-            else (
-                "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
-                if limitation_line
-                else "Критичных рекламных проблем по доступным данным не найдено."
-            )
+            "Критичных рекламных проблем по доступным данным не найдено."
         )
         return "\n".join(block_lines)
 
@@ -2929,8 +2891,7 @@ def _format_ads_metric_pair(totals, metric, suffix=""):
 
 
 def _ads_campaign_type_label(value):
-    text = str(value or "").strip()
-    return _ads_campaign_type_label_or_empty(text) or text or "Тип не определён"
+    return _ads_campaign_type_label_or_empty(value)
 
 
 def _ads_campaign_type_label_or_empty(value):
@@ -2948,29 +2909,25 @@ def _ads_campaign_type_label_or_empty(value):
     normalized_text = re.sub(r"\s+", " ", normalized_text).strip()
 
     numeric_mapping = {
-        "4": "WB Продвижение — CPC, поиск и каталог",
+        "4": "CPC, поиск и каталог",
         "5": "Аукцион / поиск",
         "6": "Поиск",
         "7": "Каталог",
-        "8": "Автоматическая кампания — поиск, каталог, рекомендации",
+        "8": "Автоматическая кампания",
         "9": "Аукцион / поиск",
     }
     if normalized_text in numeric_mapping:
         return numeric_mapping[normalized_text]
 
     token_mapping = (
-        (
-            ("cpc", "click", "clicks", "per click"),
-            "WB Продвижение — CPC, поиск и каталог",
-        ),
+        (("manual",), "Ручная кампания"),
+        (("unified",), "Автоматическая кампания"),
+        (("cpc", "click", "clicks", "per click"), "CPC, поиск и каталог"),
         (
             ("cpm", "view", "views", "impression", "impressions"),
-            "WB Продвижение — CPM, поиск / каталог / рекомендации",
+            "CPM, поиск / каталог / рекомендации",
         ),
-        (
-            ("auto", "automatic", "автомат", "авто"),
-            "Автоматическая кампания — поиск, каталог, рекомендации",
-        ),
+        (("auto", "automatic", "автомат", "авто"), "Автоматическая кампания"),
         (("auction", "аукцион"), "Аукцион / поиск"),
         (("search", "поиск"), "Поиск"),
         (("catalog", "каталог"), "Каталог"),
@@ -2980,8 +2937,6 @@ def _ads_campaign_type_label_or_empty(value):
         if any(token in normalized_text for token in tokens):
             return label
 
-    if normalized_text == "unknown":
-        return "Тип не определён"
     return ""
 
 
@@ -3029,6 +2984,8 @@ def _resolve_ads_row_campaign_types(row):
         "paymentType",
         "model",
         "placement",
+        "bid_type",
+        "bidType",
     )
     payment_keys = ("paymentType", "model")
     raw_types = []
@@ -3051,12 +3008,9 @@ def _resolve_ads_row_campaign_types(row):
     resolved_types = []
     for raw_type in values_to_resolve:
         label = _ads_campaign_type_label_or_empty(raw_type)
-        if label != "Тип не определён":
+        if label:
             resolved_types.append(label)
             break
-
-    if not resolved_types:
-        resolved_types.append("Тип не определён")
 
     campaign_ids = _ads_row_campaign_ids(row)
     logger.info(
@@ -3082,9 +3036,13 @@ def _format_ads_campaign_meta(totals):
         if value not in (None, "")
     ]
     campaign_types = [
-        _ads_campaign_type_label(value)
-        for value in totals.get("campaignTypes") or []
-        if value not in (None, "")
+        label
+        for label in (
+            _ads_campaign_type_label(value)
+            for value in totals.get("campaignTypes") or []
+            if value not in (None, "")
+        )
+        if label
     ]
     if not campaign_ids and not campaign_types:
         return []
@@ -3343,28 +3301,14 @@ def _build_executive_ads_block(records, summary_stats):
     lines = _ads_summary_lines(ads_summary, summary_stats)
 
     if not ads_records:
-        limitation_line = _ads_api_429_limitation_line(summary_stats)
-        if limitation_line:
-            lines.append(limitation_line)
         if problem_campaigns:
-            if (summary_stats or {}).get("adsCoverageConfidence") == "LOW":
-                lines.append(
-                    "Рекламные выводы ограничены из-за низкого покрытия данных."
-                )
-            else:
-                lines.append(
-                    "Критичных рекламных проблем по доступным данным не найдено, "
-                    f"но есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
-                )
+            lines.append(
+                "Критичных рекламных проблем по доступным данным не найдено, "
+                f"но есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
+            )
         else:
             lines.append(
-                "Рекламные выводы ограничены из-за низкого покрытия данных."
-                if (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
-                else (
-                    "Рекламные выводы ограничены: данных недостаточно для поиска критичных проблем."
-                    if limitation_line
-                    else "Критичных рекламных проблем по доступным данным не найдено."
-                )
+                "Критичных рекламных проблем по доступным данным не найдено."
             )
         return "\n".join(lines)
 
