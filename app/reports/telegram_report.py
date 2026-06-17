@@ -57,7 +57,7 @@ def sanitize_telegram_text(text):
         return ""
 
     text = str(text).replace("<1%", "менее 1%")
-    allowed_tags = {"b"}
+    allowed_tags = {"a", "b"}
     protected_tags = {}
 
     def protect_allowed_tag(match):
@@ -76,6 +76,22 @@ def sanitize_telegram_text(text):
         text = text.replace(token, tag)
 
     return text
+
+
+def _format_wb_nm_id(nm_id, missing="n/a"):
+    if nm_id in (None, "") or str(nm_id) == "n/a":
+        return html.escape(str(missing))
+
+    escaped_nm_id = html.escape(str(nm_id))
+    href_nm_id = html.escape(str(nm_id), quote=True)
+    return (
+        f'<a href="https://www.wildberries.ru/catalog/{href_nm_id}/detail.aspx">'
+        f"{escaped_nm_id}</a>"
+    )
+
+
+def _format_wb_label(nm_id, missing="n/a"):
+    return f"WB {_format_wb_nm_id(nm_id, missing=missing)}"
 
 
 BUSINESS_METRIC_PRIORITY = {
@@ -215,7 +231,7 @@ def _format_product_identity(record_or_product):
     nm_id = record_or_product.get("nmId") or record_or_product.get("nm_id")
     if nm_id in (None, ""):
         return title
-    return f"{title} — WB {html.escape(str(nm_id))}"
+    return f"{title} — {_format_wb_label(nm_id)}"
 
 
 def _format_report_trust_score(score):
@@ -1009,7 +1025,7 @@ def _format_recommendations(problems):
 def _format_product_item(_index, product):
     title = html.escape(str(product["title"]))
     vendor_code = html.escape(str(product["vendorCode"]))
-    nm_id = html.escape(str(product["nmId"]))
+    nm_id = _format_wb_nm_id(product["nmId"])
     abc = html.escape(str(product.get("ABC") or "n/a"))
     problems = product["problems"]
     problem_lines = [
@@ -1209,7 +1225,7 @@ def _build_control_signals_block(summary_stats):
 
 def _format_drop_signal(signal):
     title = html.escape(str(signal.get("title") or "Без названия"))
-    nm_id = html.escape(str(signal.get("nmId") or "n/a"))
+    nm_id = _format_wb_nm_id(signal.get("nmId"))
     metric = html.escape(
         str(signal.get("problemLabel") or get_problem_label(signal.get("metric")))
     )
@@ -1576,7 +1592,7 @@ def _ads_row_product_title(row):
             return html.escape(str(value))
     nm_id = (row or {}).get("nmId") or (row or {}).get("nm_id")
     if nm_id not in (None, ""):
-        return f"WB {html.escape(str(nm_id))}"
+        return _format_wb_label(nm_id)
     return "Без названия"
 
 
@@ -1906,7 +1922,7 @@ def _product_primary_problem(product):
 def _executive_problem_title(product):
     title_value = product.get("title") or "Без названия"
     title = html.escape(str(title_value))
-    nm_id = html.escape(str(product.get("nmId") or "—"))
+    nm_id = _format_wb_nm_id(product.get("nmId"), missing="—")
 
     return f"{title} — WB {nm_id}"
 
@@ -2010,9 +2026,11 @@ def _business_action_text(problem, insight=None):
         return f"Снизить перегрев рекламы / проверить ДРР по {_format_product_identity(problem)}"
     if insight.get("rootCauseZone"):
         return f"Проверить {insight.get('rootCauseZone')} по товарам из блока главных проблем"
-    return str(
-        problem.get("recommendation")
-        or "Проверить ключевой сигнал по товарам из блока главных проблем"
+    return html.escape(
+        str(
+            problem.get("recommendation")
+            or "Проверить ключевой сигнал по товарам из блока главных проблем"
+        )
     )
 
 
@@ -2073,7 +2091,7 @@ def _build_executive_actions_block(
         if action in seen:
             continue
         seen.add(action)
-        lines.append(f"{len(lines) + 1}. {html.escape(action)}")
+        lines.append(f"{len(lines) + 1}. {action}")
         if len(lines) == EXECUTIVE_ACTIONS_LIMIT:
             break
 
@@ -2271,7 +2289,7 @@ def _main_business_decline_product(problem_products):
 def _build_executive_insight(problem_products, root_cause_insights, summary_stats):
     main_decline_product = _main_business_decline_product(problem_products)
     if main_decline_product:
-        title = html.escape(str(main_decline_product.get("title") or "товару"))
+        title = _format_product_identity(main_decline_product)
         lines = [
             _format_metric_drop_line(
                 _problem_by_metric(main_decline_product, "orderCount"), "заказы"
@@ -3191,7 +3209,7 @@ def _build_executive_ads_block(records, summary_stats):
             lines.append("")
             lines.append(
                 f"{label}:\n"
-                f"{html.escape(str(sku.get('title') or sku.get('nmId') or 'товар'))} — "
+                f"{_format_product_identity(sku)} — "
                 f"CTR {_format_number(sku.get('ctr'))}%, "
                 f"CPC {_format_number(sku.get('cpc'))} ₽, "
                 f"ДРР {_format_number(sku.get('drr'))}%"
@@ -3330,7 +3348,7 @@ def _format_signal_sku(row):
         return "n/a"
 
     title = html.escape(str(row.get("title") or "Без названия"))
-    nm_id = html.escape(str(row.get("nmId") or "n/a"))
+    nm_id = _format_wb_nm_id(row.get("nmId"))
     dynamic = html.escape(format_percent(row.get("orderSum_delta")))
 
     return f"{title} — WB {nm_id}, выручка {dynamic}"
@@ -3480,7 +3498,7 @@ def _report_trust_score(records):
 
 
 def _format_priority_problem_line(problem):
-    nm_id = html.escape(str(problem.get("nmId") or "n/a"))
+    nm_id = _format_wb_nm_id(problem.get("nmId"))
     problem_label = html.escape(_human_readable_problem_type(problem))
     impact = html.escape(_russian_impact_rank(problem))
     zone = html.escape(_russian_zone(_problem_zone(problem)))
@@ -3610,7 +3628,7 @@ def _build_top_impact_block(priority_records):
         return ""
     lines = ["🔥 <b>TOP потерь:</b>"]
     for index, record in enumerate(records, start=1):
-        nm_id = html.escape(str(record.get("nmId") or "—"))
+        nm_id = _format_wb_nm_id(record.get("nmId"), missing="—")
         title = html.escape(str(record.get("title") or "").strip())
         name = f"{title} — WB {nm_id}" if title else f"WB {nm_id}"
         lines.append(
@@ -3651,7 +3669,7 @@ def _build_first_checks_block(priority_records, root_cause_insights):
 
     if stock_impact_records:
         sku_list = ", ".join(
-            f"{record.get('title') or 'Товар'} — WB {record.get('nmId')}"
+            f"{html.escape(str(record.get('title') or 'Товар'))} — {_format_wb_label(record.get('nmId'))}"
             for record in stock_impact_records[:3]
             if record.get("nmId")
         )
@@ -3660,7 +3678,7 @@ def _build_first_checks_block(priority_records, root_cause_insights):
                 "Срочно пополнить остатки по товарам с заблокированной выручкой: "
                 f"{sku_list}."
             )
-            checks.append(html.escape(check))
+            checks.append(check)
             seen.add(check)
 
     has_oos_with_ads = any(
@@ -3878,7 +3896,7 @@ def _build_evidence_block(summary_stats):
         formatted_rows.append(
             f"🏷️ <b>{escape(row.get('title') or 'Без названия')}</b>\n"
             f"Артикул продавца: {escape(row.get('vendorCode') or 'n/a')}\n"
-            f"WB: {escape(row.get('nmId') or 'n/a')}\n\n"
+            f"WB: {_format_wb_nm_id(row.get('nmId'))}\n\n"
             + _format_evidence_metric(row, "Переходы", "openCount")
             + "\n\n"
             + _format_evidence_metric(row, "Корзины", "cartCount")
