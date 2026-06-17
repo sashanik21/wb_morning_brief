@@ -1005,10 +1005,12 @@ def enrich_ads_bid_history_changes(rows, seller_id=None):
             query = query.eq("nm_id", nm_id)
         previous_rows = _execute_read(query, "ads_bid_history")
         previous = (previous_rows or [{}])[0]
+        has_previous_history = bool(previous_rows)
         previous_search = previous.get("search_bid")
         previous_recommendations = previous.get("recommendations_bid")
         current_search = normalized.get("search_bid")
         current_recommendations = normalized.get("recommendations_bid")
+        enriched["has_previous_bid_history"] = has_previous_history
         enriched["previous_search_bid"] = None
         enriched["previous_recommendations_bid"] = None
         if previous_search not in (None, "") and current_search not in (None, ""):
@@ -1026,6 +1028,21 @@ def enrich_ads_bid_history_changes(rows, seller_id=None):
             ) - _to_number(previous_recommendations)
         enriched_rows.append(enriched)
     return enriched_rows
+
+
+def get_ads_bid_history_unique_dates_count(nm_ids=None):
+    query = _get_client().table("ads_bid_history").select("report_date,nm_id")
+    normalized_nm_ids = [
+        _to_int(nm_id)
+        for nm_id in nm_ids or []
+        if _to_int(nm_id) is not None
+    ]
+    if normalized_nm_ids:
+        query = query.in_("nm_id", list(set(normalized_nm_ids)))
+    rows = _execute_read(query, "ads_bid_history")
+    return len(
+        {row.get("report_date") for row in rows or [] if row.get("report_date") not in (None, "")}
+    )
 
 
 def get_latest_ads_bid_history_by_nm_ids(nm_ids, report_date=None):

@@ -278,6 +278,9 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
         print("ads bid changes found: 0")
         return ads_rows
     nm_ids = [row.get("nmId") or row.get("nm_id") for row in ads_rows or []]
+    unique_dates_count = None
+    if hasattr(storage, "get_ads_bid_history_unique_dates_count"):
+        unique_dates_count = storage.get_ads_bid_history_unique_dates_count(nm_ids)
     bid_rows = storage.get_latest_ads_bid_history_by_nm_ids(
         nm_ids, report_date=report_date
     )
@@ -288,12 +291,35 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
             continue
         by_nm.setdefault(nm_id, []).append(row)
     changed = 0
+    raised = lowered = unchanged = without_history = 0
+    for bid_row in bid_rows or []:
+        if not bid_row.get("has_previous_bid_history"):
+            without_history += 1
+            continue
+        search_delta = float(bid_row.get("search_bid_delta") or 0)
+        recommendations_delta = float(bid_row.get("recommendations_bid_delta") or 0)
+        max_delta = max(search_delta, recommendations_delta, key=abs)
+        if max_delta > 0:
+            raised += 1
+        elif max_delta < 0:
+            lowered += 1
+        else:
+            unchanged += 1
     for row in ads_rows or []:
         nm_id = str(row.get("nmId") or row.get("nm_id") or "")
         matches = by_nm.get(nm_id) or []
         if not matches:
             continue
         row["bidChanges"] = matches
+        row["adsBidHistoryUniqueDates"] = unique_dates_count
+        row["adsBidAnalytics"] = {
+            "campaigns_raised": raised,
+            "campaigns_lowered": lowered,
+            "campaigns_unchanged": unchanged,
+            "campaigns_without_history": without_history,
+            "campaigns_with_history": raised + lowered + unchanged,
+            "unique_dates_count": unique_dates_count,
+        }
         significant = max(
             matches,
             key=lambda item: max(
@@ -319,6 +345,12 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
         ) not in (None, "", 0):
             changed += 1
     print(f"ads bid changes found: {changed}")
+    print("ADS BID ANALYTICS:")
+    print(f"campaigns with history: {raised + lowered + unchanged}")
+    print(f"raised: {raised}")
+    print(f"lowered: {lowered}")
+    print(f"unchanged: {unchanged}")
+    print(f"without history: {without_history}")
     return ads_rows
 
 def _matched_qbiki_nm_ids(qbiki_rows, funnel_rows, ads_rows):
