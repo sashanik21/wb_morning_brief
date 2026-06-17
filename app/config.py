@@ -2,13 +2,20 @@ import os
 
 from app.seller_config import SELLER_CONFIG, SELLER_NAME
 
-WB_API_TOKEN = os.getenv("WB_API_TOKEN_TEST")
-
-if not WB_API_TOKEN:
-    raise ValueError("WB_API_TOKEN_TEST не найден в GitHub Secrets")
-
+DEFAULT_WB_TOKEN_SECRET_NAME = "WB_API_TOKEN_TEST"
+CURRENT_WB_TOKEN_SECRET_NAME = DEFAULT_WB_TOKEN_SECRET_NAME
+WB_API_TOKEN = os.getenv(DEFAULT_WB_TOKEN_SECRET_NAME) or ""
 
 HEADERS = {"Authorization": WB_API_TOKEN}
+
+
+def set_wb_api_token(secret_name):
+    global CURRENT_WB_TOKEN_SECRET_NAME, WB_API_TOKEN
+
+    CURRENT_WB_TOKEN_SECRET_NAME = secret_name or DEFAULT_WB_TOKEN_SECRET_NAME
+    WB_API_TOKEN = os.getenv(CURRENT_WB_TOKEN_SECRET_NAME) or ""
+    HEADERS["Authorization"] = WB_API_TOKEN
+    return WB_API_TOKEN
 
 
 ABC_RULES = {
