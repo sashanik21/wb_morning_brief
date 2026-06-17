@@ -993,6 +993,104 @@ def _load_campaigns(token, seller_id):
     return campaigns, campaign_status
 
 
+
+def _bid_kopecks_to_rubles(value):
+    if value in (None, ""):
+        return None
+    try:
+        return round(float(value) / 100, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
+    rows = []
+    for campaign in campaigns or []:
+        if not isinstance(campaign, dict):
+            continue
+        raw_json = _campaign_raw_json(campaign)
+        campaign_id = _campaign_record_id(campaign, raw_json)
+        if campaign_id in (None, ""):
+            continue
+        settings = (
+            raw_json.get("settings")
+            if isinstance(raw_json.get("settings"), dict)
+            else {}
+        )
+        timestamps = (
+            raw_json.get("timestamps")
+            if isinstance(raw_json.get("timestamps"), dict)
+            else {}
+        )
+        base = {
+            "seller_id": seller_id,
+            "seller_name": os.getenv("SELLER_NAME"),
+            "campaign_id": campaign_id,
+            "report_date": report_date,
+            "bid_type": raw_json.get("bid_type") or raw_json.get("bidType"),
+            "payment_type": settings.get("payment_type")
+            or settings.get("paymentType")
+            or raw_json.get("payment_type")
+            or raw_json.get("paymentType"),
+            "campaign_status": _extract_status(raw_json),
+            "campaign_updated_at": timestamps.get("updated")
+            or raw_json.get("updatedAt"),
+        }
+        nm_settings = raw_json.get("nm_settings") or raw_json.get("nmSettings")
+        if not isinstance(nm_settings, list) or not nm_settings:
+            rows.append(
+                {
+                    **base,
+                    "nm_id": None,
+                    "search_bid": None,
+                    "recommendations_bid": None,
+                }
+            )
+            continue
+        for item in nm_settings:
+            if not isinstance(item, dict):
+                continue
+            bids = (
+                item.get("bids_kopecks")
+                if isinstance(item.get("bids_kopecks"), dict)
+                else {}
+            )
+            rows.append(
+                {
+                    **base,
+                    "nm_id": item.get("nm_id") or item.get("nmId"),
+                    "search_bid": _bid_kopecks_to_rubles(bids.get("search")),
+                    "recommendations_bid": _bid_kopecks_to_rubles(
+                        bids.get("recommendations")
+                    ),
+                }
+            )
+    return rows
+
+
+def _save_ads_bid_history(campaigns, report_date, seller_id=None):
+    bid_rows = _extract_ads_bid_history_rows(
+        campaigns, report_date, seller_id=seller_id
+    )
+    print(f"ads bids collected: {len(bid_rows)}")
+    storage = _storage()
+    saved = 0
+    changed = 0
+    if storage and hasattr(storage, "save_ads_bid_history"):
+        saved = storage.save_ads_bid_history(bid_rows) or 0
+    if storage and hasattr(storage, "enrich_ads_bid_history_changes"):
+        enriched = storage.enrich_ads_bid_history_changes(
+            bid_rows, seller_id=seller_id
+        )
+        changed = sum(
+            1
+            for row in enriched or []
+            if row.get("search_bid_delta") not in (None, "", 0)
+            or row.get("recommendations_bid_delta") not in (None, "", 0)
+        )
+    print(f"ads bids saved: {saved}")
+    print(f"ads bid changes found: {changed}")
+
 def _is_active_campaign(campaign):
     status = str(campaign.get("campaign_status") or "").strip().lower()
     return status in {"active", "running", "enabled", "9", "11", "активна", "активная"}
@@ -1141,6 +1239,7 @@ def collect_ads_stats(
         return []
 
     print(f"ADS CAMPAIGNS FOUND: {len(campaigns)}")
+    _save_ads_bid_history(campaigns, report_date, seller_id=seller_id)
 
     if not campaigns:
         print("Ads collector работает в stub mode")

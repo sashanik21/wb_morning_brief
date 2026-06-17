@@ -888,3 +888,128 @@ def save_daily_qbiki_metrics(rows):
             _get_client().table("daily_qbiki_metrics").insert(normalized_rows),
             "daily_qbiki_metrics",
         )
+
+
+
+def _to_nullable_number(value):
+    if value in (None, ""):
+        return None
+    return _to_number(value)
+
+def _normalize_ads_bid_history_row(row):
+    return {
+        "seller_name": _first_present(row, ["seller_name", "sellerName"]),
+        "campaign_id": _to_int(
+            _first_present(row, ["campaign_id", "campaignId", "id"])
+        ),
+        "nm_id": _to_int(_first_present(row, ["nm_id", "nmId"])),
+        "report_date": _report_date(row),
+        "bid_type": _first_present(row, ["bid_type", "bidType"]),
+        "payment_type": _first_present(row, ["payment_type", "paymentType"]),
+        "search_bid": _to_nullable_number(
+            _first_present(row, ["search_bid", "searchBid"])
+        ),
+        "recommendations_bid": _to_nullable_number(
+            _first_present(row, ["recommendations_bid", "recommendationsBid"])
+        ),
+        "campaign_status": _to_int(
+            _first_present(row, ["campaign_status", "campaignStatus", "status"])
+        ),
+        "campaign_updated_at": _first_present(
+            row, ["campaign_updated_at", "campaignUpdatedAt"]
+        ),
+    }
+
+
+def save_ads_bid_history(rows):
+    normalized_rows = _drop_empty_required(
+        [_normalize_ads_bid_history_row(row) for row in rows or []],
+        ["campaign_id", "report_date"],
+    )
+    print(f"SUPABASE SAVE ADS BID HISTORY: {len(normalized_rows)} rows")
+    if normalized_rows:
+        _execute_write(
+            _get_client()
+            .table("ads_bid_history")
+            .upsert(normalized_rows, on_conflict="campaign_id,nm_id,report_date"),
+            "ads_bid_history",
+        )
+    return len(normalized_rows)
+
+
+def _bid_history_key(row):
+    return (
+        _to_int(_first_present(row, ["campaign_id", "campaignId"])),
+        _to_int(_first_present(row, ["nm_id", "nmId"])),
+    )
+
+
+def enrich_ads_bid_history_changes(rows, seller_id=None):
+    enriched_rows = []
+    for row in rows or []:
+        enriched = dict(row)
+        normalized = _normalize_ads_bid_history_row(row)
+        campaign_id, nm_id = _bid_history_key(normalized)
+        report_date = normalized.get("report_date")
+        if campaign_id is None or report_date in (None, ""):
+            enriched_rows.append(enriched)
+            continue
+        query = (
+            _get_client()
+            .table("ads_bid_history")
+            .select("*")
+            .eq("campaign_id", campaign_id)
+            .lt("report_date", report_date)
+            .order("report_date", desc=True)
+            .limit(1)
+        )
+        if nm_id is None:
+            query = query.is_("nm_id", "null")
+        else:
+            query = query.eq("nm_id", nm_id)
+        previous_rows = _execute_read(query, "ads_bid_history")
+        previous = (previous_rows or [{}])[0]
+        previous_search = previous.get("search_bid")
+        previous_recommendations = previous.get("recommendations_bid")
+        current_search = normalized.get("search_bid")
+        current_recommendations = normalized.get("recommendations_bid")
+        if previous_search not in (None, "") and current_search not in (None, ""):
+            enriched["previous_search_bid"] = previous_search
+            enriched["search_bid_delta"] = _to_number(current_search) - _to_number(
+                previous_search
+            )
+        if (
+            previous_recommendations not in (None, "")
+            and current_recommendations not in (None, "")
+        ):
+            enriched["previous_recommendations_bid"] = previous_recommendations
+            enriched["recommendations_bid_delta"] = _to_number(
+                current_recommendations
+            ) - _to_number(previous_recommendations)
+        enriched_rows.append(enriched)
+    return enriched_rows
+
+
+def get_latest_ads_bid_history_by_nm_ids(nm_ids, report_date=None):
+    rows = []
+    seen = set()
+    for nm_id in nm_ids or []:
+        normalized_nm_id = _to_int(nm_id)
+        if normalized_nm_id is None or normalized_nm_id in seen:
+            continue
+        seen.add(normalized_nm_id)
+        query = (
+            _get_client()
+            .table("ads_bid_history")
+            .select("*")
+            .eq("nm_id", normalized_nm_id)
+        )
+        if report_date not in (None, ""):
+            query = query.eq("report_date", str(report_date))
+        latest_rows = _execute_read(
+            query.order("report_date", desc=True), "ads_bid_history"
+        )
+        rows.extend(
+            enrich_ads_bid_history_changes(latest_rows, seller_id=None) or []
+        )
+    return rows

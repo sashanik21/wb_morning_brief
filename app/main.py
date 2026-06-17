@@ -272,6 +272,53 @@ def _qbiki_source_status():
     )
 
 
+def _merge_ads_bid_history(ads_rows, storage, report_date=None):
+    if not (storage and hasattr(storage, "get_latest_ads_bid_history_by_nm_ids")):
+        return ads_rows
+    nm_ids = [row.get("nmId") or row.get("nm_id") for row in ads_rows or []]
+    bid_rows = storage.get_latest_ads_bid_history_by_nm_ids(
+        nm_ids, report_date=report_date
+    )
+    by_nm = {}
+    for row in bid_rows or []:
+        nm_id = str(row.get("nm_id") or row.get("nmId") or "")
+        if not nm_id:
+            continue
+        by_nm.setdefault(nm_id, []).append(row)
+    changed = 0
+    for row in ads_rows or []:
+        nm_id = str(row.get("nmId") or row.get("nm_id") or "")
+        matches = by_nm.get(nm_id) or []
+        if not matches:
+            continue
+        row["bidChanges"] = matches
+        significant = max(
+            matches,
+            key=lambda item: max(
+                abs(float(item.get("search_bid_delta") or 0)),
+                abs(float(item.get("recommendations_bid_delta") or 0)),
+            ),
+        )
+        for source, target in (
+            ("campaign_id", "bidCampaignId"),
+            ("bid_type", "bidType"),
+            ("payment_type", "paymentType"),
+            ("search_bid", "searchBid"),
+            ("previous_search_bid", "previousSearchBid"),
+            ("search_bid_delta", "searchBidDelta"),
+            ("recommendations_bid", "recommendationsBid"),
+            ("previous_recommendations_bid", "previousRecommendationsBid"),
+            ("recommendations_bid_delta", "recommendationsBidDelta"),
+        ):
+            if significant.get(source) not in (None, ""):
+                row[target] = significant.get(source)
+        if row.get("searchBidDelta") not in (None, "", 0) or row.get(
+            "recommendationsBidDelta"
+        ) not in (None, "", 0):
+            changed += 1
+    print(f"ads bid changes found: {changed}")
+    return ads_rows
+
 def _matched_qbiki_nm_ids(qbiki_rows, funnel_rows, ads_rows):
     known_nm_ids = {
         str(row.get("nmId") or row.get("nm_id"))
@@ -391,6 +438,7 @@ def main():
         {row.get("nmId") for row in ads_data if row.get("nmId") not in (None, "")}
     )
     ads_data = enrich_ads_time_series(ads_data, storage=storage, seller_id=seller_id)
+    ads_data = _merge_ads_bid_history(ads_data, storage, report_date=report_date)
     funnel_report = flatten_sales_funnel_data(data)
     funnel_rows = funnel_report.to_dict("records")
     for funnel_row in funnel_rows:
