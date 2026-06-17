@@ -284,6 +284,7 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
     bid_rows = storage.get_latest_ads_bid_history_by_nm_ids(
         nm_ids, report_date=report_date
     )
+    bid_history_ready = unique_dates_count is not None and unique_dates_count >= 2
     by_nm = {}
     for row in bid_rows or []:
         nm_id = str(row.get("nm_id") or row.get("nmId") or "")
@@ -293,7 +294,7 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
     changed = 0
     raised = lowered = unchanged = without_history = 0
     for bid_row in bid_rows or []:
-        if not bid_row.get("has_previous_bid_history"):
+        if not bid_history_ready or not bid_row.get("has_previous_bid_history"):
             without_history += 1
             continue
         search_delta = float(bid_row.get("search_bid_delta") or 0)
@@ -312,6 +313,7 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
             continue
         row["bidChanges"] = matches
         row["adsBidHistoryUniqueDates"] = unique_dates_count
+        row["adsBidHistoryReady"] = bid_history_ready
         row["adsBidAnalytics"] = {
             "campaigns_raised": raised,
             "campaigns_lowered": lowered,
@@ -319,7 +321,10 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
             "campaigns_without_history": without_history,
             "campaigns_with_history": raised + lowered + unchanged,
             "unique_dates_count": unique_dates_count,
+            "bid_history_ready": bid_history_ready,
         }
+        if not bid_history_ready:
+            continue
         significant = max(
             matches,
             key=lambda item: max(
