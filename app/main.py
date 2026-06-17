@@ -1,4 +1,5 @@
 import os
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -274,6 +275,7 @@ def _qbiki_source_status():
 
 def _merge_ads_bid_history(ads_rows, storage, report_date=None):
     if not (storage and hasattr(storage, "get_latest_ads_bid_history_by_nm_ids")):
+        print("ads bid changes found: 0")
         return ads_rows
     nm_ids = [row.get("nmId") or row.get("nm_id") for row in ads_rows or []]
     bid_rows = storage.get_latest_ads_bid_history_by_nm_ids(
@@ -363,6 +365,7 @@ def main():
     current_seller = active_sellers[0] if active_sellers else {}
     seller_name = current_seller.get("seller_name", "")
     seller_id = _seller_id(current_seller)
+    report_date = date.today() - timedelta(days=1)
     if active_sellers:
         print(f"Текущий продавец: {seller_name}")
 

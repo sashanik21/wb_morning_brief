@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime
+from decimal import Decimal
 from urllib.parse import urlsplit, urlunsplit
 
 from supabase import create_client
@@ -61,6 +62,8 @@ def _execute_write(query, table_name):
                 "supabase/migrations/add_problem_business_impact_score.sql"
             )
         print(f"WARNING: Supabase write failed for {table_name}: {error}")
+        return False, error_message
+    return True, None
 
 
 def _first_present(row, keys, default=None):
@@ -105,10 +108,30 @@ def _to_number(value):
         return None
 
 
+def _json_safe_value(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _json_safe_row(row):
+    return {key: _json_safe_value(value) for key, value in (row or {}).items()}
+
+
 def _report_date(row):
     value = _first_present(row, ["report_date", "date", "change_date"])
 
-    if isinstance(value, str) and "—" in value:
+    if isinstance(value, datetime):
+        value = value.date().isoformat()
+    elif isinstance(value, date):
+        value = value.isoformat()
+    elif isinstance(value, str) and "—" in value:
         value = value.split("—", maxsplit=1)[0].strip()
 
     return value or date.today().isoformat()
@@ -896,29 +919,32 @@ def _to_nullable_number(value):
         return None
     return _to_number(value)
 
+
 def _normalize_ads_bid_history_row(row):
-    return {
-        "seller_name": _first_present(row, ["seller_name", "sellerName"]),
-        "campaign_id": _to_int(
-            _first_present(row, ["campaign_id", "campaignId", "id"])
-        ),
-        "nm_id": _to_int(_first_present(row, ["nm_id", "nmId"])),
-        "report_date": _report_date(row),
-        "bid_type": _first_present(row, ["bid_type", "bidType"]),
-        "payment_type": _first_present(row, ["payment_type", "paymentType"]),
-        "search_bid": _to_nullable_number(
-            _first_present(row, ["search_bid", "searchBid"])
-        ),
-        "recommendations_bid": _to_nullable_number(
-            _first_present(row, ["recommendations_bid", "recommendationsBid"])
-        ),
-        "campaign_status": _to_int(
-            _first_present(row, ["campaign_status", "campaignStatus", "status"])
-        ),
-        "campaign_updated_at": _first_present(
-            row, ["campaign_updated_at", "campaignUpdatedAt"]
-        ),
-    }
+    return _json_safe_row(
+        {
+            "seller_name": _first_present(row, ["seller_name", "sellerName"]),
+            "campaign_id": _to_int(
+                _first_present(row, ["campaign_id", "campaignId", "id"])
+            ),
+            "nm_id": _to_int(_first_present(row, ["nm_id", "nmId"])),
+            "report_date": _report_date(row),
+            "bid_type": _first_present(row, ["bid_type", "bidType"]),
+            "payment_type": _first_present(row, ["payment_type", "paymentType"]),
+            "search_bid": _to_nullable_number(
+                _first_present(row, ["search_bid", "searchBid"])
+            ),
+            "recommendations_bid": _to_nullable_number(
+                _first_present(row, ["recommendations_bid", "recommendationsBid"])
+            ),
+            "campaign_status": _to_int(
+                _first_present(row, ["campaign_status", "campaignStatus", "status"])
+            ),
+            "campaign_updated_at": _first_present(
+                row, ["campaign_updated_at", "campaignUpdatedAt"]
+            ),
+        }
+    )
 
 
 def save_ads_bid_history(rows):
@@ -927,14 +953,24 @@ def save_ads_bid_history(rows):
         ["campaign_id", "report_date"],
     )
     print(f"SUPABASE SAVE ADS BID HISTORY: {len(normalized_rows)} rows")
+    success = True
+    error_message = None
     if normalized_rows:
-        _execute_write(
+        success, error_message = _execute_write(
             _get_client()
             .table("ads_bid_history")
             .upsert(normalized_rows, on_conflict="campaign_id,nm_id,report_date"),
             "ads_bid_history",
         )
-    return len(normalized_rows)
+    print("ADS BID HISTORY:")
+    if success:
+        print(f"rows collected: {len(rows or [])}")
+        print(f"rows saved: {len(normalized_rows)}")
+        print("save status: success")
+        return len(normalized_rows)
+    print("save status: failed")
+    print(f"error: {error_message}")
+    return 0
 
 
 def _bid_history_key(row):
@@ -973,6 +1009,8 @@ def enrich_ads_bid_history_changes(rows, seller_id=None):
         previous_recommendations = previous.get("recommendations_bid")
         current_search = normalized.get("search_bid")
         current_recommendations = normalized.get("recommendations_bid")
+        enriched["previous_search_bid"] = None
+        enriched["previous_recommendations_bid"] = None
         if previous_search not in (None, "") and current_search not in (None, ""):
             enriched["previous_search_bid"] = previous_search
             enriched["search_bid_delta"] = _to_number(current_search) - _to_number(
@@ -1005,7 +1043,7 @@ def get_latest_ads_bid_history_by_nm_ids(nm_ids, report_date=None):
             .eq("nm_id", normalized_nm_id)
         )
         if report_date not in (None, ""):
-            query = query.eq("report_date", str(report_date))
+            query = query.eq("report_date", _json_safe_value(report_date))
         latest_rows = _execute_read(
             query.order("report_date", desc=True), "ads_bid_history"
         )
