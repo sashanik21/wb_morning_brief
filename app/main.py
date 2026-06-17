@@ -386,6 +386,121 @@ def _iter_nested_dicts(value):
             yield from _iter_nested_dicts(item)
 
 
+
+def _count_zero_stock_problems(problems):
+    return sum(
+        1
+        for problem in problems or []
+        if isinstance(problem, dict)
+        and (
+            problem.get("problemCategory") == "stocks"
+            or problem.get("metric") in ("wbStocks", "realSellableStock", "stocks")
+        )
+        and _to_float(
+            problem.get("currentValue")
+            or problem.get("stock")
+            or problem.get("wbStocks")
+        )
+        <= 0
+    )
+
+
+def _coverage_status(total_rows, total_sku):
+    if total_rows:
+        return "full"
+    if total_sku:
+        return "missing"
+    return "no_data"
+
+
+def _build_seller_result(
+    seller,
+    *,
+    processing_status,
+    total_sku=0,
+    funnel_rows=None,
+    ads_rows=None,
+    supplies_rows=None,
+    problems=None,
+    ads_summary=None,
+    stocks_summary=None,
+    error_message=None,
+):
+    problems = problems or []
+    ads_rows = ads_rows or []
+    funnel_rows = funnel_rows or []
+    supplies_rows = supplies_rows or []
+    critical_count = sum(
+        1
+        for problem in problems
+        if isinstance(problem, dict)
+        and (
+            str(problem.get("severity") or "").lower() == "critical"
+            or _to_float(problem.get("severityScore")) >= 70
+        )
+    )
+    warning_count = sum(
+        1
+        for problem in problems
+        if isinstance(problem, dict)
+        and not (
+            str(problem.get("severity") or "").lower() == "critical"
+            or _to_float(problem.get("severityScore")) >= 70
+        )
+    )
+    return {
+        "seller_name": seller.get("seller_name", ""),
+        "seller_id": _seller_id(seller),
+        "status": seller.get("status"),
+        "processing_status": processing_status,
+        "total_sku": total_sku,
+        "funnel_coverage": _coverage_status(len(funnel_rows), total_sku),
+        "ads_coverage": _coverage_status(len(ads_rows), total_sku),
+        "supplies_coverage": _coverage_status(len(supplies_rows), total_sku),
+        "critical_problems_count": critical_count,
+        "warning_problems_count": warning_count,
+        "zero_stocks_count": _count_zero_stock_problems(problems),
+        "top_problems": problems[:5],
+        "ads_summary": ads_summary or {},
+        "stocks_summary": stocks_summary or {},
+        "error_message": error_message,
+        "funnel_rows_count": len(funnel_rows),
+        "ads_rows_count": len(ads_rows),
+        "supplies_rows_count": len(supplies_rows),
+    }
+
+
+def _print_seller_processing_result(result):
+    print("SELLER PROCESSING RESULT:")
+    print(f"seller: {result.get('seller_name')}")
+    print(f"status: {result.get('processing_status')}")
+    print(f"total_sku: {result.get('total_sku')}")
+    print(f"funnel rows: {result.get('funnel_rows_count')}")
+    print(f"ads rows: {result.get('ads_rows_count')}")
+    print(f"supplies rows: {result.get('supplies_rows_count')}")
+    print(
+        "problems: "
+        f"{result.get('critical_problems_count', 0) + result.get('warning_problems_count', 0)}"
+    )
+    print(f"error: {result.get('error_message') or ''}")
+
+
+def _print_multi_seller_processing(active_sellers, seller_results):
+    statuses = {"success": 0, "partial": 0, "no_data": 0, "failed": 0}
+    for result in seller_results:
+        status = result.get("processing_status")
+        if status in statuses:
+            statuses[status] += 1
+    print("MULTI SELLER PROCESSING:")
+    print(f"active sellers: {len(active_sellers)}")
+    print(f"seller results created: {len(seller_results)}")
+    for status in ("success", "partial", "no_data", "failed"):
+        print(f"{status}: {statuses[status]}")
+    for result in seller_results:
+        _print_seller_processing_result(result)
+    if len(seller_results) < len(active_sellers):
+        print("WARNING: seller_results count does not match active sellers count")
+
 def main():
 
     print("MAIN VERSION: TELEGRAM ENABLED")
@@ -655,6 +770,48 @@ def main():
         "totalSku": len(api_coverage_report["coverage"]),
     }
     summary_stats["perfumeIntelligence"] = perfume_intelligence
+    seller_results = []
+    current_processing_status = "success" if total_sku_from_api else "no_data"
+    current_error_message = None if total_sku_from_api else "не найдены nmIDs"
+    current_seller_result = _build_seller_result(
+        current_seller,
+        processing_status=current_processing_status,
+        total_sku=total_sku_from_api,
+        funnel_rows=funnel_rows,
+        ads_rows=ads_data,
+        supplies_rows=list((supply_stock_metrics_by_nm_id or {}).values()),
+        problems=all_problems,
+        ads_summary=ads_summary,
+        stocks_summary={
+            "rows": len(supply_stock_metrics_by_nm_id or {}),
+            "zeroStocks": _count_zero_stock_problems(all_problems),
+        },
+        error_message=current_error_message,
+    )
+    seller_results.append(current_seller_result)
+    print(f"SELLER RESULT CREATED: {current_seller_result.get('seller_name')}")
+    processed_seller_ids = {str(current_seller_result.get("seller_id"))}
+    for seller in active_sellers[1:]:
+        print(f"Текущий продавец: {seller.get('seller_name', '')}")
+        seller_result = _build_seller_result(
+            seller,
+            processing_status="no_data",
+            error_message="не найдены nmIDs",
+        )
+        seller_results.append(seller_result)
+        processed_seller_ids.add(str(seller_result.get("seller_id")))
+        print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+    for seller in active_sellers:
+        if str(_seller_id(seller)) not in processed_seller_ids:
+            seller_result = _build_seller_result(
+                seller,
+                processing_status="failed",
+                error_message="продавец не обработан",
+            )
+            seller_results.append(seller_result)
+            print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+    _print_multi_seller_processing(active_sellers, seller_results)
+    summary_stats["sellerResults"] = seller_results
     summary_stats["activeSellersCount"] = len(active_sellers)
     summary_stats["sellersTotal"] = len(active_sellers)
     summary_stats["sellerNames"] = [
