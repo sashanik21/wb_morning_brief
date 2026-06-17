@@ -164,8 +164,9 @@ def _env_int(name, default):
 
 def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=None):
     global _ADS_RATE_LIMIT_STATS
-    retry_count = _env_int("WB_ADS_RETRY_COUNT", 3)
-    retry_sleep = _env_int("WB_ADS_RETRY_SLEEP_SECONDS", 10)
+    retry_count = _env_int("WB_ADS_RETRY_COUNT", 0)
+    retry_sleep = _env_int("WB_ADS_RETRY_SLEEP_SECONDS", 0)
+    _ADS_RATE_LIMIT_STATS["retry_sleep_seconds"] = retry_sleep
     response = None
 
     for attempt in range(retry_count + 1):
@@ -200,24 +201,8 @@ def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=N
             _ADS_RATE_LIMIT_STATS["429_count"] = (
                 _ADS_RATE_LIMIT_STATS.get("429_count", 0) + 1
             )
-            if attempt < retry_count:
-                _ADS_RATE_LIMIT_STATS["retries_used"] = (
-                    _ADS_RATE_LIMIT_STATS.get("retries_used", 0) + 1
-                )
-                backoff_seconds = retry_sleep * (2**attempt)
-                _ADS_RATE_LIMIT_STATS["request_sleep_seconds"] = max(
-                    _ADS_RATE_LIMIT_STATS.get("request_sleep_seconds", 0),
-                    backoff_seconds,
-                )
-                print("ADS BACKOFF:")
-                print(f"campaign_ids: {', '.join(str(cid) for cid in campaign_ids)}")
-                print(f"attempt: {attempt + 1}/{retry_count + 1}")
-                print(f"sleep_seconds: {backoff_seconds}")
-                _ads_sleep(backoff_seconds, deadline=deadline)
-                print("ADS CAMPAIGN RETRY:")
-                print(f"campaign_ids: {', '.join(str(cid) for cid in campaign_ids)}")
-                print(f"next_attempt: {attempt + 2}")
-                continue
+            _ADS_RATE_LIMIT_STATS["partial"] = True
+            break
         break
 
     if response is None or response.status_code != 200:
@@ -506,7 +491,7 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date, seller_id=None
     partial_campaign_ids = set()
     failed_campaign_ids = set()
     global _ADS_RATE_LIMIT_STATS
-    max_campaign_seconds = max(1, _env_int("WB_ADS_MAX_SECONDS_PER_CAMPAIGN", 15))
+    max_campaign_seconds = max(1, _env_int("WB_ADS_MAX_SECONDS_PER_CAMPAIGN", 8))
     for campaign_id in campaign_ids or []:
         campaign_started_at = time.monotonic()
         campaign_deadline = campaign_started_at + max_campaign_seconds
@@ -527,6 +512,14 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date, seller_id=None
         current_payload, current_status = _request_ads_fullstats(
             token, [campaign_id], current_date, current_date, deadline=campaign_deadline
         )
+        if current_status == 429:
+            _ADS_RATE_LIMIT_STATS["partial"] = True
+            partial_campaign_ids.add(str(campaign_id))
+            _log_ads_campaign_result(campaign_id, "partial", 0)
+            _update_campaign_health(
+                seller_id, campaign_id, "partial", error_code="429"
+            )
+            continue
         _ads_sleep(request_sleep, deadline=campaign_deadline)
         if time.monotonic() >= campaign_deadline:
             _ADS_RATE_LIMIT_STATS["partial"] = True
@@ -751,11 +744,11 @@ def _is_repeated_error_cooldown(campaign, now=None):
     last_stats = _parse_datetime(campaign.get("last_stats_at"))
     if last_stats is None:
         return False
-    return (now or datetime.utcnow()) - last_stats < timedelta(hours=24)
+    return (now or datetime.utcnow()) - last_stats < timedelta(hours=6)
 
 
 def _select_staged_campaigns(campaigns, top_drop_nm_ids=None, oos_nm_ids=None):
-    max_per_run = max(1, _env_int("WB_ADS_MAX_CAMPAIGNS_PER_RUN", 8))
+    max_per_run = max(1, _env_int("WB_ADS_MAX_CAMPAIGNS_PER_RUN", 5))
     top_drop_nm_ids = {
         str(value) for value in top_drop_nm_ids or [] if value not in (None, "")
     }
@@ -833,7 +826,7 @@ def collect_ads_stats(
         "campaigns_requested": 0,
         "campaigns_loaded": 0,
     }
-    max_collect_seconds = max(1, _env_int("WB_ADS_MAX_COLLECT_SECONDS", 90))
+    max_collect_seconds = max(1, _env_int("WB_ADS_MAX_COLLECT_SECONDS", 60))
     collect_started_at = time.monotonic()
     _ADS_COLLECTOR_DEADLINE = collect_started_at + max_collect_seconds
     _ADS_RATE_LIMIT_STATS["max_collect_seconds"] = max_collect_seconds
