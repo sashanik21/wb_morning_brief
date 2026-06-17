@@ -1604,6 +1604,38 @@ def _format_ads_bid_delta(value):
     return f"{sign}{_format_money(abs(delta))}"
 
 
+def _ads_cart_value(totals):
+    for key in ("carts", "cartCount", "addToCart", "addToCartCount"):
+        if _is_present((totals or {}).get(key)):
+            return to_number(totals.get(key))
+    return None
+
+
+def _ads_previous_cart_value(totals):
+    for key in (
+        "previous_carts",
+        "previous_cartCount",
+        "previous_addToCart",
+        "previous_addToCartCount",
+    ):
+        if _is_present((totals or {}).get(key)):
+            return to_number(totals.get(key))
+    return None
+
+
+def _ads_any_bid_delta(totals):
+    deltas = []
+    for key in ("search_bid_delta", "recommendations_bid_delta"):
+        if _is_present((totals or {}).get(key)):
+            deltas.append(to_number(totals.get(key)))
+    change = _product_bid_change(totals or {})
+    if change and _is_present(change.get("delta")):
+        deltas.append(to_number(change.get("delta")))
+    if not deltas:
+        return None
+    return max(deltas, key=abs)
+
+
 def _ads_product_diagnosis(totals, orders_dynamic=None, ads_traffic_share=None, open_count=None):
     totals = totals or {}
     if not totals:
@@ -1618,64 +1650,132 @@ def _ads_product_diagnosis(totals, orders_dynamic=None, ads_traffic_share=None, 
     impressions = to_number(totals.get("impressions"))
     ctr = to_number(totals.get("ctr"))
     drr = to_number(totals.get("drr"))
+    orders = to_number(totals.get("orders"))
     previous_clicks = totals.get("previous_clicks")
     previous_impressions = totals.get("previous_impressions")
     previous_drr = totals.get("previous_drr")
+    previous_orders = totals.get("previous_orders")
+    carts = _ads_cart_value(totals)
+    previous_carts = _ads_previous_cart_value(totals)
+    bid_delta = _ads_any_bid_delta(totals)
+    impressions_dynamic = _ads_metric_dynamic(totals, "impressions")
+    clicks_dynamic = _ads_metric_dynamic(totals, "clicks")
+    ctr_dynamic = _ads_metric_dynamic(totals, "ctr")
+    orders_dynamic_ads = _ads_metric_dynamic(totals, "orders")
 
-    if clicks == 0:
+    impressions_down_20 = (
+        _is_present(previous_impressions)
+        and to_number(previous_impressions) > 0
+        and impressions < to_number(previous_impressions) * 0.8
+    )
+    impressions_grew = impressions_dynamic is not None and impressions_dynamic > 0
+    clicks_stable_or_growing = (
+        not _is_present(previous_clicks) or clicks >= to_number(previous_clicks)
+    )
+    orders_fell = (
+        (orders_dynamic is not None and orders_dynamic < 0)
+        or (
+            _is_present(previous_orders)
+            and to_number(previous_orders) > 0
+            and orders < to_number(previous_orders)
+        )
+    )
+
+    if bid_delta is not None and bid_delta < 0 and impressions_down_20:
         return {
             "status": "red",
-            "reason": "🔴 Реклама",
+            "reason": "🔴 Ставка рекламы",
+            "confirmation": ["Ставка была снижена, после этого рекламные показы просели."],
+            "conclusion": "Снижение ставки могло привести к потере рекламного охвата.",
+        }
+    if clicks == 0 and impressions > 0:
+        return {
+            "status": "red",
+            "reason": "🔴 Карточка / ставка / релевантность",
             "confirmation": [
                 f"Реклама получила {_format_number(impressions)} показов, но не дала переходов."
             ],
-            "conclusion": "Реклама не даёт переходов. Проверить ставку, размещение, карточку и релевантность товара.",
+            "conclusion": "Покупатель видит товар, но не переходит. Проверить главное фото, цену, ставку, позицию и релевантность показов.",
         }
-    if impressions > 1000 and ctr < 0.5:
+    if impressions >= 1000 and ctr < 0.5:
         return {
             "status": "red",
-            "reason": "🔴 Реклама",
+            "reason": "🔴 Карточка / цена / позиция",
             "confirmation": [
                 f"Реклама получила {_format_number(impressions)} показов, но CTR всего {_format_number(ctr)}%."
             ],
-            "conclusion": "Реклама получает показы, но не получает клики. Проверить ставку, главное фото, цену и позицию товара.",
+            "conclusion": "Реклама показывает товар, но покупатель не кликает. Проверить главное фото, цену, рейтинг, отзывы и позицию товара.",
         }
-    if _is_present(previous_clicks) and to_number(previous_clicks) > 0:
-        if clicks < to_number(previous_clicks) * 0.8:
+    if impressions_down_20:
+        return {
+            "status": "red",
+            "reason": "🔴 Рекламный охват",
+            "confirmation": ["Показы рекламы снизились более чем на 20%."],
+            "conclusion": "Просадка может быть связана с потерей рекламного охвата. Проверить ставку, зоны показов, кластеры и статус кампании.",
+        }
+    if bid_delta is not None and bid_delta > 0 and impressions_grew:
+        if (ctr_dynamic is not None and ctr_dynamic <= 0) or (
+            clicks_dynamic is not None and clicks_dynamic <= 0
+        ):
             return {
                 "status": "red",
-                "reason": "🔴 Реклама",
-                "confirmation": ["Рекламные клики снизились более чем на 20%."],
-                "conclusion": "Просадка может быть связана с потерей рекламного трафика.",
+                "reason": "🔴 Карточка / цена / позиция",
+                "confirmation": ["Ставка была повышена и увеличила рекламный охват."],
+                "conclusion": "Ставка увеличила охват, но не улучшила кликабельность. Проверить главное фото, цену, позицию и релевантность.",
             }
-    if _is_present(previous_impressions) and to_number(previous_impressions) > 0:
-        if impressions < to_number(previous_impressions) * 0.8:
+        if clicks_dynamic is not None and clicks_dynamic > 0 and (
+            orders_dynamic_ads is not None and orders_dynamic_ads <= 0
+        ):
             return {
-                "status": "red",
-                "reason": "🔴 Реклама",
-                "confirmation": ["Показы рекламы снизились более чем на 20%."],
-                "conclusion": "Просадка может быть связана с потерей рекламических показов.",
+                "status": "yellow",
+                "reason": "🟡 Карточка / цена / конверсия",
+                "confirmation": ["Ставка была повышена и дала рекламный трафик."],
+                "conclusion": "Ставка дала трафик, но не дала заказы. Проверить карточку, цену и конверсию.",
+            }
+        return {
+            "status": "green",
+            "reason": "🟢 Реклама работает стабильно",
+            "confirmation": ["Ставка была повышена и рекламные показы выросли."],
+            "conclusion": "Ставка была повышена и дала дополнительный рекламный охват.",
+        }
+    if clicks_stable_or_growing and orders_fell:
+        return {
+            "status": "yellow",
+            "reason": "🟡 Карточка / цена / конверсия",
+            "confirmation": ["Рекламные клики не просели, но заказы товара снизились."],
+            "conclusion": "Реклама даёт трафик, проблема вероятнее в карточке, цене, доставке или конверсии.",
+        }
+    if clicks > 0 and carts is not None:
+        cart_cr = carts / clicks * 100
+        previous_cart_cr = None
+        if previous_carts is not None and _is_present(previous_clicks) and to_number(previous_clicks) > 0:
+            previous_cart_cr = previous_carts / to_number(previous_clicks) * 100
+        if cart_cr < 5 or (previous_cart_cr is not None and cart_cr < previous_cart_cr * 0.8):
+            return {
+                "status": "yellow",
+                "reason": "🟡 Карточка / цена",
+                "confirmation": ["Пользователи переходят по рекламе, но плохо добавляют товар в корзину."],
+                "conclusion": "Проверить цену, фото, описание, отзывы и УТП.",
+            }
+    if carts is not None and carts > 0 and _is_present(totals.get("orders")):
+        cart_to_order_cr = orders / carts * 100
+        previous_cart_to_order_cr = None
+        if previous_carts is not None and previous_carts > 0 and _is_present(previous_orders):
+            previous_cart_to_order_cr = to_number(previous_orders) / previous_carts * 100
+        if previous_cart_to_order_cr is not None and cart_to_order_cr < previous_cart_to_order_cr * 0.8:
+            return {
+                "status": "yellow",
+                "reason": "🟡 Цена / доставка / остатки",
+                "confirmation": ["Товар добавляют в корзину, но хуже оформляют заказ."],
+                "conclusion": "Проверить цену, сроки доставки, остатки и условия акции.",
             }
     if _is_present(previous_drr) and to_number(previous_drr) > 0:
         if drr > to_number(previous_drr) * 1.2:
             return {
                 "status": "red",
-                "reason": "🔴 Реклама",
+                "reason": "🔴 Требуется проверка рекламы / карточки",
                 "confirmation": ["ДРР вырос более чем на 20%."],
                 "conclusion": "Реклама стала дороже. Проверить ставки, CPC и эффективность кампаний.",
-            }
-    if orders_dynamic is not None and orders_dynamic < 0:
-        clicks_stable_or_growing = (
-            not _is_present(previous_clicks) or clicks >= to_number(previous_clicks)
-        )
-        if clicks_stable_or_growing:
-            return {
-                "status": "yellow",
-                "reason": "🟡 Карточка / цена / конверсия",
-                "confirmation": [
-                    "Рекламные клики не просели, но заказы товара снизились."
-                ],
-                "conclusion": "Реклама даёт трафик, проблема вероятнее в карточке, цене или конверсии.",
             }
     if ads_traffic_share is not None and ads_traffic_share < 10:
         confirmation = [
@@ -1688,9 +1788,9 @@ def _ads_product_diagnosis(totals, orders_dynamic=None, ads_traffic_share=None, 
         )
         return {
             "status": "yellow",
-            "reason": "🟡 Органика",
+            "reason": "🟡 Проблема вероятнее не в рекламе",
             "confirmation": confirmation,
-            "conclusion": "Просадка вызвана органическим трафиком, а не рекламой.",
+            "conclusion": "Реклама не выглядит главной причиной просадки. Нужно проверять органику, карточки, цену, конверсию и остатки.",
         }
 
     clicks_stable = not _is_present(previous_clicks) or clicks >= to_number(previous_clicks) * 0.8
@@ -1701,15 +1801,14 @@ def _ads_product_diagnosis(totals, orders_dynamic=None, ads_traffic_share=None, 
             "status": "green",
             "reason": "🟢 Реклама работает стабильно",
             "confirmation": ["Рекламные показатели не показывают критичной просадки."],
-            "conclusion": "По доступным данным реклама работает стабильно.",
+            "conclusion": "По доступным данным рекламная воронка работает стабильно.",
         }
     return {
         "status": "yellow",
-        "reason": "🟡 Органика / карточка / цена / конверсия",
+        "reason": "🟡 Проблема вероятнее не в рекламе",
         "confirmation": ["Рекламные данные не подтверждают прямую рекламную причину просадки."],
-        "conclusion": "Просадка вызвана не рекламой, а органическим трафиком / карточкой / ценой / конверсией.",
+        "conclusion": "Реклама не выглядит главной причиной просадки. Нужно проверять органику, карточки, цену, конверсию и остатки.",
     }
-
 
 def _ads_product_diagnosis_status(totals, orders_dynamic=None, ads_traffic_share=None):
     diagnosis = _ads_product_diagnosis(
@@ -1731,10 +1830,42 @@ def _aggregate_ads_rows_by_product(summary_stats):
     totals_by_product = []
     for rows in grouped.values():
         totals = {"matchedRows": rows["matchedRows"]}
+        alias_groups = {
+            "carts": ("carts", "cartCount", "addToCart", "addToCartCount"),
+            "avgPosition": ("avgPosition",),
+            "positionDelta": ("positionDelta",),
+            "search_bid": ("search_bid",),
+            "recommendations_bid": ("recommendations_bid",),
+            "search_bid_delta": ("search_bid_delta",),
+            "recommendations_bid_delta": ("recommendations_bid_delta",),
+        }
+        for total_key, keys in alias_groups.items():
+            values = []
+            previous_values = []
+            for row in rows["matchedRows"]:
+                value = _first_present_ads_value(row, keys)
+                if _is_present(value):
+                    values.append(to_number(value))
+                for key in keys:
+                    previous_value = _ads_previous_value(row, key)
+                    if _is_present(previous_value):
+                        previous_values.append(to_number(previous_value))
+                        break
+            if values:
+                if total_key in {"avgPosition", "positionDelta", "search_bid", "recommendations_bid", "search_bid_delta", "recommendations_bid_delta"}:
+                    totals[total_key] = sum(values) / len(values)
+                else:
+                    totals[total_key] = sum(values)
+            if previous_values:
+                previous_key = f"previous_{total_key}"
+                if total_key in {"avgPosition", "positionDelta", "search_bid", "recommendations_bid", "search_bid_delta", "recommendations_bid_delta"}:
+                    totals[previous_key] = sum(previous_values) / len(previous_values)
+                else:
+                    totals[previous_key] = sum(previous_values)
         for metric in ("impressions", "clicks", "spend", "orders", "ordersSum"):
             totals[metric] = sum(to_number(row.get(metric)) for row in rows["matchedRows"])
             totals[f"previous_{metric}"] = sum(
-                _ads_previous_value(row, metric) for row in rows["matchedRows"]
+                to_number(_ads_previous_value(row, metric)) for row in rows["matchedRows"]
             )
         bid_values = [to_number(row.get("bid")) for row in rows["matchedRows"] if _is_present(row.get("bid"))]
         previous_bid_values = [
@@ -1910,12 +2041,12 @@ def _ads_diagnosis_lines(ads_summary, summary_stats=None):
     if not product_totals and advertised_sku:
         counters["yellow"] = int(to_number(advertised_sku))
 
-    if counters["green"] > counters["yellow"] and counters["green"] > counters["red"]:
-        conclusion = "По доступным данным реклама работает стабильно."
-    elif counters["red"] > counters["green"] and counters["red"] > counters["yellow"]:
-        conclusion = "Реклама требует проверки: часть товаров теряет рекламный трафик, клики или эффективность."
-    else:
+    if counters["red"] > counters["yellow"] and counters["red"] > counters["green"]:
+        conclusion = "Есть товары, где реклама даёт охват, но не приводит к кликам или заказам. Проверить карточки, цену, позиции, ставки и релевантность показов."
+    elif counters["yellow"] > counters["green"] and counters["yellow"] >= counters["red"]:
         conclusion = "Реклама не выглядит главной причиной просадки. Нужно проверять органику, карточки, цену, конверсию и остатки."
+    else:
+        conclusion = "По доступным данным рекламная воронка работает стабильно."
 
     coverage = (
         f"{_format_number(advertised_sku)}/{_format_number(total_sku)}"
@@ -1932,8 +2063,8 @@ def _ads_diagnosis_lines(ads_summary, summary_stats=None):
         f"Средний ДРР: {_format_number(ads_summary.get('currentDrr'))}%",
         "",
         f"🟢 Реклама работает стабильно: {_format_number(counters['green'])}",
-        f"🟡 Реклама нейтральна / причина не в рекламе: {_format_number(counters['yellow'])}",
-        f"🔴 Реклама требует проверки: {_format_number(counters['red'])}",
+        f"🟡 Проблема вероятнее не в рекламе: {_format_number(counters['yellow'])}",
+        f"🔴 Требуется проверка рекламы / карточки: {_format_number(counters['red'])}",
         "",
         *_ads_bid_change_summary_lines(summary_stats),
         "",
@@ -2978,7 +3109,7 @@ def _ads_previous_value(row, metric):
         value = row.get(key)
         if _is_present(value):
             return to_number(value)
-    return 0
+    return None
 
 
 def _product_ads_totals(product, summary_stats):
@@ -2996,6 +3127,38 @@ def _product_ads_totals(product, summary_stats):
         return None
 
     totals = {"rows": len(matched_rows), "matchedRows": matched_rows}
+    alias_groups = {
+        "carts": ("carts", "cartCount", "addToCart", "addToCartCount"),
+        "avgPosition": ("avgPosition",),
+        "positionDelta": ("positionDelta",),
+        "search_bid": ("search_bid",),
+        "recommendations_bid": ("recommendations_bid",),
+        "search_bid_delta": ("search_bid_delta",),
+        "recommendations_bid_delta": ("recommendations_bid_delta",),
+    }
+    for total_key, keys in alias_groups.items():
+        values = []
+        previous_values = []
+        for row in matched_rows:
+            value = _first_present_ads_value(row, keys)
+            if _is_present(value):
+                values.append(to_number(value))
+            for key in keys:
+                previous_value = _ads_previous_value(row, key)
+                if _is_present(previous_value):
+                    previous_values.append(to_number(previous_value))
+                    break
+        if values:
+            if total_key in {"avgPosition", "positionDelta", "search_bid", "recommendations_bid", "search_bid_delta", "recommendations_bid_delta"}:
+                totals[total_key] = sum(values) / len(values)
+            else:
+                totals[total_key] = sum(values)
+        if previous_values:
+            previous_key = f"previous_{total_key}"
+            if total_key in {"avgPosition", "positionDelta", "search_bid", "recommendations_bid", "search_bid_delta", "recommendations_bid_delta"}:
+                totals[previous_key] = sum(previous_values) / len(previous_values)
+            else:
+                totals[previous_key] = sum(previous_values)
     campaign_ids = []
     campaign_types = []
     for row in matched_rows:
@@ -3011,7 +3174,7 @@ def _product_ads_totals(product, summary_stats):
     totals["campaignTypes"] = campaign_types
     for metric in ("impressions", "clicks", "spend", "orders", "ordersSum", "bid"):
         current_values = [to_number(row.get(metric)) for row in matched_rows]
-        previous_values = [_ads_previous_value(row, metric) for row in matched_rows]
+        previous_values = [to_number(_ads_previous_value(row, metric)) for row in matched_rows]
         if metric == "bid":
             weighted_current = [
                 (
@@ -3359,6 +3522,66 @@ def _format_optional_ads_line(label, value, suffix=""):
     return f"   {label}: {_format_number(value)}{suffix}"
 
 
+def _format_product_ads_funnel_lines(totals):
+    if not totals:
+        return []
+    rows = []
+    for label, key, suffix in (
+        ("Показы", "impressions", ""),
+        ("Клики", "clicks", ""),
+        ("CTR", "ctr", "%"),
+        ("CPC", "cpc", " ₽"),
+        ("Добавили в корзину", "carts", ""),
+        ("Заказы", "orders", ""),
+        ("ДРР", "drr", "%"),
+        ("Средняя позиция", "avgPosition", ""),
+    ):
+        if _is_present(totals.get(key)):
+            rows.append(f"   {label}: {_format_number(totals.get(key))}{suffix}")
+    clicks = to_number(totals.get("clicks"))
+    if clicks > 0 and _is_present(totals.get("orders")):
+        rows.append(
+            f"   CR клики → заказ: {_format_number(to_number(totals.get('orders')) / clicks * 100)}%"
+        )
+    carts = _ads_cart_value(totals)
+    if clicks > 0 and carts is not None:
+        rows.append(f"   CR клики → корзина: {_format_number(carts / clicks * 100)}%")
+    if carts is not None and carts > 0 and _is_present(totals.get("orders")):
+        rows.append(
+            f"   CR корзина → заказ: {_format_number(to_number(totals.get('orders')) / carts * 100)}%"
+        )
+    return ["", "   Воронка рекламы:", *rows] if rows else []
+
+
+def _format_product_ads_bid_change_lines(totals):
+    if not totals:
+        return []
+    lines = []
+    for kind, label in (("search", "Поиск"), ("recommendations", "Рекомендации")):
+        previous = totals.get(f"previous_{kind}_bid")
+        current = totals.get(f"{kind}_bid")
+        delta = totals.get(f"{kind}_bid_delta")
+        if not (_is_present(previous) and _is_present(current)):
+            continue
+        if _is_present(delta) and to_number(delta) == 0:
+            continue
+        if not _is_present(delta) and to_number(previous) == to_number(current):
+            continue
+        lines.append(
+            f"   {label}: было {_format_number(previous)} ₽ → стало {_format_number(current)} ₽"
+        )
+    if lines:
+        return ["", "   Изменение ставки:", *lines]
+    bid_change = _product_bid_change(totals)
+    if not bid_change:
+        return []
+    for change in bid_change.get("changes") or [bid_change]:
+        lines.append(
+            f"   {change['label']}: было {_format_number(change['previous'])} ₽ → стало {_format_number(change['current'])} ₽"
+        )
+    return ["", "   Изменение ставки:", *lines] if lines else []
+
+
 def _format_product_ads_diagnosis_block(diagnosis):
     lines = [
         "   📢 <b>Рекламный диагноз</b>",
@@ -3369,6 +3592,9 @@ def _format_product_ads_diagnosis_block(diagnosis):
         "   Подтверждение:",
     ]
     lines.extend(f"   {line}" for line in diagnosis.get("confirmation") or [])
+    totals = diagnosis.get("totals") or {}
+    lines.extend(_format_product_ads_funnel_lines(totals))
+    lines.extend(_format_product_ads_bid_change_lines(totals))
     lines.extend(
         [
             "",
@@ -3377,7 +3603,6 @@ def _format_product_ads_diagnosis_block(diagnosis):
         ]
     )
     return "\n".join(lines)
-
 
 def _build_product_ads_breakdown(
     product, traffic_dynamic, orders_dynamic, summary_stats, open_count=None
@@ -3419,32 +3644,14 @@ def _build_product_ads_breakdown(
         ads_traffic_share=ads_traffic_share,
         open_count=current_open_count,
     )
+    diagnosis = dict(diagnosis)
+    diagnosis["totals"] = totals
     bid_change = _product_bid_change(totals)
     if bid_change:
-        diagnosis = dict(diagnosis)
         diagnosis["conclusion"] = _bid_impact_conclusion(
             totals, diagnosis.get("conclusion")
         )
     lines = [_format_product_ads_diagnosis_block(diagnosis)]
-
-    if bid_change:
-        lines.extend(["", "   Изменение ставки:"])
-        for change in bid_change.get("changes") or [bid_change]:
-            lines.append(
-                f"   {change['label']}: {_sign_money(change['delta'])}"
-            )
-    elif (
-        _is_present(totals.get("bid"))
-        and _is_present(totals.get("previous_bid"))
-        and to_number(totals.get("bid")) != to_number(totals.get("previous_bid"))
-    ):
-        bid_delta = to_number(totals.get("bid")) - to_number(
-            totals.get("previous_bid")
-        )
-        sign = "+" if bid_delta > 0 else ""
-        lines.extend(
-            ["", f"   Изменение ставки: {sign}{_format_number(bid_delta)} ₽"]
-        )
     return "\n".join(lines)
 
 
