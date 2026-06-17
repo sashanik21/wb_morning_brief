@@ -4694,6 +4694,48 @@ def _multi_is_critical(record):
     )
 
 
+
+def _seller_result_name(result):
+    return str(
+        result.get("seller_name")
+        or result.get("sellerName")
+        or result.get("seller")
+        or SELLER_NAME
+        or "Продавец без названия"
+    )
+
+
+def _seller_result_processing_status(result):
+    return str(result.get("processing_status") or result.get("processingStatus") or "")
+
+
+def _seller_result_has_zero_stocks(result):
+    return to_number(result.get("zero_stocks_count") or result.get("zeroStocksCount")) > 0
+
+
+def _seller_result_is_critical(result):
+    return (
+        to_number(result.get("critical_problems_count") or result.get("criticalProblemsCount")) > 0
+        or _seller_result_has_zero_stocks(result)
+        or _seller_result_processing_status(result) == "failed"
+    )
+
+
+def _seller_result_needs_attention(result):
+    return (
+        to_number(result.get("warning_problems_count") or result.get("warningProblemsCount")) > 0
+        or _seller_result_processing_status(result) in {"partial", "no_data"}
+    )
+
+
+def _seller_result_error_reason(result):
+    return str(
+        result.get("error_message")
+        or result.get("errorMessage")
+        or result.get("reason")
+        or "данные не получены"
+    )
+
 def _build_multi_seller_brief(
     problems, summary_stats=None, top_limit=5, include_ads=True, include_stocks=True
 ):
@@ -4701,29 +4743,52 @@ def _build_multi_seller_brief(
     records = [
         record for record in _problems_to_records(problems) if isinstance(record, dict)
     ]
+    seller_results = [
+        result
+        for result in summary_stats.get("sellerResults", [])
+        if isinstance(result, dict)
+    ]
     seller_names = set(summary_stats.get("sellerNames") or [])
     seller_names.update(_multi_seller_name(record) for record in records)
+    seller_names.update(_seller_result_name(result) for result in seller_results)
     sellers_total = int(
         summary_stats.get("sellersTotal")
         or summary_stats.get("activeSellersCount")
         or len(seller_names)
+        or len(seller_results)
         or 0
     )
     by_seller = {name: [] for name in seller_names}
     for record in records:
         by_seller.setdefault(_multi_seller_name(record), []).append(record)
 
-    critical_sellers = sum(
-        1
-        for seller_records in by_seller.values()
-        if any(_multi_is_critical(record) for record in seller_records)
-    )
-    warning_sellers = sum(
-        1
-        for seller_records in by_seller.values()
-        if seller_records and not any(_multi_is_critical(record) for record in seller_records)
-    )
-    ok_sellers = max(sellers_total - critical_sellers - warning_sellers, 0)
+    if seller_results:
+        critical_sellers = sum(1 for result in seller_results if _seller_result_is_critical(result))
+        warning_sellers = sum(
+            1
+            for result in seller_results
+            if not _seller_result_is_critical(result)
+            and _seller_result_needs_attention(result)
+        )
+        ok_sellers = sum(
+            1
+            for result in seller_results
+            if _seller_result_processing_status(result) == "success"
+            and to_number(result.get("critical_problems_count") or result.get("criticalProblemsCount")) == 0
+            and to_number(result.get("warning_problems_count") or result.get("warningProblemsCount")) == 0
+        )
+    else:
+        critical_sellers = sum(
+            1
+            for seller_records in by_seller.values()
+            if any(_multi_is_critical(record) for record in seller_records)
+        )
+        warning_sellers = sum(
+            1
+            for seller_records in by_seller.values()
+            if seller_records and not any(_multi_is_critical(record) for record in seller_records)
+        )
+        ok_sellers = max(sellers_total - critical_sellers - warning_sellers, 0)
 
     top_records = sorted(
         records, key=lambda record: _multi_problem_score(record), reverse=True
@@ -4740,6 +4805,25 @@ def _build_multi_seller_brief(
         f"🟡 Требуют внимания: {_format_number(warning_sellers)}",
         f"🟢 Без критичных проблем: {_format_number(ok_sellers)}",
     ]
+
+    problem_seller_results = [
+        result
+        for result in seller_results
+        if _seller_result_processing_status(result) in {"no_data", "failed"}
+    ]
+    if problem_seller_results:
+        lines.extend(["", "⚠️ <b>Продавцы без данных / с ошибкой</b>", ""])
+        for index, result in enumerate(problem_seller_results, start=1):
+            lines.extend(
+                [
+                    f"{index}. {html.escape(_seller_result_name(result))}",
+                    f"   Статус: {html.escape(_seller_result_processing_status(result))}",
+                    f"   Причина: {html.escape(_seller_result_error_reason(result))}",
+                    "",
+                ]
+            )
+        if lines[-1] == "":
+            lines.pop()
 
     if top_records:
         lines.extend(["", f"🔴 <b>ТОП-{len(top_records)} проблем дня</b>", ""])
