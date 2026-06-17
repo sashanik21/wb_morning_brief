@@ -32,42 +32,55 @@ def _mark_ads_api_status(status_code):
         _ADS_RATE_LIMIT_STATS["partial"] = True
 
 
+ADS_CAMPAIGN_TYPE_FIELDS = (
+    "type",
+    "advertType",
+    "campaignType",
+    "campaign_type",
+    "paymentType",
+    "placement",
+    "status",
+    "name",
+)
+
+
+def _campaign_type_field(campaign):
+    for field in ADS_CAMPAIGN_TYPE_FIELDS:
+        value = campaign.get(field)
+        if value not in (None, ""):
+            return field, value
+    return None, None
+
+
 def _extract_campaign_type(campaign):
-    return (
-        campaign.get("campaign_type")
-        or campaign.get("campaignType")
-        or campaign.get("advert_type")
-        or campaign.get("advertType")
-        or campaign.get("type")
-        or ""
-    )
+    _, value = _campaign_type_field(campaign)
+    return value
 
 
 def _log_ads_campaign_raw(campaigns):
     for campaign in (campaigns or [])[:10]:
+        raw_json = campaign.get("raw_json") if isinstance(campaign, dict) else None
+        raw_json = raw_json if isinstance(raw_json, dict) else campaign
         print("ADS CAMPAIGN RAW:")
-        print(f"campaign_id={_campaign_id(campaign)}")
-        print(f"name={_campaign_name(campaign)}")
-        print(
-            "full_json="
-            f"{json.dumps(campaign, ensure_ascii=False, default=str)}"
-        )
+        print(f"campaign_id: {_campaign_id(raw_json)}")
+        print(f"raw_json: {json.dumps(raw_json, ensure_ascii=False, default=str)}")
 
 
-def _log_ads_campaign_type_field_detection(campaigns):
-    for campaign in (campaigns or [])[:10]:
-        print("ADS CAMPAIGN TYPE FIELD DETECTION:")
-        print(f"campaign_id={_campaign_id(campaign)}")
-        print(
-            "campaign_type="
-            f"{campaign.get('campaign_type') or campaign.get('campaignType')}"
-        )
-        print(
-            "advert_type="
-            f"{campaign.get('advert_type') or campaign.get('advertType')}"
-        )
-        print(f"type={campaign.get('type')}")
-        print(f"subject={_extract_subject(campaign)}")
+def _log_ads_campaign_type_detection(campaigns):
+    for campaign in campaigns or []:
+        raw_json = campaign.get("raw_json") if isinstance(campaign, dict) else None
+        raw_json = raw_json if isinstance(raw_json, dict) else campaign
+        campaign_id = _campaign_id(raw_json)
+        source_field, raw_value = _campaign_type_field(raw_json)
+        if source_field:
+            print("ADS CAMPAIGN TYPE FOUND:")
+            print(f"campaign_id: {campaign_id}")
+            print(f"source_field: {source_field}")
+            print(f"raw_value: {raw_value}")
+        else:
+            print("ADS CAMPAIGN TYPE NOT FOUND:")
+            print(f"campaign_id: {campaign_id}")
+            print(f"available_keys: {list(raw_json.keys())}")
 
 
 def _extract_campaign_records(payload):
@@ -733,7 +746,7 @@ def _load_campaigns(token, seller_id):
         _campaign_cache_log("api", cached_campaigns, force_refresh)
         return None, campaign_status
     _log_ads_campaign_raw(api_campaigns)
-    _log_ads_campaign_type_field_detection(api_campaigns)
+    _log_ads_campaign_type_detection(api_campaigns)
     if storage and hasattr(storage, "save_ads_campaigns_cache"):
         storage.save_ads_campaigns_cache(seller_id, api_campaigns)
         cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
