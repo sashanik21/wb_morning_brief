@@ -1654,13 +1654,12 @@ def _ads_diagnosis_confidence(totals):
 def _ads_has_enough_diagnosis_data(totals):
     impressions = to_number((totals or {}).get("impressions"))
     clicks = to_number((totals or {}).get("clicks"))
-    return impressions >= 500 or clicks >= 20
+    return not (impressions < 500 and clicks < 20)
 
 
 def _ads_problem_source(totals, status=None, ads_traffic_share=None):
     if not _ads_has_enough_diagnosis_data(totals):
-        clicks = to_number((totals or {}).get("clicks"))
-        if clicks > 0 or (ads_traffic_share is not None and ads_traffic_share < 10):
+        if ads_traffic_share is not None and ads_traffic_share < 10:
             return "🟡 Органика"
         return "🟡 Недостаточно данных"
     ctr = to_number((totals or {}).get("ctr"))
@@ -1687,14 +1686,22 @@ def _ads_bid_history_ready(summary_stats):
             return True
     return any(row.get("has_previous_bid_history") for row in rows)
 
-def _ads_product_diagnosis(totals, orders_dynamic=None, ads_traffic_share=None, open_count=None):
+def _ads_product_diagnosis(
+    totals,
+    orders_dynamic=None,
+    ads_traffic_share=None,
+    open_count=None,
+    use_bid_history=False,
+):
     totals = totals or {}
     if not totals:
         return {
             "status": "yellow",
-            "reason": "🟡 Нет данных",
-            "confirmation": ["Данных по рекламе нет."],
-            "conclusion": "Невозможно проверить влияние рекламы на просадку.",
+            "reason": "🟡 Недостаточно данных",
+            "source": "🟡 Недостаточно данных",
+            "confidence": "Низкая",
+            "confirmation": ["Недостаточно рекламных данных для уверенного вывода."],
+            "conclusion": "Причина просадки определена предварительно.",
         }
 
     clicks = to_number(totals.get("clicks"))
@@ -1708,7 +1715,7 @@ def _ads_product_diagnosis(totals, orders_dynamic=None, ads_traffic_share=None, 
     previous_orders = totals.get("previous_orders")
     carts = _ads_cart_value(totals)
     previous_carts = _ads_previous_cart_value(totals)
-    bid_delta = _ads_any_bid_delta(totals)
+    bid_delta = _ads_any_bid_delta(totals) if use_bid_history else None
     impressions_dynamic = _ads_metric_dynamic(totals, "impressions")
     clicks_dynamic = _ads_metric_dynamic(totals, "clicks")
     ctr_dynamic = _ads_metric_dynamic(totals, "ctr")
@@ -1718,10 +1725,10 @@ def _ads_product_diagnosis(totals, orders_dynamic=None, ads_traffic_share=None, 
     if not _ads_has_enough_diagnosis_data(totals):
         confirmation = ["Недостаточно рекламных данных для уверенного вывода."]
         conclusion = "Причина просадки определена предварительно."
-        if clicks > 0:
-            confirmation.append(
+        if ads_traffic_share is not None and ads_traffic_share < 10:
+            confirmation = [
                 "Реклама даёт слишком мало трафика для объяснения просадки."
-            )
+            ]
             conclusion = "Основное падение произошло вне рекламного канала."
         return {
             "status": "yellow",
@@ -2104,12 +2111,17 @@ def _ads_diagnosis_lines(ads_summary, summary_stats=None):
     product_totals = _aggregate_ads_rows_by_product(summary_stats)
     counters = {"green": 0, "yellow": 0, "red": 0}
     confidence_counters = {"Высокая": 0, "Средняя": 0, "Низкая": 0}
-    ads_bid_ready = _ads_bid_history_ready(summary_stats)
+    campaigns_with_history = to_number(
+        ads_summary.get("campaignsWithHistory")
+        or ads_summary.get("campaigns_with_history")
+        or (summary_stats or {}).get("campaignsWithHistory")
+        or 0
+    )
     low_ads_quality = (
         ads_summary.get("adsCoverageConfidence") == "LOW"
         or (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
         or (summary_stats or {}).get("adsApiHad429")
-        or not ads_bid_ready
+        or campaigns_with_history == 0
     )
     for totals in product_totals:
         diagnosis = _ads_product_diagnosis(totals)
@@ -2119,12 +2131,14 @@ def _ads_diagnosis_lines(ads_summary, summary_stats=None):
             status = "yellow"
         counters[status] += 1
 
-    logger.info(
-        "ADS DIAGNOSIS QUALITY:\nhigh confidence: %s\nmedium confidence: %s\nlow confidence: %s",
-        confidence_counters["Высокая"],
-        confidence_counters["Средняя"],
-        confidence_counters["Низкая"],
+    diagnostic = (
+        "ADS DIAGNOSIS QUALITY:\n"
+        f"high confidence: {confidence_counters['Высокая']}\n"
+        f"medium confidence: {confidence_counters['Средняя']}\n"
+        f"low confidence: {confidence_counters['Низкая']}"
     )
+    logger.info(diagnostic)
+    print(diagnostic)
 
     if not product_totals and advertised_sku:
         counters["yellow"] = int(to_number(advertised_sku))
@@ -3099,7 +3113,7 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
     )
     if not products:
         if direction == "growth":
-            return "🟢 За период товары с выраженным ростом не обнаружены."
+            return ""
         return title + "\nПросадок заказов/выручки не найдено."
 
     products = sorted(products, key=lambda item: item[1], reverse=direction != "drop")[
@@ -3740,14 +3754,16 @@ def _build_product_ads_breakdown(
             _ads_product_diagnosis(None, orders_dynamic=orders_dynamic)
         )
 
+    ads_bid_history_ready = _ads_bid_history_ready(summary_stats)
+    totals["adsBidHistoryReady"] = ads_bid_history_ready
     diagnosis = _ads_product_diagnosis(
         totals,
         orders_dynamic=orders_dynamic,
         ads_traffic_share=ads_traffic_share,
         open_count=current_open_count,
+        use_bid_history=ads_bid_history_ready,
     )
     diagnosis = dict(diagnosis)
-    totals["adsBidHistoryReady"] = _ads_bid_history_ready(summary_stats)
     diagnosis["totals"] = totals
     diagnosis.setdefault("confidence", _ads_diagnosis_confidence(totals))
     diagnosis.setdefault("source", _ads_problem_source(totals, diagnosis.get("status"), ads_traffic_share))
@@ -3992,10 +4008,6 @@ def _format_signal_sku(row):
 
 
 def _build_no_problem_executive_block(summary_stats):
-    best, worst = _best_worst_from_evidence(summary_stats)
-
-    if best:
-        return f"Лучший товар: {_format_signal_sku(best)}"
     return ""
 
 
@@ -4653,14 +4665,12 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
         below_fact_line,
         _build_low_priority_signals_block(records),
         top_drops_block,
-        _build_top_growth_block(problem_products),
         _build_api_coverage_debug_block(summary_stats),
     ]
 
     if not main_records:
         message_parts.extend(
             [
-                _build_no_problem_executive_block(summary_stats),
                 _build_perfume_intelligence_block(summary_stats),
                 _build_executive_ads_block(priority_records, summary_stats),
             ]
