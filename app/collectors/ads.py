@@ -8,7 +8,7 @@ import requests
 
 ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
-ADS_CAMPAIGN_DETAILS_URL = "https://advert-api.wildberries.ru/adv/v2/adverts"
+ADS_CAMPAIGN_DETAILS_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/adverts"
 ADS_TIMEOUT_SECONDS = 60
 ADS_CAMPAIGN_BATCH_SIZE = 50
 ADS_CAMPAIGN_CACHE_TTL_HOURS = 12
@@ -52,7 +52,7 @@ def _campaign_type_field(campaign):
 
 def _extract_campaign_type(campaign):
     _, value = _campaign_type_field(campaign)
-    return value
+    return value or "unknown"
 
 
 def _campaign_raw_json(campaign):
@@ -73,15 +73,22 @@ def _campaign_record_id(campaign, raw_json):
 
 def _ensure_campaign_type_from_raw_json(campaigns):
     for campaign in campaigns or []:
-        if (
-            not isinstance(campaign, dict)
-            or campaign.get("campaign_type") not in (None, "")
-        ):
+        if not isinstance(campaign, dict):
             continue
-        campaign["campaign_type"] = _extract_campaign_type(
-            _campaign_raw_json(campaign)
-        )
+        if campaign.get("campaign_type") in (None, ""):
+            campaign["campaign_type"] = _extract_campaign_type(
+                _campaign_raw_json(campaign)
+            )
+        if campaign.get("campaign_type") in (None, ""):
+            campaign["campaign_type"] = "unknown"
     return campaigns
+
+
+def _campaign_type_is_unknown(campaign):
+    return (
+        not isinstance(campaign, dict)
+        or campaign.get("campaign_type") in (None, "", "unknown")
+    )
 
 
 def _log_ads_campaign_raw(campaigns):
@@ -125,7 +132,7 @@ def _extract_campaign_records(payload):
                 "campaign_id": campaign_id,
                 "campaign_name": _campaign_name(value),
                 "campaign_status": _extract_status(value),
-                "campaign_type": None,
+                "campaign_type": "unknown",
                 "raw_json": value,
             }
         )
@@ -274,6 +281,14 @@ def _log_ads_campaign_details_result(campaigns):
     print(f"campaigns loaded: {len(campaigns or [])}")
 
 
+def _log_ads_campaign_details(campaigns):
+    for campaign in campaigns or []:
+        print("ADS CAMPAIGN DETAILS:")
+        print(f"campaign_id: {campaign.get('campaign_id')}")
+        print(f"campaign_type: {campaign.get('campaign_type') or 'unknown'}")
+        print(f"campaign_name: {campaign.get('campaign_name')}")
+
+
 def _request_ads_campaign_details(token, campaign_ids):
     campaign_ids = [
         int(campaign_id) if str(campaign_id).isdigit() else campaign_id
@@ -308,7 +323,9 @@ def _request_ads_campaign_details(token, campaign_ids):
             print("WB Ads campaign details API returned invalid JSON")
             continue
         loaded_campaigns.extend(_extract_campaign_detail_records(payload, batch))
+    _ensure_campaign_type_from_raw_json(loaded_campaigns)
     _log_ads_campaign_details_result(loaded_campaigns)
+    _log_ads_campaign_details(loaded_campaigns)
     return loaded_campaigns, status_code
 
 
@@ -325,8 +342,8 @@ def _merge_campaign_details(campaigns, details):
         if detail:
             merged.append({**campaign, **detail})
         else:
-            merged.append({**campaign, "campaign_type": None})
-    return merged
+            merged.append({**campaign, "campaign_type": "unknown"})
+    return _ensure_campaign_type_from_raw_json(merged)
 
 
 def _env_int(name, default):
@@ -586,6 +603,33 @@ def _aggregate_campaign(campaign, nm_row=None):
         "campaignStatus": _extract_status(campaign),
         "campaignType": _extract_campaign_type(campaign),
     }
+
+
+def _enrich_ads_rows_with_campaign_details(rows, campaigns):
+    campaigns_by_id = {
+        str(campaign.get("campaign_id")): campaign
+        for campaign in campaigns or []
+        if campaign.get("campaign_id") not in (None, "")
+    }
+    for row in rows or []:
+        campaign_id = str(row.get("campaignId") or row.get("advertId") or "")
+        campaign = campaigns_by_id.get(campaign_id)
+        if not campaign:
+            row["campaignType"] = row.get("campaignType") or "unknown"
+            continue
+        row["campaignType"] = (
+            row.get("campaignType")
+            or campaign.get("campaign_type")
+            or _extract_campaign_type(campaign.get("raw_json") or campaign)
+            or "unknown"
+        )
+        row["campaignName"] = row.get("campaignName") or campaign.get(
+            "campaign_name"
+        )
+        row["campaignStatus"] = (
+            row.get("campaignStatus") or campaign.get("campaign_status")
+        )
+    return rows
 
 
 def _merge_previous_period(current_rows, previous_rows):
@@ -865,6 +909,16 @@ def _load_campaigns(token, seller_id):
         cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
     if not force_refresh and _campaign_cache_is_fresh(cached_campaigns):
         _ensure_campaign_type_from_raw_json(cached_campaigns)
+        if any(_campaign_type_is_unknown(campaign) for campaign in cached_campaigns):
+            campaign_ids = _campaign_ids_from_records(cached_campaigns)
+            detail_campaigns, _ = _request_ads_campaign_details(token, campaign_ids)
+            cached_campaigns = _merge_campaign_details(
+                cached_campaigns, detail_campaigns
+            )
+            if storage and hasattr(storage, "save_ads_campaigns_cache"):
+                storage.save_ads_campaigns_cache(seller_id, cached_campaigns)
+                cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
+            _ensure_campaign_type_from_raw_json(cached_campaigns)
         _log_ads_campaign_raw(cached_campaigns)
         _log_ads_campaign_type_detection(cached_campaigns)
         _campaign_cache_log("cache", cached_campaigns, force_refresh)
@@ -1061,6 +1115,8 @@ def collect_ads_stats(
 
     if ads_rows is None:
         ads_rows = []
+
+    _enrich_ads_rows_with_campaign_details(ads_rows, selected_campaigns)
 
     unique_nmids = {
         row.get("nmId") for row in ads_rows if row.get("nmId") not in (None, "")
