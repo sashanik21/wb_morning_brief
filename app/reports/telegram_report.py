@@ -1595,6 +1595,27 @@ def _ads_row_product_title(row):
     return "Без названия"
 
 
+def _first_present_ads_value(row, keys):
+    for key in keys:
+        value = (row or {}).get(key)
+        if _is_present(value):
+            return value
+    return None
+
+
+def _ads_row_data_date(row):
+    return _first_present_ads_value(row, ("date", "report_date", "reportDate"))
+
+
+def _format_ads_bid_delta(value):
+    delta = to_number(value)
+    if not delta:
+        return None
+
+    sign = "+" if delta > 0 else "-"
+    return f"{sign}{_format_money(abs(delta))}"
+
+
 def _ads_processed_campaign_lines(summary_stats=None, ads_summary=None):
     rows = [
         row
@@ -1618,11 +1639,22 @@ def _ads_processed_campaign_lines(summary_stats=None, ads_summary=None):
                 "campaignIds": campaign_ids,
                 "campaignTypes": _ads_row_campaign_types(row),
                 "title": _ads_row_product_title(row),
+                "dataDate": _ads_row_data_date(row),
+                "bid": _first_present_ads_value(row, ("bid",)),
+                "bidDelta": _first_present_ads_value(row, ("bid_delta", "bidDelta")),
                 "impressions": 0,
                 "clicks": 0,
                 "spend": 0,
                 "ordersSum": 0,
             }
+        if not _is_present(grouped_rows[key]["dataDate"]):
+            grouped_rows[key]["dataDate"] = _ads_row_data_date(row)
+        if not _is_present(grouped_rows[key]["bid"]):
+            grouped_rows[key]["bid"] = _first_present_ads_value(row, ("bid",))
+        if not _is_present(grouped_rows[key]["bidDelta"]):
+            grouped_rows[key]["bidDelta"] = _first_present_ads_value(
+                row, ("bid_delta", "bidDelta")
+            )
         grouped_rows[key]["impressions"] += to_number(row.get("impressions"))
         grouped_rows[key]["clicks"] += to_number(row.get("clicks"))
         grouped_rows[key]["spend"] += to_number(row.get("spend"))
@@ -1645,15 +1677,29 @@ def _ads_processed_campaign_lines(summary_stats=None, ads_summary=None):
         unique_types = list(dict.fromkeys(campaign_types))
         type_label = html.escape(", ".join(unique_types))
         type_line = "Типы кампаний" if len(unique_types) > 1 else "Тип кампании"
-        lines.append(
-            f"{index}. {id_line}\n"
-            f"   {type_line}: {type_label}\n"
-            f"   Товар: {campaign['title']}\n"
-            f"   Показы: {_format_number(campaign['impressions'])}\n"
-            f"   Клики: {_format_number(campaign['clicks'])}\n"
-            f"   Расход: {_format_money(campaign['spend'])}\n"
-            f"   ДРР: {_format_number(drr)}%"
+        campaign_lines = [
+            f"{index}. {id_line}",
+            f"   {type_line}: {type_label}",
+            f"   Товар: {campaign['title']}",
+        ]
+        if _is_present(campaign["dataDate"]):
+            campaign_lines.append(
+                f"   Дата данных: {html.escape(str(campaign['dataDate']))}"
+            )
+        if _is_present(campaign["bid"]):
+            campaign_lines.append(f"   Ставка: {_format_money(campaign['bid'])}")
+        bid_delta = _format_ads_bid_delta(campaign["bidDelta"])
+        if bid_delta:
+            campaign_lines.append(f"   Изменение ставки: {bid_delta}")
+        campaign_lines.extend(
+            [
+                f"   Показы: {_format_number(campaign['impressions'])}",
+                f"   Клики: {_format_number(campaign['clicks'])}",
+                f"   Расход: {_format_money(campaign['spend'])}",
+                f"   ДРР: {_format_number(drr)}%",
+            ]
         )
+        lines.append("\n".join(campaign_lines))
     return lines
 
 
