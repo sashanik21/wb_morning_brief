@@ -1604,76 +1604,119 @@ def _format_ads_bid_delta(value):
     return f"{sign}{_format_money(abs(delta))}"
 
 
-def _ads_processed_campaign_lines(summary_stats=None, ads_summary=None):
-    rows = [
-        row
-        for row in (summary_stats or {}).get("adsRows") or []
-        if isinstance(row, dict)
+def _ads_product_diagnosis_status(totals, orders_dynamic=None, ads_traffic_share=None):
+    clicks = to_number(totals.get("clicks"))
+    impressions = to_number(totals.get("impressions"))
+    drr = to_number(totals.get("drr"))
+    previous_clicks = totals.get("previous_clicks")
+    previous_impressions = totals.get("previous_impressions")
+    previous_drr = totals.get("previous_drr")
+
+    if clicks == 0:
+        return "red", "🔴 реклама не даёт переходов"
+    if ads_traffic_share is not None and ads_traffic_share < 10:
+        return "yellow", "🟡 реклама почти не влияет, основная просадка не в рекламе"
+    if _is_present(previous_clicks) and to_number(previous_clicks) > 0:
+        if clicks < to_number(previous_clicks) * 0.8:
+            return "red", "🔴 рекламный трафик просел"
+    if _is_present(previous_impressions) and to_number(previous_impressions) > 0:
+        if impressions < to_number(previous_impressions) * 0.8:
+            return "red", "🔴 показы рекламы просели"
+    if _is_present(previous_drr) and to_number(previous_drr) > 0:
+        if drr > to_number(previous_drr) * 1.2:
+            return "red", "🔴 реклама стала дороже, проверить ставки и ДРР"
+    if orders_dynamic is not None and orders_dynamic < 0:
+        if not _is_present(previous_clicks) or clicks >= to_number(previous_clicks) * 0.8:
+            return (
+                "yellow",
+                "🟡 реклама даёт трафик, проблема вероятнее в карточке, цене или конверсии",
+            )
+    clicks_stable = not _is_present(previous_clicks) or clicks >= to_number(previous_clicks) * 0.8
+    impressions_stable = not _is_present(previous_impressions) or impressions >= to_number(previous_impressions) * 0.8
+    drr_stable = not _is_present(previous_drr) or to_number(previous_drr) <= 0 or drr <= to_number(previous_drr) * 1.2
+    if impressions_stable and clicks_stable and drr_stable:
+        return "green", "🟢 реклама работает стабильно"
+    return "yellow", "🟡 данных по рекламе недостаточно для точного вывода"
+
+
+def _aggregate_ads_rows_by_product(summary_stats):
+    grouped = {}
+    for row in (summary_stats or {}).get("adsRows") or []:
+        if not isinstance(row, dict):
+            continue
+        nm_id = _normalize_ads_nm_id(row.get("nmId") or row.get("nm_id")) or str(id(row))
+        if nm_id not in grouped:
+            grouped[nm_id] = {"matchedRows": []}
+        grouped[nm_id]["matchedRows"].append(row)
+
+    totals_by_product = []
+    for rows in grouped.values():
+        totals = {"matchedRows": rows["matchedRows"]}
+        for metric in ("impressions", "clicks", "spend", "orders", "ordersSum"):
+            totals[metric] = sum(to_number(row.get(metric)) for row in rows["matchedRows"])
+            totals[f"previous_{metric}"] = sum(
+                _ads_previous_value(row, metric) for row in rows["matchedRows"]
+            )
+        bid_values = [to_number(row.get("bid")) for row in rows["matchedRows"] if _is_present(row.get("bid"))]
+        previous_bid_values = [
+            _ads_previous_value(row, "bid")
+            for row in rows["matchedRows"]
+            if _is_present(_ads_previous_value(row, "bid"))
+        ]
+        if bid_values:
+            totals["bid"] = sum(bid_values) / len(bid_values)
+        if previous_bid_values:
+            totals["previous_bid"] = sum(previous_bid_values) / len(previous_bid_values)
+        totals["ctr"] = totals["clicks"] / totals["impressions"] * 100 if totals["impressions"] else 0
+        totals["previous_ctr"] = totals["previous_clicks"] / totals["previous_impressions"] * 100 if totals["previous_impressions"] else 0
+        totals["cpc"] = totals["spend"] / totals["clicks"] if totals["clicks"] else 0
+        totals["previous_cpc"] = totals["previous_spend"] / totals["previous_clicks"] if totals["previous_clicks"] else 0
+        totals["drr"] = totals["spend"] / totals["ordersSum"] * 100 if totals["ordersSum"] else 0
+        totals["previous_drr"] = totals["previous_spend"] / totals["previous_ordersSum"] * 100 if totals["previous_ordersSum"] else 0
+        totals_by_product.append(totals)
+    return totals_by_product
+
+
+def _ads_diagnosis_lines(ads_summary, summary_stats=None):
+    advertised_sku = ads_summary.get("advertisedSku")
+    total_sku = ads_summary.get("totalSku")
+    product_totals = _aggregate_ads_rows_by_product(summary_stats)
+    counters = {"green": 0, "yellow": 0, "red": 0}
+    for totals in product_totals:
+        status, _ = _ads_product_diagnosis_status(totals)
+        counters[status] += 1
+
+    if not product_totals and advertised_sku:
+        counters["yellow"] = int(to_number(advertised_sku))
+
+    if counters["green"] > counters["yellow"] and counters["green"] > counters["red"]:
+        conclusion = "По доступным данным реклама работает стабильно."
+    elif counters["red"] > counters["green"] and counters["red"] > counters["yellow"]:
+        conclusion = "Реклама требует проверки: часть товаров теряет рекламный трафик или клики."
+    else:
+        conclusion = "Реклама не выглядит главной причиной просадки, нужно проверять карточки, цену, органику и остатки."
+
+    coverage = (
+        f"{_format_number(advertised_sku)}/{_format_number(total_sku)}"
+        if advertised_sku is not None and total_sku is not None
+        else _format_number(len(product_totals))
+    )
+    return [
+        "📊 <b>Рекламный диагноз</b>",
+        "",
+        f"Товаров с рекламой: {coverage}",
+        "",
+        f"Средний CTR: {_format_number(ads_summary.get('currentCtr'))}%",
+        f"Средний CPC: {_format_number(ads_summary.get('currentCpc'))} ₽",
+        f"Средний ДРР: {_format_number(ads_summary.get('currentDrr'))}%",
+        "",
+        f"🟢 Реклама помогает / работает стабильно: {_format_number(counters['green'])}",
+        f"🟡 Реклама нейтральна или данных мало: {_format_number(counters['yellow'])}",
+        f"🔴 Реклама просела или не даёт трафик: {_format_number(counters['red'])}",
+        "",
+        "Вывод по рекламе:",
+        conclusion,
     ]
-    if _ads_processed_campaigns_count(summary_stats, ads_summary) <= 0 and not rows:
-        return []
-
-    lines = ["Обработанные кампании:"]
-    if not rows:
-        lines.append("Данные по ID кампаний не получены от WB Ads API.")
-        return lines
-
-    grouped_rows = {}
-    for row in rows:
-        campaign_ids = _ads_row_campaign_ids(row)
-        key = tuple(campaign_ids) if campaign_ids else ("row", id(row))
-        if key not in grouped_rows:
-            grouped_rows[key] = {
-                "campaignIds": campaign_ids,
-                "campaignTypes": _ads_row_campaign_types(row),
-                "title": _ads_row_product_title(row),
-                "dataDate": _ads_row_data_date(row),
-                "bid": _first_present_ads_value(row, ("bid",)),
-                "bidDelta": _first_present_ads_value(row, ("bid_delta", "bidDelta")),
-                "impressions": 0,
-                "clicks": 0,
-                "spend": 0,
-                "ordersSum": 0,
-            }
-        if not _is_present(grouped_rows[key]["dataDate"]):
-            grouped_rows[key]["dataDate"] = _ads_row_data_date(row)
-        if not _is_present(grouped_rows[key]["bid"]):
-            grouped_rows[key]["bid"] = _first_present_ads_value(row, ("bid",))
-        if not _is_present(grouped_rows[key]["bidDelta"]):
-            grouped_rows[key]["bidDelta"] = _first_present_ads_value(
-                row, ("bid_delta", "bidDelta")
-            )
-        grouped_rows[key]["impressions"] += to_number(row.get("impressions"))
-        grouped_rows[key]["clicks"] += to_number(row.get("clicks"))
-        grouped_rows[key]["spend"] += to_number(row.get("spend"))
-        grouped_rows[key]["ordersSum"] += to_number(row.get("ordersSum"))
-
-    for index, campaign in enumerate(list(grouped_rows.values())[:5], start=1):
-        campaign_ids = campaign["campaignIds"]
-        campaign_types = campaign["campaignTypes"]
-        if len(campaign_ids) > 1:
-            id_line = f"ID кампаний: {html.escape(', '.join(campaign_ids))}"
-        elif campaign_ids:
-            id_line = f"ID кампании: {html.escape(campaign_ids[0])}"
-        else:
-            id_line = "ID кампании: не получен от WB Ads API"
-        unique_types = list(dict.fromkeys(campaign_types))
-        type_label = html.escape(", ".join(unique_types))
-        type_line = "Типы кампаний" if len(unique_types) > 1 else "Тип кампании"
-        campaign_lines = [f"{index}. {id_line}"]
-        if type_label:
-            campaign_lines.append(f"   {type_line}: {type_label}")
-        if _is_present(campaign["dataDate"]):
-            campaign_lines.append(
-                f"   Дата данных: {html.escape(str(campaign['dataDate']))}"
-            )
-        if _is_present(campaign["bid"]):
-            campaign_lines.append(f"   Ставка: {_format_money(campaign['bid'])}")
-        bid_delta = _format_ads_bid_delta(campaign["bidDelta"])
-        if bid_delta:
-            campaign_lines.append(f"   Изменение ставки: {bid_delta}")
-        lines.append("\n".join(campaign_lines))
-    return lines
 
 
 def _ads_summary_lines(ads_summary, summary_stats=None):
@@ -1692,27 +1735,19 @@ def _ads_summary_lines(ads_summary, summary_stats=None):
         f"клик {_format_number(ads_summary.get('currentCpc'))} ₽, "
         f"ДРР {_format_number(ads_summary.get('currentDrr'))}%.",
     ]
-    processed_campaign_lines = _ads_processed_campaign_lines(summary_stats, ads_summary)
-    if _ads_rows_count(summary_stats, ads_summary) > 0 or processed_campaign_lines:
+    if _ads_rows_count(summary_stats, ads_summary) > 0:
         lines.append(f"Источник: {source}")
-    lines.extend(processed_campaign_lines)
-    if ads_summary.get("fallbackUsed"):
+    lines.append("")
+    lines.extend(_ads_diagnosis_lines(ads_summary, summary_stats))
+    if _has_partial_ads_data(summary_stats, ads_summary):
+        lines.append("")
+        lines.append("⚠️ Данные рекламы частичные.")
+    elif ads_summary.get("fallbackUsed"):
+        lines.append("")
         lines.append(
             "⚠️ Актуальные данные рекламы не получены от WB. "
             "Используются последние доступные данные из истории."
         )
-    coverage_line = _ads_campaigns_coverage_line(summary_stats, ads_summary)
-    if coverage_line:
-        lines.append(coverage_line)
-    if _ads_campaigns_success_zero(summary_stats, ads_summary):
-        if _ads_rows_count(summary_stats, ads_summary) == 0:
-            lines.append("Актуальные данные рекламы отсутствуют. Анализ рекламы невозможен.")
-        return lines
-    if _ads_has_incomplete_metric_history(ads_summary):
-        lines.append("История короткая, выводы предварительные.")
-        return lines
-
-    lines.append(_ads_summary_conclusion(ads_summary))
     return lines
 
 
@@ -3089,93 +3124,37 @@ def _product_ads_conclusion(
     ads_traffic_share=None,
     ads_api_partial=False,
 ):
-    if ads_api_partial:
-        return "По доступным данным реклама стабильна, но вывод ограничен: часть рекламных данных не получена от WB API."
+    _, conclusion = _ads_product_diagnosis_status(
+        totals, orders_dynamic=orders_dynamic, ads_traffic_share=ads_traffic_share
+    )
+    return conclusion
 
-    impressions = to_number(totals.get("impressions"))
-    ctr = to_number(totals.get("ctr"))
-    cpc = to_number(totals.get("cpc"))
-    drr = to_number(totals.get("drr"))
-    impressions_dynamic = _ads_metric_dynamic(totals, "impressions")
-    ctr_dynamic = _ads_metric_dynamic(totals, "ctr")
-    cpc_dynamic = _ads_metric_dynamic(totals, "cpc")
-    ads_orders_dynamic = _ads_metric_dynamic(totals, "orders")
-    lines = []
 
-    if impressions > 1000 and ctr < 0.1:
-        clicks = to_number(totals.get("clicks"))
-        if (
-            ads_traffic_share is not None
-            and ads_traffic_share < 10
-            and traffic_dynamic is not None
-            and traffic_dynamic < 0
-        ):
-            return (
-                "реклама почти не даёт переходов — "
-                f"{_format_number(clicks)} клика при {_format_number(impressions)} показах. "
-                "Просадка переходов скорее в органике/позициях/карточке, "
-                "но сама реклама неэффективна."
-            )
-        return (
-            "реклама получила много показов, но почти не дала кликов — "
-            f"{_format_number(clicks)} клика при {_format_number(impressions)} показах."
-        )
-
-    if (
-        ads_traffic_share is not None
-        and ads_traffic_share < 10
-        and traffic_dynamic is not None
-        and traffic_dynamic < 0
-    ):
-        lines.append(
-            "Просадка переходов скорее связана не с рекламой, а с органикой/позициями/карточкой: "
-            f"реклама дала только {_format_percent_one_decimal(ads_traffic_share)} переходов."
-        )
-    if ctr < 0.1 and _is_high_ads_cpc(cpc):
-        lines.append(
-            "Рекламный трафик неэффективен: низкий CTR и высокая стоимость клика."
-        )
-    if drr > 30:
-        lines.append("ДРР высокий, рекламу нужно проверить на окупаемость.")
-
-    if lines:
-        return lines[0]
-
-    if (
-        traffic_dynamic is not None
-        and traffic_dynamic < 0
-        and impressions_dynamic is not None
-        and impressions_dynamic < 0
-    ):
-        return "Просадка связана с падением рекламного трафика."
-    if (
-        impressions_dynamic is not None
-        and abs(impressions_dynamic) <= 5
-        and ctr_dynamic is not None
-        and ctr_dynamic < 0
-    ):
-        return "Проблема в кликабельности рекламы: показы есть, но клики просели."
-    if (
-        ctr_dynamic is not None
-        and abs(ctr_dynamic) <= 5
-        and cpc_dynamic is not None
-        and cpc_dynamic > 0
-    ):
-        return "Аукцион стал дороже: стоимость клика выросла."
-    if ads_orders_dynamic is not None and ads_orders_dynamic < 0:
-        return "Реклама стала хуже конвертировать в заказы."
-    return "Реклама не выглядит главной причиной просадки. Проверить карточку, цену, доставку и остатки."
+def _format_optional_ads_line(label, value, suffix=""):
+    if not _is_present(value):
+        return None
+    return f"   {label}: {_format_number(value)}{suffix}"
 
 
 def _build_product_ads_breakdown(
     product, traffic_dynamic, orders_dynamic, summary_stats, open_count=None
 ):
+    no_data_block = "\n".join(
+        [
+            "   📢 <b>Реклама по товару</b>",
+            "",
+            "   Данных по рекламе нет.",
+            "",
+            "   Оценка:",
+            "   🟡 невозможно проверить влияние рекламы на просадку",
+        ]
+    )
     if _ads_rows_count(summary_stats) == 0:
-        return ""
+        return no_data_block
 
     totals = _product_ads_totals(product, summary_stats)
     if totals is None:
-        return "   Рекламных данных по товару нет: товар не найден в рекламной статистике WB Ads."
+        return no_data_block
 
     current_open_count = _product_ads_open_count(product, open_count)
     ads_clicks = totals.get("clicks")
@@ -3184,22 +3163,14 @@ def _build_product_ads_breakdown(
             float(ads_clicks or 0) / float(current_open_count) * 100, 2
         )
     else:
-        ads_traffic_share = None
-    diagnostic = (
-        "TELEGRAM ADS PRODUCT DATA:\n"
-        f"nmId: {product.get('nmId')}\n"
-        f"adsClicks: {ads_clicks}\n"
-        f"currentOpenCount: {current_open_count if current_open_count is not None else ''}\n"
-        f"adsTrafficShare: {ads_traffic_share if ads_traffic_share is not None else ''}"
+        ads_traffic_share = totals.get("adsTrafficShare")
+    logger.info(
+        "TELEGRAM ADS PRODUCT DATA:\nnmId: %s\nadsClicks: %s\ncurrentOpenCount: %s\nadsTrafficShare: %s",
+        product.get("nmId"),
+        ads_clicks,
+        current_open_count if current_open_count is not None else "",
+        ads_traffic_share if ads_traffic_share is not None else "",
     )
-    if current_open_count is None:
-        diagnostic += (
-            "\n"
-            f"topDropItemKeys: {sorted((product or {}).keys())}\n"
-            f"productContextKeys: {sorted((totals or {}).keys())}"
-        )
-    logger.info(diagnostic)
-    print(diagnostic)
 
     if _ads_fallback_data_is_stale(totals, summary_stats):
         return "\n".join(
@@ -3210,18 +3181,33 @@ def _build_product_ads_breakdown(
             ]
         )
 
-    campaign_meta_lines = _format_ads_campaign_meta(totals)
     lines = [
         "   📢 <b>Реклама по товару</b>",
-        *campaign_meta_lines,
-        f"   — Показы: {_format_number(totals.get('impressions'))}",
-        f"   — Клики рекламы: {_format_number(totals.get('clicks'))}",
-        f"   — Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}",
+        "",
+        f"   Показы: {_format_number(totals.get('impressions'))}",
+        f"   Клики: {_format_number(totals.get('clicks'))}",
+        f"   CTR: {_format_number(totals.get('ctr'))}%",
+        f"   CPC: {_format_number(totals.get('cpc'))} ₽",
+        f"   Расход: {_format_number(totals.get('spend'))} ₽",
+        f"   ДРР: {_format_number(totals.get('drr'))}%",
     ]
-    if (summary_stats or {}).get("adsCoverageConfidence") != "LOW":
+    if ads_traffic_share is not None:
         lines.append(
-            f"   Вывод: {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share, (summary_stats or {}).get('adsApiPartial'))}"
+            f"   Доля рекламы в переходах: {_format_percent_one_decimal(ads_traffic_share)}"
         )
+    if _is_present(totals.get("bid")) and to_number(totals.get("bid")) != 0:
+        lines.append(f"   Ставка: {_format_number(totals.get('bid'))} ₽")
+    if _is_present(totals.get("previous_bid")):
+        bid_delta = to_number(totals.get("bid")) - to_number(totals.get("previous_bid"))
+        sign = "+" if bid_delta > 0 else ""
+        lines.append(f"   Изменение ставки: {sign}{_format_number(bid_delta)} ₽")
+    lines.extend(
+        [
+            "",
+            "   Оценка:",
+            f"   {_product_ads_conclusion(totals, traffic_dynamic, orders_dynamic, ads_traffic_share, (summary_stats or {}).get('adsApiPartial'))}",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -3313,7 +3299,6 @@ def _build_executive_ads_block(records, summary_stats):
         return "\n".join(lines)
 
     first_problem = ads_records[0]
-    limitation_line = _ads_api_429_limitation_line(summary_stats)
 
     for label, key in (
         ("Лучший товар по рекламе", "bestSku"),
@@ -3332,10 +3317,7 @@ def _build_executive_ads_block(records, summary_stats):
 
     if first_problem.get("problemType") == "AUCTION_OVERHEATING":
         lines.append("Вывод: аукцион перегрет, повышение ставок не дает роста позиций.")
-    if limitation_line:
-        lines.append("")
-        lines.append(limitation_line)
-    elif problem_campaigns:
+    if problem_campaigns:
         lines.append("")
         lines.append(
             f"Есть {_format_number(problem_campaigns)} рекламных сигналов для проверки."
@@ -4078,14 +4060,6 @@ def _build_api_coverage_debug_block(summary_stats):
         return ""
 
     parts = [html.escape(str(line))]
-    ads_found = coverage.get("adsFound")
-    total_sku = coverage.get("totalSku")
-    if total_sku and ads_found is not None and (ads_found / total_sku) < 0.7:
-        parts.append(
-            f"Покрытие рекламы низкое: данные найдены только для {ads_found} из {total_sku} SKU."
-        )
-    if coverage.get("adsApiHad429"):
-        parts.append("Реклама: данные частичные из-за ограничения WB API.")
     return "\n".join(parts)
 
 
