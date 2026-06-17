@@ -2896,46 +2896,65 @@ def _ads_campaign_type_label_or_empty(value):
             numeric_text = str(int(numeric_value))
     except (TypeError, ValueError):
         pass
-    mapping = {
-        "4": "Поиск + каталог",
-        "5": "Аукцион",
+
+    normalized_text = numeric_text.lower()
+    normalized_text = normalized_text.replace("_", " ").replace("-", " ")
+    normalized_text = re.sub(r"\s+", " ", normalized_text).strip()
+
+    numeric_mapping = {
+        "4": "WB Продвижение — CPC, поиск и каталог",
+        "5": "Аукцион / поиск",
         "6": "Поиск",
         "7": "Каталог",
-        "8": "Автоматическая кампания",
-        "9": "Аукцион",
-        "auction": "Аукцион",
-        "аукцион": "Аукцион",
-        "auto": "Автоматическая кампания",
-        "automatic": "Автоматическая кампания",
-        "авто": "Автоматическая кампания",
-        "автоматическая кампания": "Автоматическая кампания",
-        "search": "Поиск",
-        "поиск": "Поиск",
-        "catalog": "Каталог",
-        "каталог": "Каталог",
-        "booster": "Бустер",
-        "бустер": "Бустер",
-        "combined": "Поиск + каталог",
-        "поиск + каталог": "Поиск + каталог",
-        "search_catalog": "Поиск + каталог",
-        "search+catalog": "Поиск + каталог",
-        "unknown": "Тип не определён",
+        "8": "Автоматическая кампания — поиск, каталог, рекомендации",
+        "9": "Аукцион / поиск",
     }
-    return mapping.get(numeric_text.lower(), "")
+    if normalized_text in numeric_mapping:
+        return numeric_mapping[normalized_text]
+
+    token_mapping = (
+        (
+            ("cpc", "click", "clicks", "per click"),
+            "WB Продвижение — CPC, поиск и каталог",
+        ),
+        (
+            ("cpm", "view", "views", "impression", "impressions"),
+            "WB Продвижение — CPM, поиск / каталог / рекомендации",
+        ),
+        (
+            ("auto", "automatic", "автомат", "авто"),
+            "Автоматическая кампания — поиск, каталог, рекомендации",
+        ),
+        (("auction", "аукцион"), "Аукцион / поиск"),
+        (("search", "поиск"), "Поиск"),
+        (("catalog", "каталог"), "Каталог"),
+        (("recommendation", "рекомендации", "полка"), "Рекомендательные полки"),
+    )
+    for tokens, label in token_mapping:
+        if any(token in normalized_text for token in tokens):
+            return label
+
+    if normalized_text == "unknown":
+        return "Тип не определён"
+    return ""
 
 
-def _ads_raw_json_values(row, key):
+def _ads_raw_json(row):
     raw_json = (row or {}).get("raw_json")
     if not raw_json:
-        return []
+        return {}
     if isinstance(raw_json, str):
         try:
             raw_json = json.loads(raw_json)
         except (TypeError, ValueError):
-            return []
+            return {}
     if not isinstance(raw_json, dict):
-        return []
-    return _ads_list_values(raw_json.get(key))
+        return {}
+    return raw_json
+
+
+def _ads_raw_json_values(row, key):
+    return _ads_list_values(_ads_raw_json(row).get(key))
 
 
 def _ads_row_campaign_name(row):
@@ -2951,16 +2970,7 @@ def _ads_row_campaign_name(row):
 
 
 def _ads_campaign_type_from_name(campaign_name):
-    text = str(campaign_name or "").lower()
-    if "аук" in text or "auction" in text:
-        return "Аукцион"
-    if "авто" in text or "auto" in text:
-        return "Автоматическая кампания"
-    if "поиск" in text or "search" in text:
-        return "Поиск"
-    if "каталог" in text or "catalog" in text:
-        return "Каталог"
-    return ""
+    return _ads_campaign_type_label_or_empty(campaign_name)
 
 
 def _resolve_ads_row_campaign_types(row):
@@ -2968,29 +2978,36 @@ def _resolve_ads_row_campaign_types(row):
         "campaign_type",
         "type",
         "campaignType",
-        "campaignTypes",
-        "campaign_types",
         "advert_type",
         "advertType",
+        "paymentType",
+        "model",
         "placement",
     )
+    payment_keys = ("paymentType", "model")
     raw_types = []
+    payment_types = []
     for key in type_keys:
-        raw_types.extend(_ads_list_values((row or {}).get(key)))
+        values = _ads_list_values((row or {}).get(key))
+        raw_types.extend(values)
+        if key in payment_keys:
+            payment_types.extend(values)
     for key in type_keys:
-        raw_types.extend(_ads_raw_json_values(row, key))
-
-    resolved_types = []
-    for raw_type in raw_types:
-        label = _ads_campaign_type_label_or_empty(raw_type)
-        if label != "Тип не определён" and label not in resolved_types:
-            resolved_types.append(label)
+        values = _ads_raw_json_values(row, key)
+        raw_types.extend(values)
+        if key in payment_keys:
+            payment_types.extend(values)
 
     campaign_name = _ads_row_campaign_name(row)
-    if not resolved_types:
-        name_type = _ads_campaign_type_from_name(campaign_name)
-        if name_type:
-            resolved_types.append(name_type)
+    raw_json_text = json.dumps(_ads_raw_json(row), ensure_ascii=False)
+    values_to_resolve = payment_types + raw_types + [campaign_name, raw_json_text]
+
+    resolved_types = []
+    for raw_type in values_to_resolve:
+        label = _ads_campaign_type_label_or_empty(raw_type)
+        if label != "Тип не определён":
+            resolved_types.append(label)
+            break
 
     if not resolved_types:
         resolved_types.append("Тип не определён")
@@ -3000,10 +3017,12 @@ def _resolve_ads_row_campaign_types(row):
         "TELEGRAM ADS CAMPAIGN TYPE:\n"
         "campaign_id: %s\n"
         "raw_type: %s\n"
+        "payment_type: %s\n"
         "campaign_name: %s\n"
         "resolved_type: %s",
         ", ".join(campaign_ids),
         ", ".join(raw_types),
+        ", ".join(payment_types),
         campaign_name,
         ", ".join(resolved_types),
     )
