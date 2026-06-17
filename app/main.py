@@ -655,6 +655,11 @@ def main():
         "totalSku": len(api_coverage_report["coverage"]),
     }
     summary_stats["perfumeIntelligence"] = perfume_intelligence
+    summary_stats["activeSellersCount"] = len(active_sellers)
+    summary_stats["sellersTotal"] = len(active_sellers)
+    summary_stats["sellerNames"] = [
+        seller.get("seller_name", "") for seller in active_sellers
+    ]
     _print_summary_stats(summary_stats)
     print("=" * 50)
 
