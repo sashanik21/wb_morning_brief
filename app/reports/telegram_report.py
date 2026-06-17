@@ -1,4 +1,5 @@
 import html
+import json
 import logging
 import re
 import os
@@ -1568,11 +1569,9 @@ def _ads_row_campaign_ids(row):
 
 def _ads_row_campaign_types(row):
     values = []
-    for key in ("campaignType", "campaign_type", "campaignTypes", "campaign_types"):
-        for value in _ads_list_values((row or {}).get(key)):
-            label = _ads_campaign_type_label(value)
-            if label not in values:
-                values.append(label)
+    for label in _resolve_ads_row_campaign_types(row):
+        if label not in values:
+            values.append(label)
     if not values:
         values.append(_ads_campaign_type_label(None))
     return values
@@ -2739,9 +2738,9 @@ def _product_ads_totals(product, summary_stats):
         )
         if campaign_id not in (None, "") and str(campaign_id) not in campaign_ids:
             campaign_ids.append(str(campaign_id))
-        campaign_type = row.get("campaignType") or row.get("campaign_type")
-        if campaign_type not in (None, "") and str(campaign_type) not in campaign_types:
-            campaign_types.append(str(campaign_type))
+        for campaign_type in _resolve_ads_row_campaign_types(row):
+            if campaign_type not in campaign_types:
+                campaign_types.append(campaign_type)
     totals["campaignIds"] = campaign_ids
     totals["campaignTypes"] = campaign_types
     for metric in ("impressions", "clicks", "spend", "orders", "ordersSum", "bid"):
@@ -2885,23 +2884,130 @@ def _format_ads_metric_pair(totals, metric, suffix=""):
 
 def _ads_campaign_type_label(value):
     text = str(value or "").strip()
+    return _ads_campaign_type_label_or_empty(text) or text or "Тип не определён"
+
+
+def _ads_campaign_type_label_or_empty(value):
+    text = str(value or "").strip()
+    numeric_text = text
+    try:
+        numeric_value = float(text)
+        if numeric_value.is_integer():
+            numeric_text = str(int(numeric_value))
+    except (TypeError, ValueError):
+        pass
     mapping = {
         "4": "Поиск + каталог",
         "5": "Аукцион",
-        "6": "Автоматическая кампания",
-        "7": "Автоматическая кампания",
+        "6": "Поиск",
+        "7": "Каталог",
         "8": "Автоматическая кампания",
         "9": "Аукцион",
         "auction": "Аукцион",
+        "аукцион": "Аукцион",
         "auto": "Автоматическая кампания",
         "automatic": "Автоматическая кампания",
+        "авто": "Автоматическая кампания",
+        "автоматическая кампания": "Автоматическая кампания",
         "search": "Поиск",
+        "поиск": "Поиск",
         "catalog": "Каталог",
+        "каталог": "Каталог",
+        "booster": "Бустер",
+        "бустер": "Бустер",
+        "combined": "Поиск + каталог",
+        "поиск + каталог": "Поиск + каталог",
         "search_catalog": "Поиск + каталог",
         "search+catalog": "Поиск + каталог",
         "unknown": "Тип не определён",
     }
-    return mapping.get(text.lower(), text or "Тип не определён")
+    return mapping.get(numeric_text.lower(), "")
+
+
+def _ads_raw_json_values(row, key):
+    raw_json = (row or {}).get("raw_json")
+    if not raw_json:
+        return []
+    if isinstance(raw_json, str):
+        try:
+            raw_json = json.loads(raw_json)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw_json, dict):
+        return []
+    return _ads_list_values(raw_json.get(key))
+
+
+def _ads_row_campaign_name(row):
+    for key in ("campaign_name", "campaignName", "name", "title"):
+        value = (row or {}).get(key)
+        if value not in (None, ""):
+            return str(value)
+    for key in ("campaign_name", "campaignName", "name", "title"):
+        values = _ads_raw_json_values(row, key)
+        if values:
+            return values[0]
+    return ""
+
+
+def _ads_campaign_type_from_name(campaign_name):
+    text = str(campaign_name or "").lower()
+    if "аук" in text or "auction" in text:
+        return "Аукцион"
+    if "авто" in text or "auto" in text:
+        return "Автоматическая кампания"
+    if "поиск" in text or "search" in text:
+        return "Поиск"
+    if "каталог" in text or "catalog" in text:
+        return "Каталог"
+    return ""
+
+
+def _resolve_ads_row_campaign_types(row):
+    type_keys = (
+        "campaign_type",
+        "type",
+        "campaignType",
+        "campaignTypes",
+        "campaign_types",
+        "advert_type",
+        "advertType",
+        "placement",
+    )
+    raw_types = []
+    for key in type_keys:
+        raw_types.extend(_ads_list_values((row or {}).get(key)))
+    for key in type_keys:
+        raw_types.extend(_ads_raw_json_values(row, key))
+
+    resolved_types = []
+    for raw_type in raw_types:
+        label = _ads_campaign_type_label_or_empty(raw_type)
+        if label != "Тип не определён" and label not in resolved_types:
+            resolved_types.append(label)
+
+    campaign_name = _ads_row_campaign_name(row)
+    if not resolved_types:
+        name_type = _ads_campaign_type_from_name(campaign_name)
+        if name_type:
+            resolved_types.append(name_type)
+
+    if not resolved_types:
+        resolved_types.append("Тип не определён")
+
+    campaign_ids = _ads_row_campaign_ids(row)
+    logger.info(
+        "TELEGRAM ADS CAMPAIGN TYPE:\n"
+        "campaign_id: %s\n"
+        "raw_type: %s\n"
+        "campaign_name: %s\n"
+        "resolved_type: %s",
+        ", ".join(campaign_ids),
+        ", ".join(raw_types),
+        campaign_name,
+        ", ".join(resolved_types),
+    )
+    return resolved_types
 
 
 def _format_ads_campaign_meta(totals):
