@@ -8,6 +8,7 @@ import requests
 
 ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
+ADS_CAMPAIGN_DETAILS_URL = "https://advert-api.wildberries.ru/adv/v2/adverts"
 ADS_TIMEOUT_SECONDS = 60
 ADS_CAMPAIGN_BATCH_SIZE = 50
 ADS_CAMPAIGN_CACHE_TTL_HOURS = 12
@@ -229,6 +230,100 @@ def _request_ads_campaign_ids(token):
         return None, response.status_code
 
     return _extract_campaign_records(payload), response.status_code
+
+
+def _extract_campaign_detail_records(payload, requested_ids):
+    requested_ids = {
+        str(value) for value in requested_ids or [] if value not in (None, "")
+    }
+    records = {}
+
+    def collect(value):
+        if isinstance(value, dict):
+            campaign_id = _campaign_id(value)
+            if campaign_id not in (None, "") and str(campaign_id) in requested_ids:
+                current = records.get(str(campaign_id), {})
+                if len(value.keys()) >= len((current.get("raw_json") or {}).keys()):
+                    records[str(campaign_id)] = {
+                        "campaign_id": campaign_id,
+                        "campaign_name": _campaign_name(value),
+                        "campaign_status": _extract_status(value),
+                        "campaign_type": _extract_campaign_type(value),
+                        "raw_json": value,
+                    }
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    collect(payload)
+    return list(records.values())
+
+
+def _log_ads_campaign_details_request(campaign_ids):
+    print("ADS CAMPAIGN DETAILS REQUEST:")
+    print(f"campaigns requested: {len(campaign_ids or [])}")
+
+
+def _log_ads_campaign_details_result(campaigns):
+    print("ADS CAMPAIGN DETAILS RESULT:")
+    print(f"campaigns loaded: {len(campaigns or [])}")
+
+
+def _request_ads_campaign_details(token, campaign_ids):
+    campaign_ids = [
+        int(campaign_id) if str(campaign_id).isdigit() else campaign_id
+        for campaign_id in campaign_ids or []
+        if campaign_id not in (None, "")
+    ]
+    if not campaign_ids:
+        _log_ads_campaign_details_request([])
+        _log_ads_campaign_details_result([])
+        return [], None
+
+    loaded_campaigns = []
+    status_code = None
+    _log_ads_campaign_details_request(campaign_ids)
+    for batch in _chunked(campaign_ids, ADS_CAMPAIGN_BATCH_SIZE):
+        response = requests.post(
+            ADS_CAMPAIGN_DETAILS_URL,
+            headers={"Authorization": token},
+            json=batch,
+            timeout=ADS_TIMEOUT_SECONDS,
+        )
+        status_code = response.status_code
+        _mark_ads_api_status(status_code)
+        if status_code != 200:
+            print("WB Ads campaign details API error")
+            print("STATUS:", status_code)
+            print("TEXT:", response.text)
+            continue
+        try:
+            payload = response.json()
+        except ValueError:
+            print("WB Ads campaign details API returned invalid JSON")
+            continue
+        loaded_campaigns.extend(_extract_campaign_detail_records(payload, batch))
+    _log_ads_campaign_details_result(loaded_campaigns)
+    return loaded_campaigns, status_code
+
+
+def _merge_campaign_details(campaigns, details):
+    details_by_id = {
+        str(row.get("campaign_id")): row
+        for row in details or []
+        if row.get("campaign_id") not in (None, "")
+    }
+    merged = []
+    for campaign in campaigns or []:
+        campaign_id = str(campaign.get("campaign_id"))
+        detail = details_by_id.get(campaign_id)
+        if detail:
+            merged.append({**campaign, **detail})
+        else:
+            merged.append({**campaign, "campaign_type": None})
+    return merged
 
 
 def _env_int(name, default):
@@ -776,6 +871,9 @@ def _load_campaigns(token, seller_id):
     if api_campaigns is None:
         _campaign_cache_log("api", cached_campaigns, force_refresh)
         return None, campaign_status
+    campaign_ids = _campaign_ids_from_records(api_campaigns)
+    detail_campaigns, _ = _request_ads_campaign_details(token, campaign_ids)
+    api_campaigns = _merge_campaign_details(api_campaigns, detail_campaigns)
     _log_ads_campaign_raw(api_campaigns)
     _log_ads_campaign_type_detection(api_campaigns)
     if storage and hasattr(storage, "save_ads_campaigns_cache"):
