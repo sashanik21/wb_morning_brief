@@ -38,10 +38,7 @@ ADS_CAMPAIGN_TYPE_FIELDS = (
     "advertType",
     "campaignType",
     "campaign_type",
-    "paymentType",
-    "placement",
     "bid_type",
-    "payment_type",
 )
 
 
@@ -128,7 +125,7 @@ def _extract_campaign_records(payload):
                 "campaign_id": campaign_id,
                 "campaign_name": _campaign_name(value),
                 "campaign_status": _extract_status(value),
-                "campaign_type": _extract_campaign_type(value),
+                "campaign_type": None,
                 "raw_json": value,
             }
         )
@@ -144,6 +141,18 @@ def _extract_campaign_records(payload):
 
     walk(payload)
     return records
+
+
+def _campaign_detail_record(value):
+    return {
+        "campaign_id": _campaign_id(value),
+        "campaign_name": _campaign_name(value),
+        "campaign_status": _extract_status(value),
+        "campaign_type": _extract_campaign_type(value),
+        "paymentType": value.get("paymentType") or value.get("payment_type"),
+        "placement": value.get("placement"),
+        "raw_json": value,
+    }
 
 
 def _extract_campaign_ids(payload):
@@ -244,13 +253,7 @@ def _extract_campaign_detail_records(payload, requested_ids):
             if campaign_id not in (None, "") and str(campaign_id) in requested_ids:
                 current = records.get(str(campaign_id), {})
                 if len(value.keys()) >= len((current.get("raw_json") or {}).keys()):
-                    records[str(campaign_id)] = {
-                        "campaign_id": campaign_id,
-                        "campaign_name": _campaign_name(value),
-                        "campaign_status": _extract_status(value),
-                        "campaign_type": _extract_campaign_type(value),
-                        "raw_json": value,
-                    }
+                    records[str(campaign_id)] = _campaign_detail_record(value)
             for item in value.values():
                 collect(item)
         elif isinstance(value, list):
