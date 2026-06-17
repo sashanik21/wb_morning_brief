@@ -8,9 +8,12 @@ import requests
 
 ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
-ADS_CAMPAIGN_DETAILS_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/adverts"
+ADS_CAMPAIGN_DETAILS_URL = "https://advert-api.wildberries.ru/api/advert/v2/adverts"
 ADS_TIMEOUT_SECONDS = 60
 ADS_CAMPAIGN_BATCH_SIZE = 50
+ADS_CAMPAIGN_DETAILS_STATUSES = (7, 9, 11)
+ADS_CAMPAIGN_DETAILS_TYPES = (4, 5, 6, 7, 8, 9)
+ADS_CAMPAIGN_DETAILS_LIMIT = 100
 ADS_CAMPAIGN_CACHE_TTL_HOURS = 12
 REPORTS_DIR = Path("reports")
 _ADS_API_HAD_429 = False
@@ -156,7 +159,7 @@ def _campaign_detail_record(value):
         "campaign_name": _campaign_name(value),
         "campaign_status": _extract_status(value),
         "campaign_type": _extract_campaign_type(value),
-        "paymentType": value.get("paymentType") or value.get("payment_type"),
+        "payment_type": value.get("paymentType") or value.get("payment_type"),
         "placement": value.get("placement"),
         "raw_json": value,
     }
@@ -271,14 +274,19 @@ def _extract_campaign_detail_records(payload, requested_ids):
     return list(records.values())
 
 
-def _log_ads_campaign_details_request(campaign_ids):
+def _log_ads_campaign_details_request(url, status, campaign_type, limit, offset):
     print("ADS CAMPAIGN DETAILS REQUEST:")
-    print(f"campaigns requested: {len(campaign_ids or [])}")
+    print(f"url: {url}")
+    print(f"status: {status}")
+    print(f"type: {campaign_type}")
+    print(f"limit: {limit}")
+    print(f"offset: {offset}")
 
 
-def _log_ads_campaign_details_result(campaigns):
+def _log_ads_campaign_details_result(rows_loaded, matched_campaign_ids):
     print("ADS CAMPAIGN DETAILS RESULT:")
-    print(f"campaigns loaded: {len(campaigns or [])}")
+    print(f"rows loaded: {rows_loaded}")
+    print(f"matched campaign ids: {len(matched_campaign_ids or [])}")
 
 
 def _log_ads_campaign_details(campaigns):
@@ -289,44 +297,86 @@ def _log_ads_campaign_details(campaigns):
         print(f"campaign_name: {campaign.get('campaign_name')}")
 
 
+def _campaign_detail_items(payload):
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("adverts", "campaigns", "data", "items", "content"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 def _request_ads_campaign_details(token, campaign_ids):
-    campaign_ids = [
-        int(campaign_id) if str(campaign_id).isdigit() else campaign_id
+    requested_ids = {
+        str(campaign_id)
         for campaign_id in campaign_ids or []
         if campaign_id not in (None, "")
-    ]
-    if not campaign_ids:
-        _log_ads_campaign_details_request([])
-        _log_ads_campaign_details_result([])
+    }
+    if not requested_ids:
+        _log_ads_campaign_details_request(
+            ADS_CAMPAIGN_DETAILS_URL, None, None, ADS_CAMPAIGN_DETAILS_LIMIT, 0
+        )
+        _log_ads_campaign_details_result(0, [])
         return [], None
 
-    loaded_campaigns = []
+    loaded_campaigns = {}
+    rows_loaded = 0
     status_code = None
-    _log_ads_campaign_details_request(campaign_ids)
-    for batch in _chunked(campaign_ids, ADS_CAMPAIGN_BATCH_SIZE):
-        response = requests.post(
-            ADS_CAMPAIGN_DETAILS_URL,
-            headers={"Authorization": token},
-            json=batch,
-            timeout=ADS_TIMEOUT_SECONDS,
-        )
-        status_code = response.status_code
-        _mark_ads_api_status(status_code)
-        if status_code != 200:
-            print("WB Ads campaign details API error")
-            print("STATUS:", status_code)
-            print("TEXT:", response.text)
-            continue
-        try:
-            payload = response.json()
-        except ValueError:
-            print("WB Ads campaign details API returned invalid JSON")
-            continue
-        loaded_campaigns.extend(_extract_campaign_detail_records(payload, batch))
-    _ensure_campaign_type_from_raw_json(loaded_campaigns)
-    _log_ads_campaign_details_result(loaded_campaigns)
-    _log_ads_campaign_details(loaded_campaigns)
-    return loaded_campaigns, status_code
+    for status in ADS_CAMPAIGN_DETAILS_STATUSES:
+        for campaign_type in ADS_CAMPAIGN_DETAILS_TYPES:
+            offset = 0
+            while True:
+                params = {
+                    "status": status,
+                    "type": campaign_type,
+                    "order": "id",
+                    "direction": "asc",
+                    "limit": ADS_CAMPAIGN_DETAILS_LIMIT,
+                    "offset": offset,
+                }
+                _log_ads_campaign_details_request(
+                    ADS_CAMPAIGN_DETAILS_URL,
+                    status,
+                    campaign_type,
+                    ADS_CAMPAIGN_DETAILS_LIMIT,
+                    offset,
+                )
+                response = requests.get(
+                    ADS_CAMPAIGN_DETAILS_URL,
+                    headers={"Authorization": token},
+                    params=params,
+                    timeout=ADS_TIMEOUT_SECONDS,
+                )
+                status_code = response.status_code
+                _mark_ads_api_status(status_code)
+                if status_code != 200:
+                    print("WB Ads campaign details API error")
+                    print("STATUS:", status_code)
+                    print("TEXT:", response.text)
+                    break
+                try:
+                    payload = response.json()
+                except ValueError:
+                    print("WB Ads campaign details API returned invalid JSON")
+                    break
+
+                items = _campaign_detail_items(payload)
+                rows_loaded += len(items)
+                for detail in _extract_campaign_detail_records(items, requested_ids):
+                    loaded_campaigns[str(detail.get("campaign_id"))] = detail
+
+                if len(items) < ADS_CAMPAIGN_DETAILS_LIMIT:
+                    break
+                offset += ADS_CAMPAIGN_DETAILS_LIMIT
+
+    campaigns = list(loaded_campaigns.values())
+    _ensure_campaign_type_from_raw_json(campaigns)
+    _log_ads_campaign_details_result(rows_loaded, sorted(loaded_campaigns.keys()))
+    _log_ads_campaign_details(campaigns)
+    return campaigns, status_code
 
 
 def _merge_campaign_details(campaigns, details):
