@@ -32,6 +32,44 @@ def _mark_ads_api_status(status_code):
         _ADS_RATE_LIMIT_STATS["partial"] = True
 
 
+def _extract_campaign_type(campaign):
+    return (
+        campaign.get("campaign_type")
+        or campaign.get("campaignType")
+        or campaign.get("advert_type")
+        or campaign.get("advertType")
+        or campaign.get("type")
+        or ""
+    )
+
+
+def _log_ads_campaign_raw(campaigns):
+    for campaign in (campaigns or [])[:10]:
+        print("ADS CAMPAIGN RAW:")
+        print(f"campaign_id={_campaign_id(campaign)}")
+        print(f"name={_campaign_name(campaign)}")
+        print(
+            "full_json="
+            f"{json.dumps(campaign, ensure_ascii=False, default=str)}"
+        )
+
+
+def _log_ads_campaign_type_field_detection(campaigns):
+    for campaign in (campaigns or [])[:10]:
+        print("ADS CAMPAIGN TYPE FIELD DETECTION:")
+        print(f"campaign_id={_campaign_id(campaign)}")
+        print(
+            "campaign_type="
+            f"{campaign.get('campaign_type') or campaign.get('campaignType')}"
+        )
+        print(
+            "advert_type="
+            f"{campaign.get('advert_type') or campaign.get('advertType')}"
+        )
+        print(f"type={campaign.get('type')}")
+        print(f"subject={_extract_subject(campaign)}")
+
+
 def _extract_campaign_records(payload):
     records = []
     seen = set()
@@ -48,10 +86,7 @@ def _extract_campaign_records(payload):
                 "campaign_id": campaign_id,
                 "campaign_name": _campaign_name(value),
                 "campaign_status": _extract_status(value),
-                "campaign_type": value.get("type")
-                or value.get("campaignType")
-                or value.get("advertType")
-                or "",
+                "campaign_type": _extract_campaign_type(value),
                 "raw_json": value,
             }
         )
@@ -410,10 +445,7 @@ def _aggregate_campaign(campaign, nm_row=None):
         "searchQueries": _extract_search_queries(campaign),
         "subject": _extract_subject(campaign),
         "campaignStatus": _extract_status(campaign),
-        "campaignType": campaign.get("type")
-        or campaign.get("campaignType")
-        or campaign.get("advertType")
-        or "",
+        "campaignType": _extract_campaign_type(campaign),
     }
 
 
@@ -700,6 +732,8 @@ def _load_campaigns(token, seller_id):
     if api_campaigns is None:
         _campaign_cache_log("api", cached_campaigns, force_refresh)
         return None, campaign_status
+    _log_ads_campaign_raw(api_campaigns)
+    _log_ads_campaign_type_field_detection(api_campaigns)
     if storage and hasattr(storage, "save_ads_campaigns_cache"):
         storage.save_ads_campaigns_cache(seller_id, api_campaigns)
         cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
