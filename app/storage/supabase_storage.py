@@ -689,7 +689,7 @@ def update_ads_campaign_stats_status(
     )
 
 
-def get_ads_history(seller_id, campaign_id, nm_id=None, days=7):
+def get_ads_history(seller_id, campaign_id, nm_id=None, days=7, before_date=None):
     query = (
         _get_client()
         .table("daily_ads_metrics")
@@ -699,6 +699,8 @@ def get_ads_history(seller_id, campaign_id, nm_id=None, days=7):
         .order("report_date", desc=True)
         .limit(_to_int(days) or 7)
     )
+    if before_date not in (None, ""):
+        query = query.lt("report_date", str(before_date))
     normalized_nm_id = _to_int(nm_id)
     if normalized_nm_id is not None:
         query = query.eq("nm_id", normalized_nm_id)

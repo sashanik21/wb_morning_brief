@@ -154,12 +154,20 @@ def _metric_from_history(row, metric):
     aliases = {
         "avgPosition": ["avg_position", "avgPosition", "avgAdPosition"],
         "orders": ["orders", "orders_count", "ordersCount"],
-        "revenue": ["revenue", "ordersSum", "orders_sum"],
+        "ordersSum": ["ordersSum", "orders_sum", "revenue"],
+        "carts": ["carts", "cartCount", "cart_count", "addToCart", "add_to_cart"],
+        "bid": ["bid"],
     }
     for key in aliases.get(metric, [metric]):
         value = row.get(key)
         if value not in (None, ""):
             return value
+    raw_json = row.get("raw_json")
+    if isinstance(raw_json, dict):
+        for key in aliases.get(metric, [metric]):
+            value = raw_json.get(key)
+            if value not in (None, ""):
+                return value
     return None
 
 
@@ -328,7 +336,19 @@ def aggregate_ads_rows(ads_rows):
 
 def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
     enriched_rows = []
-    metrics = ("ctr", "cpc", "drr", "bid", "avgPosition")
+    metrics = (
+        "impressions",
+        "clicks",
+        "ctr",
+        "cpc",
+        "spend",
+        "drr",
+        "orders",
+        "ordersSum",
+        "carts",
+        "avgPosition",
+    )
+    baseline_counts = {"avg3": 0, "previous_day": 0, "insufficient": 0}
     for row in ads_rows or []:
         enriched = row.copy()
         if seller_id is not None:
@@ -340,22 +360,44 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
             and row.get("campaignId") not in (None, "")
         ):
             history = storage.get_ads_history(
-                seller_id, row.get("campaignId"), row.get("nmId"), 7
+                seller_id,
+                row.get("campaignId"),
+                row.get("nmId"),
+                3,
+                before_date=row.get("date")
+                or row.get("report_date")
+                or row.get("selectedPeriod"),
             )
+
+        has_previous = bool(history)
+        has_avg3 = len(history) >= 3
+        history_status = "avg3" if has_avg3 else "previous_day" if has_previous else "insufficient"
+        enriched["ads_history_status"] = history_status
+        baseline_counts[history_status] += 1
+
+        previous_row = history[0] if has_previous else {}
         for metric in metrics:
-            values = [_metric_from_history(item, metric) for item in history]
-            previous = (
-                values[0] if values else enriched.get(_metric_key(metric, "previous"))
-            )
+            previous = _metric_from_history(previous_row, metric) if previous_row else None
             if previous not in (None, ""):
                 enriched[_metric_key(metric, "previous")] = previous
+                enriched[f"previous_{metric}"] = previous
                 enriched[f"previous_day_{metric}"] = previous
-            avg3 = _average(values[:3])
-            avg7 = _average(values[:7])
-            if avg3 is not None:
+            avg3 = _average([_metric_from_history(item, metric) for item in history[:3]])
+            if has_avg3 and avg3 is not None:
+                enriched[f"avg3_{metric}"] = avg3
                 enriched[f"avg_{metric}_3d"] = avg3
-            if avg7 is not None:
-                enriched[f"avg_{metric}_7d"] = avg7
+
+        baseline_prefix = "avg3" if has_avg3 else "previous"
+        for metric in metrics:
+            baseline_value = enriched.get(f"{baseline_prefix}_{metric}")
+            if baseline_value in (None, ""):
+                continue
+            enriched[_metric_key(metric, "previous")] = baseline_value
+            enriched[f"previous_{metric}"] = baseline_value
+
+        for prefix in ("previous", "avg3"):
+            _recalculate_ads_ratios(enriched, prefix)
+
         enriched["bidDelta"] = _dynamic_percent(
             enriched.get("bid"), _previous_value(enriched, "bid")
         )
@@ -367,10 +409,19 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
         else:
             enriched["positionDelta"] = ""
         enriched_rows.append(enriched)
+
+    print("ADS HISTORY BASELINE:")
+    print("source: supabase")
+    print(f"products with avg3 baseline: {baseline_counts['avg3']}")
+    print(f"products with previous day baseline: {baseline_counts['previous_day']}")
+    print(f"products without history: {baseline_counts['insufficient']}")
+    print("ADS HISTORY MERGE:")
+    print(f"ads rows current: {len(ads_rows or [])}")
+    print(f"ads rows enriched: {len(enriched_rows)}")
+    print("history source: supabase")
     if storage and hasattr(storage, "save_daily_ads_metrics"):
         storage.save_daily_ads_metrics(enriched_rows)
     return enriched_rows
-
 
 def _ads_root_cause(problem_type, baseline_reliability):
     mapping = {
@@ -473,6 +524,7 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "baselineType": baseline_type,
         "baselineValue": baseline_value if baseline_value not in (None, "") else "",
         "baselineReliability": baseline_reliability,
+        "ads_history_status": row.get("ads_history_status") or "insufficient",
         "rootCause": _ads_root_cause(problem_type, baseline_reliability),
         "adsRootCause": _ads_root_cause(problem_type, baseline_reliability),
         "dynamicPercent": dynamic_percent if dynamic_percent is not None else "",

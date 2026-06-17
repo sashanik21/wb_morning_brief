@@ -1641,6 +1641,15 @@ def _ads_any_bid_delta(totals):
 
 
 
+def _ads_comparison_label(totals):
+    status = (totals or {}).get("ads_history_status")
+    if status == "avg3":
+        return "со средним за 3 дня"
+    if status == "previous_day":
+        return "с предыдущим доступным днём"
+    return "история ещё накапливается"
+
+
 def _ads_diagnosis_confidence(totals):
     impressions = to_number((totals or {}).get("impressions"))
     clicks = to_number((totals or {}).get("clicks"))
@@ -1711,6 +1720,8 @@ def _ads_product_diagnosis(
     orders = to_number(totals.get("orders"))
     previous_clicks = totals.get("previous_clicks")
     previous_impressions = totals.get("previous_impressions")
+    previous_ctr = totals.get("previous_ctr")
+    previous_cpc = totals.get("previous_cpc")
     previous_drr = totals.get("previous_drr")
     previous_orders = totals.get("previous_orders")
     carts = _ads_cart_value(totals)
@@ -1743,6 +1754,26 @@ def _ads_product_diagnosis(
         _is_present(previous_impressions)
         and to_number(previous_impressions) > 0
         and impressions < to_number(previous_impressions) * 0.8
+    )
+    clicks_down_20 = (
+        _is_present(previous_clicks)
+        and to_number(previous_clicks) > 0
+        and clicks < to_number(previous_clicks) * 0.8
+    )
+    ctr_down_20 = (
+        _is_present(previous_ctr)
+        and to_number(previous_ctr) > 0
+        and ctr < to_number(previous_ctr) * 0.8
+    )
+    cpc_up_20 = (
+        _is_present(previous_cpc)
+        and to_number(previous_cpc) > 0
+        and to_number(totals.get("cpc")) > to_number(previous_cpc) * 1.2
+    )
+    drr_up_20 = (
+        _is_present(previous_drr)
+        and to_number(previous_drr) > 0
+        and drr > to_number(previous_drr) * 1.2
     )
     impressions_grew = impressions_dynamic is not None and impressions_dynamic > 0
     clicks_stable_or_growing = (
@@ -1788,6 +1819,36 @@ def _ads_product_diagnosis(
             "reason": "🔴 Рекламный охват",
             "confirmation": ["Показы рекламы снизились более чем на 20%."],
             "conclusion": "Просадка может быть связана с потерей рекламного охвата. Проверить ставку, зоны показов, кластеры и статус кампании.",
+        }
+    if clicks_down_20:
+        return {
+            "status": "red",
+            "reason": "🔴 Рекламный трафик",
+            "confirmation": [
+                f"Клики рекламы снизились на {_format_number(abs(clicks_dynamic or 0))}% относительно {_ads_comparison_label(totals)}."
+            ],
+            "conclusion": "Просадка связана с потерей рекламного трафика. Проверить ставку, позицию, карточку и релевантность показов.",
+        }
+    if ctr_down_20:
+        return {
+            "status": "red",
+            "reason": "🔴 Кликабельность карточки",
+            "confirmation": ["CTR рекламы снизился более чем на 20% относительно базового периода."],
+            "conclusion": "Покупатели хуже кликают по рекламным показам. Проверить главное фото, цену, рейтинг и релевантность.",
+        }
+    if cpc_up_20:
+        return {
+            "status": "red",
+            "reason": "🔴 Стоимость клика",
+            "confirmation": ["CPC вырос более чем на 20% относительно базового периода."],
+            "conclusion": "Рекламный клик стал дороже. Проверить ставки, конкуренцию и эффективность кампаний.",
+        }
+    if drr_up_20:
+        return {
+            "status": "red",
+            "reason": "🔴 ДРР",
+            "confirmation": ["ДРР вырос более чем на 20% относительно базового периода."],
+            "conclusion": "Реклама стала менее окупаемой. Проверить ставки, CPC, карточку и конверсию в заказ.",
         }
     if bid_delta is not None and bid_delta > 0 and impressions_grew:
         if (ctr_dynamic is not None and ctr_dynamic <= 0) or (
@@ -1845,14 +1906,6 @@ def _ads_product_diagnosis(
                 "confirmation": ["Товар добавляют в корзину, но хуже оформляют заказ."],
                 "conclusion": "Проверить цену, сроки доставки, остатки и условия акции.",
             }
-    if _is_present(previous_drr) and to_number(previous_drr) > 0:
-        if drr > to_number(previous_drr) * 1.2:
-            return {
-                "status": "red",
-                "reason": "🔴 Требуется проверка рекламы / карточки",
-                "confirmation": ["ДРР вырос более чем на 20%."],
-                "conclusion": "Реклама стала дороже. Проверить ставки, CPC и эффективность кампаний.",
-            }
     if ads_traffic_share is not None and ads_traffic_share < 10:
         confirmation = [
             f"Реклама дала {_format_number(clicks)} кликов из {_format_number(open_count)} переходов."
@@ -1906,6 +1959,8 @@ def _aggregate_ads_rows_by_product(summary_stats):
     totals_by_product = []
     for rows in grouped.values():
         totals = {"matchedRows": rows["matchedRows"]}
+        statuses = [row.get("ads_history_status") for row in rows["matchedRows"] if row.get("ads_history_status")]
+        totals["ads_history_status"] = "avg3" if "avg3" in statuses else "previous_day" if "previous_day" in statuses else "insufficient"
         alias_groups = {
             "carts": ("carts", "cartCount", "addToCart", "addToCartCount"),
             "avgPosition": ("avgPosition",),
@@ -3229,6 +3284,8 @@ def _product_ads_totals(product, summary_stats):
         return None
 
     totals = {"rows": len(matched_rows), "matchedRows": matched_rows}
+    statuses = [row.get("ads_history_status") for row in matched_rows if row.get("ads_history_status")]
+    totals["ads_history_status"] = "avg3" if "avg3" in statuses else "previous_day" if "previous_day" in statuses else "insufficient"
     alias_groups = {
         "carts": ("carts", "cartCount", "addToCart", "addToCartCount"),
         "avgPosition": ("avgPosition",),
@@ -3699,6 +3756,9 @@ def _format_product_ads_diagnosis_block(diagnosis):
         "",
         "   Надёжность диагноза:",
         f"   {confidence}",
+        "",
+        "   Сравнение рекламы:",
+        f"   {_ads_comparison_label(totals)}",
         "",
         "   Причина просадки:",
         f"   {diagnosis['reason']}",

@@ -478,13 +478,18 @@ def main():
         {row.get("nmId") for row in ads_data if row.get("nmId") not in (None, "")}
     )
     ads_data = enrich_ads_time_series(ads_data, storage=storage, seller_id=seller_id)
+    ads_history_available = any(
+        row.get("ads_history_status") in {"avg3", "previous_day"}
+        for row in ads_data or []
+    )
+    ads_current_api_partial = ads_api_had_429() and not (raw_ads_rows_count > 0 and ads_history_available)
     ads_data = _merge_ads_bid_history(ads_data, storage, report_date=report_date)
     funnel_report = flatten_sales_funnel_data(data)
     funnel_rows = funnel_report.to_dict("records")
     for funnel_row in funnel_rows:
         funnel_row["seller_id"] = seller_id
     ads_problems = analyze_ads_problems(
-        ads_data, funnel_report, ads_api_partial=ads_api_had_429()
+        ads_data, funnel_report, ads_api_partial=ads_current_api_partial
     )
     perfume_intelligence = build_perfume_intelligence(funnel_rows, ads_data)
     funnel_rows = perfume_intelligence["rows"]
@@ -563,7 +568,7 @@ def main():
     all_problems = enrich_perfume_records(
         funnel_problems + ads_problems + qbiki_problems + stocks_problems
     )
-    if ads_api_had_429():
+    if ads_current_api_partial:
         for problem in all_problems:
             if problem.get("problemCategory") == "ads":
                 problem["adsConfidence"] = "LOW"
@@ -599,7 +604,7 @@ def main():
     summary_stats["adsAggregatedRowsCount"] = aggregated_ads_rows_count
     summary_stats["advertisedSkuCount"] = advertised_sku_count
     summary_stats["adsApiHad429"] = ads_api_had_429()
-    summary_stats["adsApiPartial"] = ads_api_had_429()
+    summary_stats["adsApiPartial"] = ads_current_api_partial
     summary_stats["adsSource"] = ads_source
     summary_stats["adsFallbackUsed"] = ads_fallback_used
     summary_stats["adsRateLimit"] = ads_rate_limit_stats()
@@ -630,7 +635,7 @@ def main():
         ads_rows=ads_data,
         supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
         problems=all_problems,
-        ads_api_partial=ads_api_had_429(),
+        ads_api_partial=ads_current_api_partial,
         qbiki_source_status=qbiki_source_status,
         ads_matching_debug=ads_matching_debug,
     )
