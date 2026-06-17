@@ -4667,6 +4667,204 @@ def _build_api_coverage_debug_block(summary_stats):
     return "\n".join(parts)
 
 
+def _multi_seller_name(record):
+    return str(
+        record.get("sellerName")
+        or record.get("seller_name")
+        or record.get("seller")
+        or SELLER_NAME
+        or "Продавец без названия"
+    )
+
+
+def _multi_product_title(record):
+    return html.escape(
+        str(record.get("title") or record.get("subjectName") or "товар без названия")
+    )
+
+
+def _multi_problem_score(record):
+    return (_business_impact_score(record), to_number(record.get("severityScore")))
+
+
+def _multi_is_critical(record):
+    return (
+        str(record.get("severity") or "").lower() == "critical"
+        or to_number(record.get("severityScore")) >= 70
+    )
+
+
+def _build_multi_seller_brief(
+    problems, summary_stats=None, top_limit=5, include_ads=True, include_stocks=True
+):
+    summary_stats = summary_stats or {}
+    records = [
+        record for record in _problems_to_records(problems) if isinstance(record, dict)
+    ]
+    seller_names = set(summary_stats.get("sellerNames") or [])
+    seller_names.update(_multi_seller_name(record) for record in records)
+    sellers_total = int(
+        summary_stats.get("sellersTotal")
+        or summary_stats.get("activeSellersCount")
+        or len(seller_names)
+        or 0
+    )
+    by_seller = {name: [] for name in seller_names}
+    for record in records:
+        by_seller.setdefault(_multi_seller_name(record), []).append(record)
+
+    critical_sellers = sum(
+        1
+        for seller_records in by_seller.values()
+        if any(_multi_is_critical(record) for record in seller_records)
+    )
+    warning_sellers = sum(
+        1
+        for seller_records in by_seller.values()
+        if seller_records and not any(_multi_is_critical(record) for record in seller_records)
+    )
+    ok_sellers = max(sellers_total - critical_sellers - warning_sellers, 0)
+
+    top_records = sorted(
+        records, key=lambda record: _multi_problem_score(record), reverse=True
+    )[:top_limit]
+    lines = [
+        "🌅 <b>WB Morning Brief</b>",
+        "",
+        "Период: вчера 00:00–24:00 МСК",
+        "Сравнение: со средним за 3 дня",
+        "",
+        f"Проверено продавцов: {_format_number(sellers_total)}",
+        "",
+        f"🔴 Критичные: {_format_number(critical_sellers)}",
+        f"🟡 Требуют внимания: {_format_number(warning_sellers)}",
+        f"🟢 Без критичных проблем: {_format_number(ok_sellers)}",
+    ]
+
+    if top_records:
+        lines.extend(["", f"🔴 <b>ТОП-{len(top_records)} проблем дня</b>", ""])
+        for index, record in enumerate(top_records, start=1):
+            nm_id = html.escape(str(record.get("nmId") or record.get("nm_id") or "—"))
+            problem_bits = []
+            metric_label = get_problem_label(
+                record.get("metric") or record.get("problemType") or ""
+            )
+            dynamic = record.get("dynamicPercent")
+            if metric_label:
+                problem_bits.append(metric_label)
+            if dynamic not in (None, ""):
+                problem_bits.append(f"{_format_number(dynamic)}%")
+            if not problem_bits and record.get("problem"):
+                problem_bits.append(str(record.get("problem")))
+            diagnosis = (
+                record.get("diagnosis")
+                or record.get("rootCause")
+                or record.get("recommendation")
+                or record.get("problemName")
+                or "проверить ключевой драйвер просадки"
+            )
+            lines.extend(
+                [
+                    f"{index}. Продавец: {html.escape(_multi_seller_name(record))}",
+                    f"   Товар: {_multi_product_title(record)}",
+                    f"   WB: {nm_id}",
+                    "   Проблема: "
+                    f"{html.escape(', '.join(problem_bits) or 'значимое отклонение')}",
+                    f"   Диагноз: {html.escape(str(diagnosis))}",
+                    "",
+                ]
+            )
+        if lines[-1] == "":
+            lines.pop()
+
+    if include_ads:
+        ads_records = [record for record in records if _is_ads_problem(record)]
+        ads_summary = summary_stats.get("adsSummary") or {}
+        total_sku = to_number(
+            ads_summary.get("totalSku") or summary_stats.get("totalSkuFromApi")
+        )
+        advertised_sku = to_number(
+            ads_summary.get("advertisedSku") or summary_stats.get("advertisedSkuCount")
+        )
+        if ads_records or ads_summary:
+            red = len(
+                {
+                    _problem_group_key(record)
+                    for record in ads_records
+                    if _multi_is_critical(record)
+                }
+            )
+            yellow = len(
+                {
+                    _problem_group_key(record)
+                    for record in ads_records
+                    if not _multi_is_critical(record)
+                }
+            )
+            green = max(int(total_sku - red - yellow), 0) if total_sku else 0
+            lines.extend([
+                "", "📢 <b>Реклама</b>", "",
+                f"Покрытие: {_format_number(advertised_sku)}/{_format_number(total_sku)} товаров",
+                f"CTR: {_format_number(ads_summary.get('currentCtr'))}%",
+                f"CPC: {_format_number(ads_summary.get('currentCpc'))} ₽",
+                f"ДРР: {_format_number(ads_summary.get('currentDrr'))}%",
+                "",
+                f"🔴 Требует проверки: {_format_number(red)} товаров",
+                f"🟡 Недостаточно данных: {_format_number(yellow)} товаров",
+                f"🟢 Стабильно: {_format_number(green)} товаров",
+            ])
+
+    stock_records = [
+        record
+        for record in records
+        if record.get("problemCategory") == "stocks"
+        or record.get("metric") in ("wbStocks", "realSellableStock", "stocks")
+    ]
+    if include_stocks and stock_records:
+        zero = len({_problem_group_key(record) for record in stock_records if to_number(record.get("currentValue") or record.get("stock") or record.get("wbStocks")) <= 0})
+        risk = max(len({_problem_group_key(record) for record in stock_records}) - zero, 0)
+        lines.extend(["", "📦 <b>Остатки</b>", "", f"🔴 Нулевые остатки: {_format_number(zero)} товаров", f"🟡 Риск OOS: {_format_number(risk)} товаров", "🟢 Без критичных проблем: 0 товаров"])
+
+    first_sellers = sorted(
+        ((seller, seller_records) for seller, seller_records in by_seller.items() if seller_records),
+        key=lambda item: sum(_business_impact_score(record) for record in item[1]),
+        reverse=True,
+    )[:4]
+    if first_sellers:
+        lines.extend(["", "🎯 <b>Кого смотреть первым</b>", ""])
+        for index, (seller, seller_records) in enumerate(first_sellers, start=1):
+            critical_count = sum(1 for record in seller_records if _multi_is_critical(record))
+            revenue_drop = sum(_absolute_metric_drop(record) for record in seller_records if record.get("metric") in ("orderSum", "revenue"))
+            ads_attention = any(_is_ads_problem(record) for record in seller_records)
+            stock_risk = any(record in stock_records for record in seller_records)
+            reason_parts = []
+            if critical_count:
+                reason_parts.append(f"{_format_number(critical_count)} критичных товаров")
+            if revenue_drop:
+                reason_parts.append(f"просадка выручки {_format_number(revenue_drop)} ₽")
+            if ads_attention:
+                reason_parts.append("реклама требует проверки")
+            if stock_risk:
+                reason_parts.append("риск остатков")
+            lines.extend([f"{index}. {html.escape(seller)}", f"   Причина: {', '.join(reason_parts) or 'есть значимые сигналы'}", ""])
+        if lines[-1] == "":
+            lines.pop()
+
+    message = "\n".join(lines)
+    diagnostic = ("TELEGRAM MULTI SELLER BRIEF:\n" f"sellers total: {sellers_total}\n" f"critical sellers: {critical_sellers}\n" f"warning sellers: {warning_sellers}\n" f"ok sellers: {ok_sellers}\n" f"top problems selected: {len(top_records)}\n" f"message length: {len(message)}")
+    logger.info(diagnostic)
+    print(diagnostic)
+    return message
+
+
+def _build_multi_seller_brief_limited(problems, summary_stats=None, max_length=3500):
+    for top_limit, include_ads, include_stocks in ((5, True, True), (3, True, True), (3, False, True), (3, False, False)):
+        message = _build_multi_seller_brief(problems, summary_stats, top_limit=top_limit, include_ads=include_ads, include_stocks=include_stocks)
+        if len(sanitize_telegram_text(message)) <= max_length:
+            return message
+    return _trim_telegram_message(message, max_length=max_length)
+
+
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = _problems_to_records(problems)
     has_positive_funnel_problem = any(
@@ -4784,12 +4982,20 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
         print("Telegram credentials not configured")
         return False
 
-    message = _build_telegram_message(
-        problems,
-        summary_stats=summary_stats,
-        root_cause_insights=root_cause_insights,
+    summary_stats = summary_stats or {}
+    is_multi_seller = (
+        int(summary_stats.get("sellersTotal") or summary_stats.get("activeSellersCount") or 0)
+        > 1
     )
-    _log_telegram_business_ranking(problems)
+    if is_multi_seller:
+        message = _build_multi_seller_brief_limited(problems, summary_stats)
+    else:
+        message = _build_telegram_message(
+            problems,
+            summary_stats=summary_stats,
+            root_cause_insights=root_cause_insights,
+        )
+        _log_telegram_business_ranking(problems)
     url = TELEGRAM_API_URL.format(token=token)
     message_parts = split_telegram_message(sanitize_telegram_text(message))
     total_parts = len(message_parts)
