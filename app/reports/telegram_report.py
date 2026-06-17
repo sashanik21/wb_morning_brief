@@ -1775,27 +1775,52 @@ def _ads_bid_change_summary_lines(summary_stats):
     rows = _ads_bid_delta_rows(summary_stats)
     if not rows:
         return ["Изменения ставок:", "данных по ставкам нет"]
-    up = down = same = 0
-    for row in rows:
-        delta = max(
-            (
-                to_number(row.get("search_bid_delta"))
-                if _is_present(row.get("search_bid_delta"))
-                else 0
-            ),
-            (
-                to_number(row.get("recommendations_bid_delta"))
-                if _is_present(row.get("recommendations_bid_delta"))
-                else 0
-            ),
-            key=abs,
-        )
-        if delta > 0:
-            up += 1
-        elif delta < 0:
-            down += 1
-        else:
-            same += 1
+
+    unique_dates_count = None
+    analytics = None
+    for ads_row in (summary_stats or {}).get("adsRows") or []:
+        if not isinstance(ads_row, dict):
+            continue
+        analytics = analytics or ads_row.get("adsBidAnalytics")
+        if ads_row.get("adsBidHistoryUniqueDates") not in (None, ""):
+            unique_dates_count = to_number(ads_row.get("adsBidHistoryUniqueDates"))
+            break
+
+    if unique_dates_count is not None and unique_dates_count <= 1:
+        return ["Изменения ставок:", "История ставок ещё накапливается."]
+
+    if analytics:
+        up = to_number(analytics.get("campaigns_raised"))
+        down = to_number(analytics.get("campaigns_lowered"))
+        same = to_number(analytics.get("campaigns_unchanged"))
+    else:
+        up = down = same = 0
+        for row in rows:
+            if not row.get("has_previous_bid_history"):
+                continue
+            delta = max(
+                (
+                    to_number(row.get("search_bid_delta"))
+                    if _is_present(row.get("search_bid_delta"))
+                    else 0
+                ),
+                (
+                    to_number(row.get("recommendations_bid_delta"))
+                    if _is_present(row.get("recommendations_bid_delta"))
+                    else 0
+                ),
+                key=abs,
+            )
+            if delta > 0:
+                up += 1
+            elif delta < 0:
+                down += 1
+            else:
+                same += 1
+
+    if up + down + same == 0:
+        return ["Изменения ставок:", "История ставок ещё накапливается."]
+
     return [
         "Изменения ставок:",
         "",
@@ -1812,12 +1837,14 @@ def _sign_money(value):
 
 
 def _product_bid_change(totals):
-    candidates = []
+    changes = []
     for row in totals.get("matchedRows") or []:
         for bid_row in row.get("bidChanges") or []:
+            if not bid_row.get("has_previous_bid_history"):
+                continue
             for kind, label in (
-                ("search", "Ставка поиска"),
-                ("recommendations", "Ставка рекомендаций"),
+                ("search", "Поиск"),
+                ("recommendations", "Рекомендации"),
             ):
                 delta = bid_row.get(f"{kind}_bid_delta")
                 previous = bid_row.get(f"previous_{kind}_bid")
@@ -1830,15 +1857,13 @@ def _product_bid_change(totals):
                     continue
                 if to_number(delta) == 0:
                     continue
-                candidates.append(
-                    (abs(to_number(delta)), label, previous, current, delta)
+                changes.append(
+                    {"label": label, "previous": previous, "current": current, "delta": delta}
                 )
-    if not candidates:
+    if not changes:
         return None
-    _abs_delta, label, previous, current, delta = max(
-        candidates, key=lambda item: item[0]
-    )
-    return {"label": label, "previous": previous, "current": current, "delta": delta}
+    main = max(changes, key=lambda item: abs(to_number(item.get("delta"))))
+    return {**main, "changes": changes}
 
 
 def _bid_impact_conclusion(totals, default_conclusion):
@@ -1850,10 +1875,8 @@ def _bid_impact_conclusion(totals, default_conclusion):
     clicks_dynamic = _ads_metric_dynamic(totals, "clicks")
     orders_dynamic = _ads_metric_dynamic(totals, "orders")
     ctr_dynamic = _ads_metric_dynamic(totals, "ctr")
-    if delta < 0 and impressions_dynamic is not None and impressions_dynamic < -20:
-        return "Снижение ставки могло привести к падению рекламных показов."
-    if delta < 0 and clicks_dynamic is not None and clicks_dynamic < -20:
-        return "Снижение ставки могло привести к потере рекламного трафика."
+    if delta < 0 and impressions_dynamic is not None and impressions_dynamic < 0:
+        return "Снижение ставки могло привести к сокращению рекламного охвата."
     if (
         delta > 0
         and impressions_dynamic is not None
@@ -1865,19 +1888,14 @@ def _bid_impact_conclusion(totals, default_conclusion):
             or clicks_dynamic <= 0
         )
     ):
-        return "Ставку подняли, но реклама не стала эффективнее. Проверить фото, цену, позицию и релевантность."
-    if (
-        delta > 0
-        and clicks_dynamic is not None
-        and clicks_dynamic > 0
-        and (orders_dynamic is None or orders_dynamic <= 0)
-    ):
-        return "Ставка дала трафик, но не дала продажи. Проверить карточку, цену и конверсию."
+        return "Ставка была увеличена, но CTR не улучшился. Проверить главное фото, цену и позицию товара."
+    if delta > 0 and impressions_dynamic is not None and impressions_dynamic > 0:
+        return "Ставка была увеличена и дала дополнительный рекламный охват."
     if delta == 0 and (
         (impressions_dynamic is not None and impressions_dynamic < 0)
         or (clicks_dynamic is not None and clicks_dynamic < 0)
     ):
-        return "Просадка не связана с изменением ставки. Проверить конкурентов, позиции, органику и карточку."
+        return "Просадка не связана с изменением ставки."
     return default_conclusion
 
 def _ads_diagnosis_lines(ads_summary, summary_stats=None):
@@ -3410,16 +3428,11 @@ def _build_product_ads_breakdown(
     lines = [_format_product_ads_diagnosis_block(diagnosis)]
 
     if bid_change:
-        lines.extend(
-            [
-                "",
-                "   Изменение ставки:",
-                f"   {bid_change['label']}: было "
-                f"{_format_number(bid_change['previous'])} ₽ → стало "
-                f"{_format_number(bid_change['current'])} ₽",
-                f"   Изменение: {_sign_money(bid_change['delta'])}",
-            ]
-        )
+        lines.extend(["", "   Изменение ставки:"])
+        for change in bid_change.get("changes") or [bid_change]:
+            lines.append(
+                f"   {change['label']}: {_sign_money(change['delta'])}"
+            )
     elif (
         _is_present(totals.get("bid"))
         and _is_present(totals.get("previous_bid"))
