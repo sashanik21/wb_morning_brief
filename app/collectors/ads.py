@@ -9,7 +9,7 @@ import requests
 ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
 ADS_TIMEOUT_SECONDS = 60
-ADS_CAMPAIGN_BATCH_SIZE = 20
+ADS_CAMPAIGN_BATCH_SIZE = 50
 ADS_CAMPAIGN_CACHE_TTL_HOURS = 12
 REPORTS_DIR = Path("reports")
 _ADS_API_HAD_429 = False
@@ -164,12 +164,11 @@ def _env_int(name, default):
 
 def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=None):
     global _ADS_RATE_LIMIT_STATS
-    retry_count = _env_int("WB_ADS_RETRY_COUNT", 0)
-    retry_sleep = _env_int("WB_ADS_RETRY_SLEEP_SECONDS", 0)
+    retry_sleep = 20
     _ADS_RATE_LIMIT_STATS["retry_sleep_seconds"] = retry_sleep
     response = None
 
-    for attempt in range(retry_count + 1):
+    for attempt in range(2):
         if _ads_collect_time_exceeded() or (
             deadline is not None and time.monotonic() >= deadline
         ):
@@ -203,6 +202,12 @@ def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=N
             )
             _ADS_RATE_LIMIT_STATS["partial"] = True
             break
+        if response.status_code >= 500 and attempt == 0:
+            _ADS_RATE_LIMIT_STATS["retries_used"] = (
+                _ADS_RATE_LIMIT_STATS.get("retries_used", 0) + 1
+            )
+            _ads_sleep(retry_sleep, deadline=deadline)
+            continue
         break
 
     if response is None or response.status_code != 200:
@@ -478,143 +483,131 @@ def _update_campaign_health(seller_id, campaign_id, status, rows=0, error_code=N
     )
 
 
+def _log_ads_fullstats_batch_mode(campaign_ids, batches):
+    print("ADS FULLSTATS BATCH MODE:")
+    print(f"campaign ids total: {len(campaign_ids or [])}")
+    print(f"batch size: {ADS_CAMPAIGN_BATCH_SIZE}")
+    print(f"batches: {len(batches or [])}")
+
+
+def _log_ads_fullstats_batch_request(
+    batch_index, batches_count, batch, begin_date, end_date
+):
+    print("ADS FULLSTATS BATCH REQUEST:")
+    print(f"batch: {batch_index}/{batches_count}")
+    print(f"campaigns in batch: {len(batch or [])}")
+    print(f"beginDate: {begin_date}")
+    print(f"endDate: {end_date}")
+
+
+def _log_ads_fullstats_batch_result(batch_index, batches_count, rows, status):
+    print("ADS FULLSTATS BATCH RESULT:")
+    print(f"batch: {batch_index}/{batches_count}")
+    print(f"rows: {rows}")
+    print(f"status: {status}")
+
+
+def _collect_ads_period_batches(
+    token, campaign_ids, begin_date, end_date, report_date
+):
+    payloads = []
+    batches = list(_chunked(campaign_ids or [], ADS_CAMPAIGN_BATCH_SIZE))
+    batches_count = len(batches)
+    for index, batch in enumerate(batches, start=1):
+        if _ads_collect_time_exceeded():
+            _ADS_RATE_LIMIT_STATS["partial"] = True
+            _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = True
+            _log_ads_fullstats_batch_result(index, batches_count, 0, "partial")
+            break
+
+        _log_ads_fullstats_batch_request(
+            index, batches_count, batch, begin_date, end_date
+        )
+        payload, status_code = _request_ads_fullstats(
+            token, batch, begin_date, end_date
+        )
+        if status_code == 429:
+            _ADS_RATE_LIMIT_STATS["partial"] = True
+            _log_ads_fullstats_batch_result(index, batches_count, 0, "partial")
+            continue
+        if payload is None:
+            _ADS_RATE_LIMIT_STATS["partial"] = True
+            batch_status = (
+                "partial" if status_code and status_code >= 500 else "error"
+            )
+            _log_ads_fullstats_batch_result(index, batches_count, 0, batch_status)
+            continue
+
+        rows = len(payload) if isinstance(payload, list) else 0
+        payloads.extend(payload if isinstance(payload, list) else [])
+        _debug_ads_raw(payload if isinstance(payload, list) else [], report_date)
+        _log_ads_fullstats_batch_result(index, batches_count, rows, "success")
+
+        if index < batches_count:
+            _ads_sleep(20)
+    return payloads
+
+
 def _collect_ads_stats_from_api(token, campaign_ids, report_date, seller_id=None):
     current_date = report_date.strftime("%Y-%m-%d")
     previous_date = (report_date - timedelta(days=1)).strftime("%Y-%m-%d")
     current_rows = []
     previous_rows = []
 
-    request_sleep = _env_int("WB_ADS_REQUEST_SLEEP_SECONDS", 3)
+    campaign_ids = [
+        str(campaign_id) for campaign_id in campaign_ids or [] if campaign_id
+    ]
+    batches = list(_chunked(campaign_ids, ADS_CAMPAIGN_BATCH_SIZE))
+    _log_ads_fullstats_batch_mode(campaign_ids, batches)
+
+    if not campaign_ids:
+        _ADS_RATE_LIMIT_STATS["campaigns_requested"] = 0
+        _ADS_RATE_LIMIT_STATS["campaigns_loaded"] = 0
+        _ADS_RATE_LIMIT_STATS["campaigns_attempted"] = 0
+        _ADS_RATE_LIMIT_STATS["campaigns_success"] = 0
+        _ADS_RATE_LIMIT_STATS["campaigns_partial"] = 0
+        _ADS_RATE_LIMIT_STATS["campaigns_failed"] = 0
+        _ADS_RATE_LIMIT_STATS["partial_rows_saved"] = 0
+        return []
+
+    current_payload = _collect_ads_period_batches(
+        token, campaign_ids, current_date, current_date, report_date
+    )
+    previous_payload = _collect_ads_period_batches(
+        token, campaign_ids, previous_date, previous_date, report_date
+    )
+
     loaded_campaign_ids = set()
-    attempted_campaign_ids = set()
-    success_campaign_ids = set()
-    partial_campaign_ids = set()
-    failed_campaign_ids = set()
-    global _ADS_RATE_LIMIT_STATS
-    max_campaign_seconds = max(1, _env_int("WB_ADS_MAX_SECONDS_PER_CAMPAIGN", 8))
-    for campaign_id in campaign_ids or []:
-        campaign_started_at = time.monotonic()
-        campaign_deadline = campaign_started_at + max_campaign_seconds
-        attempted_campaign_ids.add(str(campaign_id))
-        if _ads_collect_time_exceeded():
-            _ADS_RATE_LIMIT_STATS["partial"] = True
-            _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = True
-            partial_campaign_ids.add(str(campaign_id))
-            print("ADS CAMPAIGN NEXT RUN:")
-            print(f"campaign_id: {campaign_id}")
-            print("reason: collector time limit reached")
-            _log_ads_campaign_result(campaign_id, "timeout", 0)
-            _update_campaign_health(
-                seller_id, campaign_id, "timeout", error_code="time_limit"
-            )
-            continue
-        previous_status = None
-        current_payload, current_status = _request_ads_fullstats(
-            token, [campaign_id], current_date, current_date, deadline=campaign_deadline
-        )
-        if current_status == 429:
-            _ADS_RATE_LIMIT_STATS["partial"] = True
-            partial_campaign_ids.add(str(campaign_id))
-            _log_ads_campaign_result(campaign_id, "partial", 0)
-            _update_campaign_health(
-                seller_id, campaign_id, "partial", error_code="429"
-            )
-            continue
-        _ads_sleep(request_sleep, deadline=campaign_deadline)
-        if time.monotonic() >= campaign_deadline:
-            _ADS_RATE_LIMIT_STATS["partial"] = True
-            partial_campaign_ids.add(str(campaign_id))
-            elapsed = time.monotonic() - campaign_started_at
-            _log_ads_campaign_time_limit(campaign_id, elapsed)
-            _log_ads_campaign_result(campaign_id, "timeout", 0)
-            _update_campaign_health(
-                seller_id, campaign_id, "timeout", error_code="timeout"
-            )
-            continue
-        if _ads_collect_time_exceeded():
-            _ADS_RATE_LIMIT_STATS["partial"] = True
-            _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = True
-            previous_payload = None
-        else:
-            previous_payload, previous_status = _request_ads_fullstats(
-                token,
-                [campaign_id],
-                previous_date,
-                previous_date,
-                deadline=campaign_deadline,
-            )
-        _ads_sleep(request_sleep, deadline=campaign_deadline)
+    for campaign in current_payload:
+        campaign_id = str(_campaign_id(campaign) or "")
+        if campaign_id:
+            loaded_campaign_ids.add(campaign_id)
+        _append_campaign_rows(current_rows, campaign)
 
-        if current_payload is None:
-            _ADS_RATE_LIMIT_STATS["partial"] = True
-            if current_status == 429:
-                partial_campaign_ids.add(str(campaign_id))
-                _log_ads_campaign_result(campaign_id, "partial", 0)
-                _update_campaign_health(
-                    seller_id, campaign_id, "partial", error_code="429"
-                )
-            else:
-                failed_campaign_ids.add(str(campaign_id))
-                _log_ads_campaign_result(campaign_id, "error", 0)
-                _update_campaign_health(
-                    seller_id,
-                    campaign_id,
-                    "error",
-                    error_code=str(current_status or "unknown"),
-                )
-            continue
+    for campaign in previous_payload:
+        _append_campaign_rows(previous_rows, campaign)
 
-        _debug_ads_raw(current_payload, report_date)
-        rows_before = len(current_rows)
-        for campaign in current_payload:
-            loaded_campaign_ids.add(str(_campaign_id(campaign) or campaign_id))
-            _append_campaign_rows(current_rows, campaign)
+    failed_campaign_ids = set(campaign_ids) - loaded_campaign_ids
+    partial_campaign_ids = (
+        failed_campaign_ids if _ADS_RATE_LIMIT_STATS.get("partial") else set()
+    )
+    success_campaign_ids = loaded_campaign_ids - partial_campaign_ids
 
-        campaign_rows_count = len(current_rows) - rows_before
-        if previous_payload is None and (
-            _ADS_RATE_LIMIT_STATS.get("stopped_by_time_limit") or previous_status == 429
-        ):
-            _ADS_RATE_LIMIT_STATS["partial"] = True
-            partial_campaign_ids.add(str(campaign_id))
-            result_status = "partial"
-        else:
-            result_status = "success"
-            success_campaign_ids.add(str(campaign_id))
+    for campaign_id in success_campaign_ids:
+        _update_campaign_health(seller_id, campaign_id, "success")
+    for campaign_id in partial_campaign_ids:
+        _update_campaign_health(seller_id, campaign_id, "partial")
 
-        if previous_payload:
-            for campaign in previous_payload:
-                _append_campaign_rows(previous_rows, campaign)
-
-        if time.monotonic() >= campaign_deadline:
-            result_status = "timeout"
-            _ADS_RATE_LIMIT_STATS["partial"] = True
-            partial_campaign_ids.add(str(campaign_id))
-            success_campaign_ids.discard(str(campaign_id))
-            _log_ads_campaign_time_limit(
-                campaign_id, time.monotonic() - campaign_started_at
-            )
-
-        _log_ads_campaign_result(campaign_id, result_status, campaign_rows_count)
-        _update_campaign_health(
-            seller_id,
-            campaign_id,
-            result_status,
-            rows=campaign_rows_count,
-            error_code=(
-                None
-                if result_status == "success"
-                else str(previous_status or current_status or result_status)
-            ),
-        )
-
-    _ADS_RATE_LIMIT_STATS["campaigns_requested"] = len(campaign_ids or [])
+    _ADS_RATE_LIMIT_STATS["campaigns_requested"] = len(campaign_ids)
     _ADS_RATE_LIMIT_STATS["campaigns_loaded"] = len(
         {cid for cid in loaded_campaign_ids if cid}
     )
-    _ADS_RATE_LIMIT_STATS["campaigns_attempted"] = len(attempted_campaign_ids)
+    _ADS_RATE_LIMIT_STATS["campaigns_attempted"] = len(campaign_ids)
     _ADS_RATE_LIMIT_STATS["campaigns_success"] = len(success_campaign_ids)
     _ADS_RATE_LIMIT_STATS["campaigns_partial"] = len(partial_campaign_ids)
-    _ADS_RATE_LIMIT_STATS["campaigns_failed"] = len(failed_campaign_ids)
+    _ADS_RATE_LIMIT_STATS["campaigns_failed"] = (
+        0 if _ADS_RATE_LIMIT_STATS.get("partial") else len(failed_campaign_ids)
+    )
     _ADS_RATE_LIMIT_STATS["partial"] = bool(_ADS_RATE_LIMIT_STATS.get("partial"))
     _ADS_RATE_LIMIT_STATS["partial_rows_saved"] = len(current_rows)
 
@@ -748,7 +741,10 @@ def _is_repeated_error_cooldown(campaign, now=None):
 
 
 def _select_staged_campaigns(campaigns, top_drop_nm_ids=None, oos_nm_ids=None):
-    max_per_run = max(1, _env_int("WB_ADS_MAX_CAMPAIGNS_PER_RUN", 5))
+    max_per_run = max(
+        ADS_CAMPAIGN_BATCH_SIZE,
+        _env_int("WB_ADS_MAX_CAMPAIGNS_PER_RUN", ADS_CAMPAIGN_BATCH_SIZE),
+    )
     top_drop_nm_ids = {
         str(value) for value in top_drop_nm_ids or [] if value not in (None, "")
     }
