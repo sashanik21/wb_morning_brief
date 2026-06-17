@@ -42,6 +42,7 @@ from app.reports.api_coverage import (
 )
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
+from app.config import set_wb_api_token
 from app.storage.storage_factory import get_storage
 
 
@@ -501,25 +502,33 @@ def _print_multi_seller_processing(active_sellers, seller_results):
     if len(seller_results) < len(active_sellers):
         print("WARNING: seller_results count does not match active sellers count")
 
-def main():
 
-    print("MAIN VERSION: TELEGRAM ENABLED")
-    print("=" * 50)
-    print("WB MORNING BRIEF")
-    print("=" * 50)
-    storage = get_storage()
-    print("=" * 50)
+def _process_seller(storage, seller, report_date):
+    seller_name = seller.get("seller_name", "")
+    seller_id = _seller_id(seller)
+    wb_token_secret_name = seller.get("wb_token_secret_name")
+    wb_token = set_wb_api_token(wb_token_secret_name)
 
-    sellers = storage.get_sellers()
-    print(f"SELLERS LOADED: {len(sellers)}")
-    active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
-    print(f"Активных продавцов: {len(active_sellers)}")
-    current_seller = active_sellers[0] if active_sellers else {}
-    seller_name = current_seller.get("seller_name", "")
-    seller_id = _seller_id(current_seller)
-    report_date = date.today() - timedelta(days=1)
-    if active_sellers:
-        print(f"Текущий продавец: {seller_name}")
+    print(f"Текущий продавец: {seller_name}")
+    print("SELLER TOKEN:")
+    print(f"seller: {seller_name}")
+    print(f"secret: {wb_token_secret_name or ''}")
+    print(f"token found: {str(bool(wb_token)).lower()}")
+
+    if not wb_token:
+        seller_result = _build_seller_result(
+            seller,
+            processing_status="failed",
+            error_message="secret not found",
+        )
+        print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+        return {
+            "seller_result": seller_result,
+            "summary_stats": {},
+            "all_problems": [],
+            "root_cause_insights": [],
+            "tasks": [],
+        }
 
     products = storage.get_products()
     print(f"PRODUCTS LOADED: {len(products)}")
@@ -531,12 +540,39 @@ def main():
 
     if data is None:
         print("Данные funnel не получены")
-        return
+        seller_result = _build_seller_result(
+            seller,
+            processing_status="no_data",
+            error_message="nmIDs not found",
+        )
+        print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+        return {
+            "seller_result": seller_result,
+            "summary_stats": {},
+            "all_problems": [],
+            "root_cause_insights": [],
+            "tasks": [],
+        }
 
     print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
     print("=" * 50)
 
     wb_cards = _extract_funnel_products(data)
+    if not wb_cards:
+        seller_result = _build_seller_result(
+            seller,
+            processing_status="no_data",
+            error_message="nmIDs not found",
+        )
+        print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+        return {
+            "seller_result": seller_result,
+            "summary_stats": {},
+            "all_problems": [],
+            "root_cause_insights": [],
+            "tasks": [],
+        }
+
     storage.sync_products_from_wb_cards(seller_id, wb_cards)
     products = storage.get_products()
     print(f"PRODUCTS LOADED: {len(products)}")
@@ -770,11 +806,10 @@ def main():
         "totalSku": len(api_coverage_report["coverage"]),
     }
     summary_stats["perfumeIntelligence"] = perfume_intelligence
-    seller_results = []
     current_processing_status = "success" if total_sku_from_api else "no_data"
-    current_error_message = None if total_sku_from_api else "не найдены nmIDs"
-    current_seller_result = _build_seller_result(
-        current_seller,
+    current_error_message = None if total_sku_from_api else "nmIDs not found"
+    seller_result = _build_seller_result(
+        seller,
         processing_status=current_processing_status,
         total_sku=total_sku_from_api,
         funnel_rows=funnel_rows,
@@ -788,56 +823,72 @@ def main():
         },
         error_message=current_error_message,
     )
-    seller_results.append(current_seller_result)
-    print(f"SELLER RESULT CREATED: {current_seller_result.get('seller_name')}")
-    processed_seller_ids = {str(current_seller_result.get("seller_id"))}
-    for seller in active_sellers[1:]:
-        print(f"Текущий продавец: {seller.get('seller_name', '')}")
-        seller_result = _build_seller_result(
-            seller,
-            processing_status="no_data",
-            error_message="не найдены nmIDs",
-        )
-        seller_results.append(seller_result)
-        processed_seller_ids.add(str(seller_result.get("seller_id")))
-        print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+    print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+    tasks = build_tasks_from_problems(all_problems)
+    return {
+        "seller_result": seller_result,
+        "summary_stats": summary_stats,
+        "all_problems": all_problems,
+        "root_cause_insights": root_cause_insights,
+        "tasks": tasks,
+    }
+
+
+def main():
+
+    print("MAIN VERSION: TELEGRAM ENABLED")
+    print("=" * 50)
+    print("WB MORNING BRIEF")
+    print("=" * 50)
+    storage = get_storage()
+    print("=" * 50)
+
+    sellers = storage.get_sellers()
+    print(f"SELLERS LOADED: {len(sellers)}")
+    active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
+    print(f"Активных продавцов: {len(active_sellers)}")
+    report_date = date.today() - timedelta(days=1)
+
+    seller_results = []
+    combined_problems = []
+    combined_root_cause_insights = []
+    combined_tasks = []
+    summary_stats = {}
+
     for seller in active_sellers:
-        if str(_seller_id(seller)) not in processed_seller_ids:
-            seller_result = _build_seller_result(
-                seller,
-                processing_status="failed",
-                error_message="продавец не обработан",
-            )
-            seller_results.append(seller_result)
-            print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+        processed = _process_seller(storage, seller, report_date)
+        seller_results.append(processed["seller_result"])
+        combined_problems.extend(processed.get("all_problems") or [])
+        combined_root_cause_insights.extend(processed.get("root_cause_insights") or [])
+        combined_tasks.extend(processed.get("tasks") or [])
+        if processed.get("summary_stats"):
+            summary_stats = processed["summary_stats"]
+
     _print_multi_seller_processing(active_sellers, seller_results)
+    summary_stats.setdefault("sellerName", "")
     summary_stats["sellerResults"] = seller_results
     summary_stats["activeSellersCount"] = len(active_sellers)
     summary_stats["sellersTotal"] = len(active_sellers)
     summary_stats["sellerNames"] = [
         seller.get("seller_name", "") for seller in active_sellers
     ]
-    _print_summary_stats(summary_stats)
+    if summary_stats:
+        _print_summary_stats(summary_stats)
     print("=" * 50)
 
     print("TOTAL PROBLEMS:")
-    print(f"funnel: {len(funnel_problems)}")
-    print(f"ads: {len(ads_problems)}")
-    print(f"qbiki: {len(qbiki_problems)}")
-    print(f"stocks: {len(stocks_problems)}")
-    print(f"all: {len(all_problems)}")
+    print(f"all: {len(combined_problems)}")
     print("=" * 50)
 
     print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
     send_telegram_morning_brief(
-        all_problems,
+        combined_problems,
         summary_stats=summary_stats,
-        root_cause_insights=root_cause_insights,
+        root_cause_insights=combined_root_cause_insights,
     )
     print("=" * 50)
 
-    tasks = build_tasks_from_problems(all_problems)
-    storage.create_tasks(tasks)
+    storage.create_tasks(combined_tasks)
     print("=" * 50)
 
     print("WB Morning Brief completed successfully")

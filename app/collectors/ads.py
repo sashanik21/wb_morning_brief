@@ -6,6 +6,8 @@ from pathlib import Path
 
 import requests
 
+import app.config as wb_config
+
 ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
 ADS_CAMPAIGN_DETAILS_URL = "https://advert-api.wildberries.ru/api/advert/v2/adverts"
@@ -1212,10 +1214,8 @@ def collect_ads_stats(
     _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = False
     _ADS_RATE_LIMIT_STATS["partial_rows_saved"] = 0
     report_date = report_date or (datetime.now().date() - timedelta(days=1))
-    ads_token = os.getenv("WB_ADS_API_TOKEN")
-    fallback_token = os.getenv("WB_API_TOKEN_TEST")
-    token = ads_token or fallback_token
-    token_source = "WB_ADS_API_TOKEN" if ads_token else "WB_API_TOKEN_TEST"
+    token_source = wb_config.CURRENT_WB_TOKEN_SECRET_NAME
+    token = wb_config.WB_API_TOKEN or os.getenv(token_source)
 
     if token:
         print(f"ADS TOKEN SOURCE: {token_source}")
