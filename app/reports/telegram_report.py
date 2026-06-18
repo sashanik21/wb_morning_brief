@@ -37,7 +37,7 @@ def _is_debug_log():
 
 
 def _diagnostic_log(message):
-    logger.info(message)
+    logger.debug(message)
     if _is_debug_log():
         print(message)
 
@@ -482,6 +482,54 @@ def _is_present(value):
     return value not in (None, "") and str(value) != "nan"
 
 
+
+def _format_previous_value(value, suffix=""):
+    if not _is_present(value) or to_number(value) == 0:
+        return "н/д"
+    return f"{_format_number(value)}{suffix}"
+
+
+def _format_metric_with_previous(current, previous, suffix=""):
+    return f"{_format_number(current)}{suffix} (было {_format_previous_value(previous, suffix)})"
+
+
+def _format_change_percent(current, previous):
+    if not _is_present(previous) or to_number(previous) == 0 or not _is_present(current):
+        return "н/д"
+    delta = (to_number(current) - to_number(previous)) / to_number(previous) * 100
+    sign = "+" if delta > 0 else ""
+    return f"{sign}{_format_number(delta)}%"
+
+
+def _ads_partial_warning_lines(summary_stats=None, ads_summary=None):
+    summary_stats = summary_stats or {}
+    ads_summary = ads_summary or summary_stats.get("adsSummary") or {}
+    confidence = str(
+        summary_stats.get("adsCoverageConfidence")
+        or ads_summary.get("adsCoverageConfidence")
+        or ""
+    ).upper()
+    if not (
+        summary_stats.get("adsApiHad429")
+        or summary_stats.get("adsApiPartial")
+        or ads_summary.get("adsApiHad429")
+        or ads_summary.get("adsApiPartial")
+        or confidence == "LOW"
+        or _has_partial_ads_data(summary_stats, ads_summary)
+    ):
+        return []
+    advertised = ads_summary.get("advertisedSku") or summary_stats.get("advertisedSkuCount")
+    total = ads_summary.get("totalSku") or summary_stats.get("totalSkuFromApi")
+    coverage = (
+        f"Охват рекламы: {_format_number(advertised)}/{_format_number(total)} товаров."
+        if advertised is not None and total is not None
+        else "Охват рекламы: н/д."
+    )
+    return [
+        "⚠️ Рекламные данные частичные: WB API вернул ограничение 429.",
+        coverage,
+    ]
+
 def _format_dynamic_percent(value):
     if value in (None, ""):
         return "n/a"
@@ -742,7 +790,29 @@ def _is_insufficient_history_problem(problem):
     )
 
 
+
+def _has_supply_data(record):
+    if record.get("hasSupplyData") is not None:
+        return bool(record.get("hasSupplyData"))
+    return any(_is_present(record.get(key)) for key in (
+        "readyForSaleStock", "incomingStock", "acceptanceStock", "transitStock",
+        "returningStock", "depersonalizedStock", "blockedStock",
+    ))
+
+
+def _is_confirmed_zero_stock(record):
+    if not isinstance(record, dict):
+        return False
+    has_supply = _has_supply_data(record)
+    if _is_present(record.get("realSellableStock")) and to_number(record.get("realSellableStock")) == 0 and has_supply:
+        return True
+    if _is_present(record.get("wbStocks")) and to_number(record.get("wbStocks")) == 0 and has_supply:
+        return True
+    return has_supply and str(record.get("stockState") or "").upper() == "BLOCKED"
+
 def _is_oos_blocked_problem(problem):
+    if not _is_confirmed_zero_stock(problem):
+        return False
     sellable = problem.get("realSellableStock")
     if sellable in (None, ""):
         sellable = problem.get("selectedValue")
@@ -755,13 +825,17 @@ def _is_oos_blocked_problem(problem):
 
 
 def _is_stock_impact_problem(problem):
-    return (
-        _is_oos_blocked_problem(problem)
-        or _decline_source(problem) == "STOCK_DECLINE"
+    stock_like = (
+        _decline_source(problem) == "STOCK_DECLINE"
         or problem.get("problemType") == "sellableOutOfStock"
         or problem.get("metric") in {"wbStocks", "realSellableStock", "stocks"}
         or problem.get("problemCategory") == "stocks"
     )
+    if not stock_like:
+        return False
+    if _is_forecast_signal(problem):
+        return True
+    return _is_confirmed_zero_stock(problem)
 
 
 def _has_problem_loss(problem):
@@ -1320,7 +1394,7 @@ def _format_qbiki_product_line(index, row):
 
 def _ads_api_429_limitation_line(summary_stats):
     if _has_partial_ads_data(summary_stats):
-        return "⚠️ Данные рекламы частичные."
+        return "⚠️ Рекламные данные частичные: WB API вернул ограничение 429."
     return ""
 
 
@@ -1520,7 +1594,7 @@ def _ads_rows_count(summary_stats=None, ads_summary=None):
 
 def _ads_campaigns_coverage_line(summary_stats=None, ads_summary=None):
     if _has_partial_ads_data(summary_stats, ads_summary):
-        return "⚠️ Данные рекламы частичные."
+        return "⚠️ Рекламные данные частичные: WB API вернул ограничение 429."
     return None
 
 
@@ -1721,13 +1795,14 @@ def _ads_product_diagnosis(
             "source": "🟡 Недостаточно данных",
             "confidence": "Низкая",
             "confirmation": ["Недостаточно рекламных данных для уверенного вывода."],
-            "conclusion": "Причина просадки определена предварительно.",
+            "conclusion": "Вывод по рекламе предварительный: данных по рекламе или истории недостаточно.",
         }
 
     clicks = to_number(totals.get("clicks"))
     impressions = to_number(totals.get("impressions"))
     ctr = to_number(totals.get("ctr"))
     drr = to_number(totals.get("drr"))
+    cpc = to_number(totals.get("cpc"))
     orders = to_number(totals.get("orders"))
     previous_clicks = totals.get("previous_clicks")
     previous_impressions = totals.get("previous_impressions")
@@ -1746,7 +1821,7 @@ def _ads_product_diagnosis(
 
     if not _ads_has_enough_diagnosis_data(totals):
         confirmation = ["Недостаточно рекламных данных для уверенного вывода."]
-        conclusion = "Причина просадки определена предварительно."
+        conclusion = "Вывод по рекламе предварительный: данных по рекламе или истории недостаточно."
         if ads_traffic_share is not None and ads_traffic_share < 10:
             confirmation = [
                 "Реклама даёт слишком мало трафика для объяснения просадки."
@@ -1805,6 +1880,40 @@ def _ads_product_diagnosis(
             "reason": "🔴 Ставка рекламы",
             "confirmation": ["Ставка была снижена, после этого рекламные показы просели."],
             "conclusion": "Снижение ставки могло привести к потере рекламного охвата.",
+        }
+    if ctr_down_20:
+        return {
+            "status": "red",
+            "reason": "🔴 Кликабельность карточки",
+            "confirmation": [
+                f"CTR рекламы снизился с {_format_number(previous_ctr)}% до {_format_number(ctr)}% ({_format_change_percent(ctr, previous_ctr)})."
+            ],
+            "conclusion": "Реклама ухудшилась: товар получает менее качественный или более дорогой трафик.",
+        }
+    if cpc_up_20:
+        return {
+            "status": "red",
+            "reason": "🔴 Стоимость клика",
+            "confirmation": [
+                f"CPC вырос с {_format_number(previous_cpc)} ₽ до {_format_number(cpc)} ₽ ({_format_change_percent(cpc, previous_cpc)})."
+            ],
+            "conclusion": "Реклама ухудшилась: товар получает менее качественный или более дорогой трафик.",
+        }
+    if drr_up_20:
+        return {
+            "status": "red",
+            "reason": "🔴 ДРР",
+            "confirmation": [
+                f"ДРР вырос с {_format_number(previous_drr)}% до {_format_number(drr)}% ({_format_change_percent(drr, previous_drr)})."
+            ],
+            "conclusion": "Реклама ухудшилась: товар получает менее качественный или более дорогой трафик.",
+        }
+    if clicks_stable_or_growing and orders_fell:
+        return {
+            "status": "yellow",
+            "reason": "🟡 Карточка / цена / конверсия",
+            "confirmation": ["Рекламный трафик не просел, но заказы снизились."],
+            "conclusion": "Реклама даёт трафик, основная проблема вероятнее в карточке, цене, доставке или конверсии.",
         }
     if clicks == 0 and impressions > 0:
         return {
@@ -1890,7 +1999,7 @@ def _ads_product_diagnosis(
         return {
             "status": "yellow",
             "reason": "🟡 Карточка / цена / конверсия",
-            "confirmation": ["Рекламные клики не просели, но заказы товара снизились."],
+            "confirmation": ["Рекламный трафик не просел, но заказы снизились."],
             "conclusion": "Реклама даёт трафик, проблема вероятнее в карточке, цене, доставке или конверсии.",
         }
     if clicks > 0 and carts is not None:
@@ -2131,7 +2240,13 @@ def _product_bid_change(totals):
                 if to_number(delta) == 0:
                     continue
                 changes.append(
-                    {"label": label, "previous": previous, "current": current, "delta": delta}
+                    {
+                        "label": label,
+                        "previous": previous,
+                        "current": current,
+                        "delta": delta,
+                        "campaign_id": bid_row.get("campaign_id"),
+                    }
                 )
     if not changes:
         return None
@@ -2203,8 +2318,7 @@ def _ads_diagnosis_lines(ads_summary, summary_stats=None):
         f"medium confidence: {confidence_counters['Средняя']}\n"
         f"low confidence: {confidence_counters['Низкая']}"
     )
-    logger.info(diagnostic)
-    print(diagnostic)
+    logger.debug(diagnostic)
 
     if not product_totals and advertised_sku:
         counters["yellow"] = int(to_number(advertised_sku))
@@ -2226,9 +2340,14 @@ def _ads_diagnosis_lines(ads_summary, summary_stats=None):
         "",
         f"Товаров с рекламой: {coverage}",
         "",
-        f"Средний CTR: {_format_number(ads_summary.get('currentCtr'))}%",
-        f"Средний CPC: {_format_number(ads_summary.get('currentCpc'))} ₽",
-        f"Средний ДРР: {_format_number(ads_summary.get('currentDrr'))}%",
+        f"CTR: {_format_metric_with_previous(ads_summary.get('currentCtr'), ads_summary.get('previousCtr'), '%')}",
+        f"Изменение CTR: {_format_change_percent(ads_summary.get('currentCtr'), ads_summary.get('previousCtr'))}",
+        "",
+        f"CPC: {_format_metric_with_previous(ads_summary.get('currentCpc'), ads_summary.get('previousCpc'), ' ₽')}",
+        f"Изменение CPC: {_format_change_percent(ads_summary.get('currentCpc'), ads_summary.get('previousCpc'))}",
+        "",
+        f"ДРР: {_format_metric_with_previous(ads_summary.get('currentDrr'), ads_summary.get('previousDrr'), '%')}",
+        f"Изменение ДРР: {_format_change_percent(ads_summary.get('currentDrr'), ads_summary.get('previousDrr'))}",
         "",
         f"🟢 Реклама работает стабильно: {_format_number(counters['green'])}",
         f"🟡 Недостаточно данных / причина не подтверждена: {_format_number(counters['yellow'])}",
@@ -2259,12 +2378,13 @@ def _ads_summary_lines(ads_summary, summary_stats=None):
     ]
     if _ads_rows_count(summary_stats, ads_summary) > 0:
         lines.append(f"Источник: {source}")
+        warning_lines = _ads_partial_warning_lines(summary_stats, ads_summary)
+        if warning_lines:
+            lines.append("")
+            lines.extend(warning_lines)
     lines.append("")
     lines.extend(_ads_diagnosis_lines(ads_summary, summary_stats))
-    if _has_partial_ads_data(summary_stats, ads_summary):
-        lines.append("")
-        lines.append("⚠️ Данные рекламы частичные.")
-    elif ads_summary.get("fallbackUsed"):
+    if ads_summary.get("fallbackUsed"):
         lines.append("")
         lines.append(
             "⚠️ Актуальные данные рекламы не получены от WB. "
@@ -3070,12 +3190,7 @@ def _log_telegram_top_drops(raw_products, selected_products):
             f"selected titles: {selected_titles}"
         )
         _diagnostic_log(diagnostic)
-    else:
-        print(
-            "TELEGRAM TOP DROPS: "
-            f"raw={len(raw_problems)} unique={len(set(unique_nm_ids))} "
-            f"selected={len(selected_nm_ids)}"
-        )
+
 
 
 def _log_telegram_top_drops_grouping(stage, problems_or_products):
@@ -3714,7 +3829,8 @@ def _format_product_ads_funnel_lines(totals):
         if label == "Средняя позиция" and (not _is_present(value) or to_number(value) <= 0):
             continue
         if _is_present(value):
-            rows.append(f"   {label}: {_format_number(value)}{suffix}")
+            previous = totals.get(f"previous_{key}")
+            rows.append(f"   {label}: {_format_metric_with_previous(value, previous, suffix)}")
     clicks = to_number(totals.get("clicks"))
     if clicks > 0 and _is_present(totals.get("orders")):
         rows.append(
@@ -3727,13 +3843,20 @@ def _format_product_ads_funnel_lines(totals):
         rows.append(
             f"   CR корзина → заказ: {_format_number(to_number(totals.get('orders')) / carts * 100)}%"
         )
-    return ["", "   Воронка рекламы:", *rows] if rows else []
+    change_rows = [
+        "",
+        "   Изменение рекламы:",
+        f"   CTR: {_format_change_percent(totals.get('ctr'), totals.get('previous_ctr'))}",
+        f"   CPC: {_format_change_percent(totals.get('cpc'), totals.get('previous_cpc'))}",
+        f"   ДРР: {_format_change_percent(totals.get('drr'), totals.get('previous_drr'))}",
+    ]
+    return ["", "   Воронка рекламы:", *rows, *change_rows] if rows else []
 
 
 def _format_product_ads_bid_change_lines(totals):
     if not totals:
         return []
-    lines = []
+    raw_changes = []
     for kind, label in (("search", "Поиск"), ("recommendations", "Рекомендации")):
         previous = totals.get(f"previous_{kind}_bid")
         current = totals.get(f"{kind}_bid")
@@ -3744,20 +3867,33 @@ def _format_product_ads_bid_change_lines(totals):
             continue
         if not _is_present(delta) and to_number(previous) == to_number(current):
             continue
-        lines.append(
-            f"   {label}: было {_format_number(previous)} ₽ → стало {_format_number(current)} ₽"
-        )
-    if lines:
-        return ["", "   Изменение ставки:", *lines]
+        raw_changes.append({"label": label, "previous": previous, "current": current, "delta": delta, "campaign_id": None})
     bid_change = _product_bid_change(totals)
-    if not bid_change:
-        return []
-    for change in bid_change.get("changes") or [bid_change]:
+    if bid_change:
+        raw_changes.extend(bid_change.get("changes") or [bid_change])
+    seen = set()
+    lines = []
+    for change in raw_changes:
+        key = (
+            change.get("label"),
+            str(change.get("previous")),
+            str(change.get("current")),
+            str(change.get("delta")),
+            str(change.get("campaign_id") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
         lines.append(
             f"   {change['label']}: было {_format_number(change['previous'])} ₽ → стало {_format_number(change['current'])} ₽"
         )
-    return ["", "   Изменение ставки:", *lines] if lines else []
-
+    if not lines:
+        return []
+    extra = len(lines) - 3
+    output = lines[:3]
+    if extra > 0:
+        output.append(f"   и ещё {_format_number(extra)} изменений ставок")
+    return ["", "   Изменение ставки:", *output]
 
 def _format_product_ads_diagnosis_block(diagnosis):
     totals = diagnosis.get("totals") or {}
@@ -3816,7 +3952,7 @@ def _build_product_ads_breakdown(
         )
     else:
         ads_traffic_share = totals.get("adsTrafficShare")
-    logger.info(
+    logger.debug(
         "TELEGRAM ADS PRODUCT DATA:\nnmId: %s\nadsClicks: %s\ncurrentOpenCount: %s\nadsTrafficShare: %s",
         product.get("nmId"),
         ads_clicks,
@@ -4904,25 +5040,42 @@ def _build_multi_seller_brief(
             lines.extend([
                 "", "📢 <b>Реклама</b>", "",
                 f"Покрытие: {_format_number(advertised_sku)}/{_format_number(total_sku)} товаров",
-                f"CTR: {_format_number(ads_summary.get('currentCtr'))}%",
-                f"CPC: {_format_number(ads_summary.get('currentCpc'))} ₽",
-                f"ДРР: {_format_number(ads_summary.get('currentDrr'))}%",
+                f"CTR: {_format_metric_with_previous(ads_summary.get('currentCtr'), ads_summary.get('previousCtr'), '%')}",
+                f"Изменение CTR: {_format_change_percent(ads_summary.get('currentCtr'), ads_summary.get('previousCtr'))}",
+                f"CPC: {_format_metric_with_previous(ads_summary.get('currentCpc'), ads_summary.get('previousCpc'), ' ₽')}",
+                f"Изменение CPC: {_format_change_percent(ads_summary.get('currentCpc'), ads_summary.get('previousCpc'))}",
+                f"ДРР: {_format_metric_with_previous(ads_summary.get('currentDrr'), ads_summary.get('previousDrr'), '%')}",
+                f"Изменение ДРР: {_format_change_percent(ads_summary.get('currentDrr'), ads_summary.get('previousDrr'))}",
                 "",
                 f"🔴 Требует проверки: {_format_number(red)} товаров",
                 f"🟡 Недостаточно данных: {_format_number(yellow)} товаров",
                 f"🟢 Стабильно: {_format_number(green)} товаров",
             ])
+            warning_lines = _ads_partial_warning_lines(summary_stats, ads_summary)
+            if warning_lines:
+                lines.extend(["", *warning_lines])
 
     stock_records = [
         record
         for record in records
         if record.get("problemCategory") == "stocks"
         or record.get("metric") in ("wbStocks", "realSellableStock", "stocks")
+        or record.get("daysUntilOOS") not in (None, "")
+        or str(record.get("forecastType") or "").upper() == "OOS"
     ]
-    if include_stocks and stock_records:
-        zero = len({_problem_group_key(record) for record in stock_records if to_number(record.get("currentValue") or record.get("stock") or record.get("wbStocks")) <= 0})
-        risk = max(len({_problem_group_key(record) for record in stock_records}) - zero, 0)
-        lines.extend(["", "📦 <b>Остатки</b>", "", f"🔴 Нулевые остатки: {_format_number(zero)} товаров", f"🟡 Риск OOS: {_format_number(risk)} товаров", "🟢 Без критичных проблем: 0 товаров"])
+    if include_stocks:
+        zero = len({_problem_group_key(record) for record in stock_records if _is_confirmed_zero_stock(record)})
+        risk = len({
+            _problem_group_key(record)
+            for record in stock_records
+            if not _is_confirmed_zero_stock(record)
+            and (record.get("daysUntilOOS") not in (None, "") or str(record.get("forecastType") or "").upper() == "OOS")
+        })
+        total_sku = to_number((summary_stats or {}).get("totalSkuFromApi") or (summary_stats or {}).get("totalSku"))
+        matched = to_number(_supply_pipeline_from_summary(summary_stats).get("matched"))
+        no_data = max(int(total_sku - matched), 0) if total_sku else len({_problem_group_key(record) for record in stock_records if not _has_supply_data(record)})
+        if stock_records or no_data:
+            lines.extend(["", "📦 <b>Остатки</b>", "", f"🔴 Подтверждённые нулевые остатки: {_format_number(zero)} товаров", f"🟡 Нет данных по остаткам: {_format_number(no_data)} товаров", f"🟡 Риск OOS: {_format_number(risk)} товаров"])
 
     first_sellers = sorted(
         ((seller, seller_records) for seller, seller_records in by_seller.items() if seller_records),
@@ -5074,13 +5227,7 @@ def _log_telegram_business_ranking(problems):
             f"metric: {top_problem.get('metric') or 'n/a'}"
         )
         _diagnostic_log(diagnostic)
-    else:
-        print(
-            "BUSINESS RANKING: "
-            f"top_nmId={top_problem.get('nmId') or 'n/a'} "
-            f"score={top_problem.get('businessImpactScore') or 0} "
-            f"metric={top_problem.get('metric') or 'n/a'}"
-        )
+
 
 
 def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insights=None):
