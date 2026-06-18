@@ -584,7 +584,7 @@ def _format_previous_value(value, suffix=""):
 def _format_metric_with_previous(current, previous, suffix=""):
     if not _is_present(previous) or to_number(previous) == 0:
         return f"{_format_number(current)}{suffix}"
-    return f"{_format_number(current)}{suffix} (было {_format_previous_value(previous, suffix)})"
+    return f"{_format_number(current)}{suffix} → было {_format_previous_value(previous, suffix)}"
 
 
 def _format_change_percent(current, previous):
@@ -796,8 +796,10 @@ def _format_ads_problem_line(problem):
             f"— {label}: {_format_value_change(past, selected, suffix)} "
             f"({_format_dynamic_value(dynamic)})"
         )
-    direction = "снизился" if to_number(dynamic) < 0 else "вырос"
-    return f"— {label} {direction} на {html.escape(str(abs(to_number(dynamic))))}%"
+    return (
+        "— Рекламный показатель ухудшился: "
+        f"+{html.escape(str(abs(to_number(dynamic))))}%"
+    )
 
 
 def _format_problem_line(problem):
@@ -3213,6 +3215,71 @@ def _format_optional_dynamic(value):
     return _format_dynamic_value(value)
 
 
+def _format_product_metric_current_line(product, metric, label, suffix=""):
+    value = _product_metric_current_value(product, metric)
+    if value is None:
+        return f"   {label}: н/д"
+    return f"   {label}: {_format_number(value)}{suffix}"
+
+
+def _compact_product_reason(product, summary_stats=None):
+    ads_summary = (summary_stats or {}).get("adsSummary") or {}
+    totals = _product_ads_totals(product, summary_stats)
+    has_ads_history = totals and totals.get("ads_history_status") in {
+        "avg3",
+        "previous_day",
+    }
+    ads_coverage_low = (
+        ads_summary.get("adsCoverageConfidence") == "LOW"
+        or (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
+    )
+    if ads_coverage_low and totals:
+        return "Возможная причина: реклама требует проверки"
+    if totals and has_ads_history:
+        diagnosis = _ads_product_diagnosis(totals)
+        reason = str(diagnosis.get("reason") or "").replace("🔴 ", "").replace("🟡 ", "").replace("🟢 ", "")
+        has_confirmation = any(
+            _is_present(totals.get(key)) and _is_present(totals.get(f"previous_{key}"))
+            for key in ("ctr", "cpc", "drr", "clicks", "orders", "ordersSum")
+        )
+        if has_confirmation and reason:
+            return f"Причина: {html.escape(reason)}"
+    problem_summary = _product_problem_summary(product)
+    if problem_summary:
+        return f"Причина: {html.escape(problem_summary)}"
+    return "Причина: Требует проверки"
+
+
+def _compact_product_confirmation(product, summary_stats=None):
+    totals = _product_ads_totals(product, summary_stats)
+    if totals and totals.get("ads_history_status") not in {"avg3", "previous_day"}:
+        return "Подтверждение: Реклама: данных для сравнения недостаточно"
+    dynamics = _top_drop_metric_dynamics(product)
+    if dynamics:
+        label, dynamic = dynamics[0][1], dynamics[0][2]
+        return f"Подтверждение: {label} {_format_optional_dynamic(dynamic)}"
+    primary = _product_primary_problem(product)
+    return "Подтверждение: " + html.escape(
+        _multi_first_sentence(_multi_confirmation(primary), 160)
+    )
+
+
+def _compact_product_action(product, summary_stats=None):
+    totals = _product_ads_totals(product, summary_stats)
+    if totals and totals.get("ads_history_status") not in {"avg3", "previous_day"}:
+        return "Действие: проверить рекламу вручную и сопоставить с карточкой/ценой."
+    primary = _product_primary_problem(product)
+    action = (
+        primary.get("rootRecommendation")
+        or primary.get("recommendation")
+        or "проверить цену, карточку, рекламу и конверсию."
+    )
+    action = re.sub(r",?\s*остатк[а-яё]*", "", str(action), flags=re.IGNORECASE)
+    action = re.sub(r"\s+(и|или)\s*$", "", action.strip(" ,.;"), flags=re.IGNORECASE)
+    action = re.sub(r"\s{2,}", " ", action).strip(" ,.;") + "."
+    return f"Действие: {html.escape(_multi_first_sentence(action, 160))}"
+
+
 def _merge_products_by_nm_id(problem_products):
     grouped = {}
     for index, product in enumerate(problem_products or []):
@@ -3430,24 +3497,23 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
     ) in enumerate(products, start=1):
         product_lines = [f"{index}. <b>{_executive_problem_title(product)}</b>"]
         if direction == "drop":
-            if metric_dynamics:
-                product_lines.extend(
-                    f"   {label}: {_format_optional_dynamic(dynamic)}"
-                    for _metric, label, dynamic in metric_dynamics
-                )
-            else:
-                product_lines.extend(
-                    [
-                        f"   Заказы: {_format_optional_dynamic(orders_dynamic)}",
-                        f"   Выручка: {_format_optional_dynamic(revenue_dynamic)}",
-                        f"   Переходы: {_format_optional_dynamic(traffic_dynamic)}",
-                    ]
-                )
+            product_lines.extend(
+                [
+                    _format_product_metric_current_line(product, "orderCount", "Заказы"),
+                    _format_product_metric_current_line(product, "orderSum", "Выручка", " ₽"),
+                    _format_product_metric_current_line(
+                        product, "cartToOrderPercent", "Конверсия в заказ", "%"
+                    ),
+                    f"   {_compact_product_reason(product, summary_stats)}",
+                    f"   {_compact_product_confirmation(product, summary_stats)}",
+                ]
+            )
             ads_breakdown = _build_product_ads_breakdown(
                 product, traffic_dynamic, orders_dynamic, summary_stats, open_count
             )
             if ads_breakdown:
                 product_lines.append(ads_breakdown)
+            product_lines.append(f"   {_compact_product_action(product, summary_stats)}")
         lines.append("\n".join(product_lines))
     return title + "\n\n" + "\n\n".join(lines)
 
@@ -3916,41 +3982,13 @@ def _format_product_ads_funnel_lines(totals):
         ("Клики", "clicks", ""),
         ("CTR", "ctr", "%"),
         ("CPC", "cpc", " ₽"),
-        ("Добавили в корзину", "carts", ""),
-        ("Заказы", "orders", ""),
         ("ДРР", "drr", "%"),
-        ("Средняя позиция", "avgPosition", ""),
     ):
         value = totals.get(key)
-        if label == "Средняя позиция" and (not _is_present(value) or to_number(value) <= 0):
-            continue
         if _is_present(value):
             previous = totals.get(f"previous_{key}")
             rows.append(f"   {label}: {_format_metric_with_previous(value, previous, suffix)}")
-    clicks = to_number(totals.get("clicks"))
-    if clicks > 0 and _is_present(totals.get("orders")):
-        rows.append(
-            f"   CR клики → заказ: {_format_number(to_number(totals.get('orders')) / clicks * 100)}%"
-        )
-    carts = _ads_cart_value(totals)
-    if clicks > 0 and carts is not None:
-        rows.append(f"   CR клики → корзина: {_format_number(carts / clicks * 100)}%")
-    if carts is not None and carts > 0 and _is_present(totals.get("orders")):
-        rows.append(
-            f"   CR корзина → заказ: {_format_number(to_number(totals.get('orders')) / carts * 100)}%"
-        )
-    change_rows = []
-    for label, current_key, previous_key in (
-        ("CTR", "ctr", "previous_ctr"),
-        ("CPC", "cpc", "previous_cpc"),
-        ("ДРР", "drr", "previous_drr"),
-    ):
-        change = _format_change_percent(totals.get(current_key), totals.get(previous_key))
-        if change != "н/д":
-            change_rows.append(f"   {label}: {change}")
-    if change_rows:
-        change_rows = ["", "   Изменение рекламы:", *change_rows]
-    return ["", "   Воронка рекламы:", *rows, *change_rows] if rows else []
+    return ["", "   Рекламная воронка:", *rows] if rows else []
 
 
 def _format_product_ads_bid_change_lines(totals):
@@ -3997,41 +4035,34 @@ def _format_product_ads_bid_change_lines(totals):
 
 def _format_product_ads_diagnosis_block(diagnosis):
     totals = diagnosis.get("totals") or {}
-    confidence = diagnosis.get("confidence") or _ads_diagnosis_confidence(totals)
     source = diagnosis.get("source") or _ads_problem_source(totals, diagnosis.get("status"))
+    has_history = (totals or {}).get("ads_history_status") in {"avg3", "previous_day"}
+    reason = str(diagnosis.get("reason") or "Недостаточно данных")
+    if "Реклама" in reason and not has_history:
+        reason = "🟡 Требует проверки"
     lines = [
-        "   Источник проблемы:",
-        f"   {html.escape(str(source))}",
-        "",
-        "   Причина просадки:",
-        f"   {html.escape(str(diagnosis['reason']))}",
-        "",
-        "   Подтверждение:",
+        f"   Реклама: {html.escape(str(source))}",
+        f"   Возможная причина: {html.escape(reason)}",
     ]
-    lines.extend(f"   {html.escape(str(line))}" for line in diagnosis.get("confirmation") or [])
-    lines.extend(_format_product_ads_funnel_lines(totals))
-    lines.extend(_format_product_ads_bid_change_lines(totals))
-    lines.extend(
-        [
-            "",
-            "   Вывод:",
-            f"   {html.escape(str(diagnosis['conclusion']))}",
-        ]
+    confirmation = diagnosis.get("confirmation") or []
+    if not has_history:
+        confirmation = ["Реклама: данных для сравнения недостаточно"]
+    lines.append(
+        "   Подтверждение: "
+        + html.escape(_multi_first_sentence("; ".join(str(line) for line in confirmation), 160))
     )
+    lines.extend(_format_product_ads_funnel_lines(totals))
     return "\n".join(lines)
 
 def _build_product_ads_breakdown(
     product, traffic_dynamic, orders_dynamic, summary_stats, open_count=None
 ):
-    no_data_block = _format_product_ads_diagnosis_block(
-        _ads_product_diagnosis(None, orders_dynamic=orders_dynamic)
-    )
     if _ads_rows_count(summary_stats) == 0:
-        return no_data_block
+        return ""
 
     totals = _product_ads_totals(product, summary_stats)
     if totals is None:
-        return no_data_block
+        return ""
 
     current_open_count = _product_ads_open_count(product, open_count)
     ads_clicks = totals.get("clicks")
@@ -4050,9 +4081,7 @@ def _build_product_ads_breakdown(
     )
 
     if _ads_fallback_data_is_stale(totals, summary_stats):
-        return _format_product_ads_diagnosis_block(
-            _ads_product_diagnosis(None, orders_dynamic=orders_dynamic)
-        )
+        return ""
 
     ads_bid_history_ready = _ads_bid_history_ready(summary_stats)
     totals["adsBidHistoryReady"] = ads_bid_history_ready
@@ -4067,6 +4096,13 @@ def _build_product_ads_breakdown(
     diagnosis["totals"] = totals
     diagnosis.setdefault("confidence", _ads_diagnosis_confidence(totals))
     diagnosis.setdefault("source", _ads_problem_source(totals, diagnosis.get("status"), ads_traffic_share))
+    ads_summary = (summary_stats or {}).get("adsSummary") or {}
+    if (
+        ads_summary.get("adsCoverageConfidence") == "LOW"
+        or (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
+    ):
+        diagnosis["reason"] = "🟡 реклама требует проверки"
+        diagnosis["source"] = "🟡 Возможная причина: реклама требует проверки"
     bid_change = _product_bid_change(totals) if totals.get("adsBidHistoryReady") else None
     if bid_change:
         diagnosis["conclusion"] = _bid_impact_conclusion(
@@ -5175,7 +5211,6 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     ]
     main_records = critical_priority_records or critical_factual_records
     problem_products = _group_problems_by_product(main_records)
-    trust_score = _report_trust_score(records)
     below_fact_count = len(
         {
             _problem_group_key(record)
@@ -5190,15 +5225,9 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     )
     top_drop_products = _group_funnel_top_drop_products(records)
     top_drops_block = _build_top_drops_block(top_drop_products, summary_stats)
-    top_drop_keys = (
-        {_problem_group_key(product) for product in top_drop_products[:3]}
-        if top_drops_block
-        else set()
-    )
     message_parts = [
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
-        f"Надежность оценки: {html.escape(_format_report_trust_score(trust_score))}",
         below_fact_line,
         _build_low_priority_signals_block(records),
         top_drops_block,
@@ -5206,6 +5235,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     ]
 
     if not main_records:
+        message_parts.append("Остальные проблемы доступны в XLSX / Web Dashboard позже.")
         message_parts.extend(
             [
                 _build_perfume_intelligence_block(summary_stats),
@@ -5216,17 +5246,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
             "\n\n".join(part for part in message_parts if part)
         )
 
-    message_parts.extend(
-        [
-            _build_executive_insight(
-                problem_products, root_cause_insights, summary_stats
-            ),
-            _build_executive_top_problems(
-                problem_products, root_cause_insights, top_drop_keys
-            ),
-            _build_executive_ads_block(priority_records, summary_stats),
-        ]
-    )
+    message_parts.append("Остальные проблемы доступны в XLSX / Web Dashboard позже.")
 
     return _trim_telegram_message("\n\n".join(part for part in message_parts if part))
 
@@ -5281,6 +5301,16 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
         _log_telegram_business_ranking(problems)
     url = TELEGRAM_API_URL.format(token=token)
     message_parts = split_telegram_message(sanitize_telegram_text(message))
+    if len(message_parts) > 3:
+        max_length = 3500 * 3 - 200
+        message = _trim_telegram_message(
+            message,
+            max_length=max_length,
+        )
+        footer = "Остальные проблемы доступны в XLSX / Web Dashboard позже."
+        if footer not in message:
+            message = message.rstrip() + "\n\n" + footer
+        message_parts = split_telegram_message(sanitize_telegram_text(message))[:3]
     total_parts = len(message_parts)
 
     for part_index, message_part in enumerate(message_parts, start=1):
