@@ -2,7 +2,7 @@ name: WB Morning Brief MVP
 
 on:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "5 6 * * *"
   workflow_dispatch:
 
 jobs:
@@ -24,6 +24,7 @@ jobs:
       - name: Run WB Morning Brief
         env:
           WB_API_TOKEN_TEST: ${{ secrets.WB_API_TOKEN_TEST }}
+          WB_API_TOKEN_MILOVA: ${{ secrets.WB_API_TOKEN_MILOVA }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -32,7 +33,9 @@ jobs:
           echo "Telegram token configured: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}"
           echo "Telegram chat configured: ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
           echo "Supabase configured: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}"
+          echo "Milova token configured: ${{ secrets.WB_API_TOKEN_MILOVA != '' }}"
           python -m app.main
+
       - name: Upload XLSX reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -40,4 +43,3 @@ jobs:
           name: xlsx-reports
           path: reports/*.xlsx
           if-no-files-found: warn
-
