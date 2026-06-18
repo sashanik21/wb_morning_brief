@@ -27,7 +27,7 @@ TELEGRAM_TIMEOUT_SECONDS = 15
 TELEGRAM_TOP_LIMIT = 5
 FORECAST_ALERT_LIMIT = 3
 LOW_PRIORITY_SIGNAL_THRESHOLD = 10
-EXECUTIVE_PROBLEMS_LIMIT = 3
+EXECUTIVE_PROBLEMS_LIMIT = 2
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 EXECUTIVE_ACTIONS_LIMIT = 5
 
@@ -59,8 +59,23 @@ FACTUAL_EXECUTIVE_METRICS = {
     "addToCartPercent",
     "cartToOrderPercent",
 }
-FACTUAL_EXECUTIVE_TYPES = {"sellableOutOfStock"}
+FACTUAL_EXECUTIVE_TYPES = set()
 FORECAST_SIGNAL_TYPES = {"STOCK_FORECAST", "ADS_FORECAST", "ORGANIC_FORECAST"}
+TELEGRAM_HIDDEN_STOCK_FIELDS = {
+    "sellableOutOfStock",
+    "realSellableStock",
+    "wbStocks",
+    "warehouseStockZero",
+    "stocks",
+    "stockState",
+    "daysUntilOOS",
+    "forecastType",
+    "forecastMessage",
+    "OOS",
+    "returnFlow",
+    "acceptanceDelay",
+    "transitDelay",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -150,6 +165,29 @@ def _absolute_metric_drop(problem):
 def _is_ads_problem(record):
     problem_type = str(record.get("problemType") or "")
     return record.get("problemCategory") == "ads" or problem_type.startswith("ads_")
+
+
+def _is_telegram_hidden_stock_problem(record):
+    if not isinstance(record, dict):
+        return False
+    values = {
+        str(record.get("metric") or ""),
+        str(record.get("problemType") or ""),
+        str(record.get("problemCategory") or ""),
+        str(record.get("forecastType") or ""),
+        str(record.get("rootCause") or ""),
+        str(record.get("declineSource") or record.get("decline_source") or ""),
+    }
+    if values & TELEGRAM_HIDDEN_STOCK_FIELDS:
+        return True
+    if str(record.get("problemCategory") or "").lower() in {"stock", "stocks"}:
+        return True
+    if str(record.get("declineSource") or record.get("decline_source") or "") == "STOCK_DECLINE":
+        return True
+    return any(record.get(field) not in (None, "") for field in (
+        "daysUntilOOS", "forecastMessage", "stockState", "acceptanceDelay",
+        "transitDelay", "returnFlow", "warehouseStockZero",
+    ))
 
 
 def _is_funnel_problem(record):
@@ -412,8 +450,6 @@ def _telegram_html_to_plain_text(text):
         url = match.group(1)
         label = html.unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
         url = html.unescape(url).strip()
-        if label and url:
-            return f"{label} ({url})"
         return label or url
 
     text = re.sub(
@@ -445,10 +481,11 @@ def _post_telegram_message(url, payload):
         timeout=TELEGRAM_TIMEOUT_SECONDS,
     )
     if payload.get("parse_mode") and _is_telegram_parse_entities_error(response):
-        logger.warning("Telegram parse_mode failed, retrying as plain text")
-        print("Telegram parse_mode failed, retrying as plain text")
+        logger.warning("Telegram HTML parse failed, retrying as plain text")
+        print("Telegram HTML parse failed, retrying as plain text")
         plain_payload = dict(payload)
         plain_payload.pop("parse_mode", None)
+        plain_payload["text"] = _telegram_html_to_plain_text(plain_payload.get("text"))
         return requests.post(
             url,
             json=plain_payload,
@@ -545,6 +582,8 @@ def _format_previous_value(value, suffix=""):
 
 
 def _format_metric_with_previous(current, previous, suffix=""):
+    if not _is_present(previous) or to_number(previous) == 0:
+        return f"{_format_number(current)}{suffix}"
     return f"{_format_number(current)}{suffix} (было {_format_previous_value(previous, suffix)})"
 
 
@@ -2213,7 +2252,7 @@ def _ads_bid_delta_rows(summary_stats):
 def _ads_bid_change_summary_lines(summary_stats):
     rows = _ads_bid_delta_rows(summary_stats)
     if not rows:
-        return ["Изменения ставок:", "данных по ставкам нет"]
+        return []
 
     unique_dates_count = None
     analytics = None
@@ -2226,7 +2265,7 @@ def _ads_bid_change_summary_lines(summary_stats):
             break
 
     if unique_dates_count is not None and unique_dates_count <= 1:
-        return ["Изменения ставок:", "История ставок ещё накапливается."]
+        return []
 
     if analytics:
         up = to_number(analytics.get("campaigns_raised"))
@@ -2258,7 +2297,7 @@ def _ads_bid_change_summary_lines(summary_stats):
                 same += 1
 
     if up + down + same == 0:
-        return ["Изменения ставок:", "История ставок ещё накапливается."]
+        return []
 
     return [
         "Изменения ставок:",
@@ -3900,13 +3939,17 @@ def _format_product_ads_funnel_lines(totals):
         rows.append(
             f"   CR корзина → заказ: {_format_number(to_number(totals.get('orders')) / carts * 100)}%"
         )
-    change_rows = [
-        "",
-        "   Изменение рекламы:",
-        f"   CTR: {_format_change_percent(totals.get('ctr'), totals.get('previous_ctr'))}",
-        f"   CPC: {_format_change_percent(totals.get('cpc'), totals.get('previous_cpc'))}",
-        f"   ДРР: {_format_change_percent(totals.get('drr'), totals.get('previous_drr'))}",
-    ]
+    change_rows = []
+    for label, current_key, previous_key in (
+        ("CTR", "ctr", "previous_ctr"),
+        ("CPC", "cpc", "previous_cpc"),
+        ("ДРР", "drr", "previous_drr"),
+    ):
+        change = _format_change_percent(totals.get(current_key), totals.get(previous_key))
+        if change != "н/д":
+            change_rows.append(f"   {label}: {change}")
+    if change_rows:
+        change_rows = ["", "   Изменение рекламы:", *change_rows]
     return ["", "   Воронка рекламы:", *rows, *change_rows] if rows else []
 
 
@@ -3946,10 +3989,10 @@ def _format_product_ads_bid_change_lines(totals):
         )
     if not lines:
         return []
-    extra = len(lines) - 3
-    output = lines[:3]
+    extra = len(lines) - 2
+    output = lines[:2]
     if extra > 0:
-        output.append(f"   и ещё {_format_number(extra)} изменений ставок")
+        output.append(f"   и ещё {_format_number(extra)} изменений")
     return ["", "   Изменение ставки:", *output]
 
 def _format_product_ads_diagnosis_block(diagnosis):
@@ -3957,33 +4000,22 @@ def _format_product_ads_diagnosis_block(diagnosis):
     confidence = diagnosis.get("confidence") or _ads_diagnosis_confidence(totals)
     source = diagnosis.get("source") or _ads_problem_source(totals, diagnosis.get("status"))
     lines = [
-        "   📢 <b>Рекламный диагноз</b>",
-        "",
         "   Источник проблемы:",
-        f"   {source}",
-        "",
-        "   Надёжность диагноза:",
-        f"   {confidence}",
-        "",
-        "   Сравнение рекламы:",
-        f"   {_ads_comparison_label(totals)}",
+        f"   {html.escape(str(source))}",
         "",
         "   Причина просадки:",
-        f"   {diagnosis['reason']}",
+        f"   {html.escape(str(diagnosis['reason']))}",
         "",
         "   Подтверждение:",
     ]
-    lines.extend(f"   {line}" for line in diagnosis.get("confirmation") or [])
+    lines.extend(f"   {html.escape(str(line))}" for line in diagnosis.get("confirmation") or [])
     lines.extend(_format_product_ads_funnel_lines(totals))
-    if totals.get("adsBidHistoryReady"):
-        lines.extend(_format_product_ads_bid_change_lines(totals))
-    else:
-        lines.extend(["", "   Изменение ставки:", "   История ставок ещё накапливается."])
+    lines.extend(_format_product_ads_bid_change_lines(totals))
     lines.extend(
         [
             "",
             "   Вывод:",
-            f"   {diagnosis['conclusion']}",
+            f"   {html.escape(str(diagnosis['conclusion']))}",
         ]
     )
     return "\n".join(lines)
@@ -4924,7 +4956,6 @@ def _seller_result_has_zero_stocks(result):
 def _seller_result_is_critical(result):
     return (
         to_number(result.get("critical_problems_count") or result.get("criticalProblemsCount")) > 0
-        or _seller_result_has_zero_stocks(result)
         or _seller_result_processing_status(result) == "failed"
     )
 
@@ -4968,7 +4999,8 @@ def _build_multi_seller_brief(
     )
     by_seller = {name: [] for name in seller_names}
     for record in records:
-        by_seller.setdefault(_multi_seller_name(record), []).append(record)
+        if not _is_telegram_hidden_stock_problem(record):
+            by_seller.setdefault(_multi_seller_name(record), []).append(record)
 
     if seller_results:
         critical_sellers = sum(1 for result in seller_results if _seller_result_is_critical(result))
@@ -4998,8 +5030,9 @@ def _build_multi_seller_brief(
         )
         ok_sellers = max(sellers_total - critical_sellers - warning_sellers, 0)
 
+    telegram_records = [record for record in records if not _is_telegram_hidden_stock_problem(record)]
     top_records = sorted(
-        records, key=lambda record: _multi_problem_score(record), reverse=True
+        telegram_records, key=lambda record: _multi_problem_score(record), reverse=True
     )[:top_limit]
     lines = [
         "🌅 <b>WB Morning Brief</b>",
@@ -5112,28 +5145,6 @@ def _build_multi_seller_brief(
             if warning_lines:
                 lines.extend(["", *warning_lines])
 
-    stock_records = [
-        record
-        for record in records
-        if record.get("problemCategory") == "stocks"
-        or record.get("metric") in ("wbStocks", "realSellableStock", "stocks")
-        or record.get("daysUntilOOS") not in (None, "")
-        or str(record.get("forecastType") or "").upper() == "OOS"
-    ]
-    if include_stocks:
-        zero = len({_problem_group_key(record) for record in stock_records if _is_confirmed_zero_stock(record)})
-        risk = len({
-            _problem_group_key(record)
-            for record in stock_records
-            if not _is_confirmed_zero_stock(record)
-            and (record.get("daysUntilOOS") not in (None, "") or str(record.get("forecastType") or "").upper() == "OOS")
-        })
-        total_sku = to_number((summary_stats or {}).get("totalSkuFromApi") or (summary_stats or {}).get("totalSku"))
-        matched = to_number(_supply_pipeline_from_summary(summary_stats).get("matched"))
-        no_data = max(int(total_sku - matched), 0) if total_sku else len({_problem_group_key(record) for record in stock_records if not _has_supply_data(record)})
-        if stock_records or no_data:
-            lines.extend(["", "📦 <b>Остатки</b>", "", f"🔴 Подтверждённые нулевые остатки: {_format_number(zero)} товаров", f"🟡 Нет данных по остаткам: {_format_number(no_data)} товаров", f"🟡 Риск OOS: {_format_number(risk)} товаров"])
-
     first_sellers = sorted(
         ((seller, seller_records) for seller, seller_records in by_seller.items() if seller_records),
         key=lambda item: sum(_business_impact_score(record) for record in item[1]),
@@ -5145,7 +5156,6 @@ def _build_multi_seller_brief(
             critical_count = sum(1 for record in seller_records if _multi_is_critical(record))
             revenue_drop = sum(_absolute_metric_drop(record) for record in seller_records if record.get("metric") in ("orderSum", "revenue"))
             ads_attention = any(_is_ads_problem(record) for record in seller_records)
-            stock_risk = any(record in stock_records for record in seller_records)
             reason_parts = []
             if critical_count:
                 reason_parts.append(f"{_format_number(critical_count)} критичных товаров")
@@ -5153,8 +5163,6 @@ def _build_multi_seller_brief(
                 reason_parts.append(f"просадка выручки {_format_number(revenue_drop)} ₽")
             if ads_attention:
                 reason_parts.append("реклама требует проверки")
-            if stock_risk:
-                reason_parts.append("риск остатков")
             lines.extend([f"{index}. {html.escape(seller)}", f"   Причина: {', '.join(reason_parts) or 'есть значимые сигналы'}", ""])
         if lines[-1] == "":
             lines.pop()
@@ -5167,7 +5175,7 @@ def _build_multi_seller_brief(
 
 
 def _build_multi_seller_brief_limited(problems, summary_stats=None, max_length=3500):
-    for top_limit, include_ads, include_stocks in ((5, True, True), (3, True, True), (3, False, True), (3, False, False)):
+    for top_limit, include_ads, include_stocks in ((5, True, False), (3, True, False), (3, False, False)):
         message = _build_multi_seller_brief(problems, summary_stats, top_limit=top_limit, include_ads=include_ads, include_stocks=include_stocks)
         if len(sanitize_telegram_text(message)) <= max_length:
             return message
@@ -5175,7 +5183,11 @@ def _build_multi_seller_brief_limited(problems, summary_stats=None, max_length=3
 
 
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
-    records = _problems_to_records(problems)
+    records = [
+        record
+        for record in _problems_to_records(problems)
+        if not _is_telegram_hidden_stock_problem(record)
+    ]
     has_positive_funnel_problem = any(
         _is_funnel_problem(record) and _business_impact_score(record) > 0
         for record in records
@@ -5310,13 +5322,14 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
         )
         _log_telegram_business_ranking(problems)
     url = TELEGRAM_API_URL.format(token=token)
-    message_parts = split_telegram_message(_telegram_html_to_plain_text(message))
+    message_parts = split_telegram_message(sanitize_telegram_text(message))
     total_parts = len(message_parts)
 
     for part_index, message_part in enumerate(message_parts, start=1):
         payload = {
             "chat_id": chat_id,
             "text": message_part,
+            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
 
