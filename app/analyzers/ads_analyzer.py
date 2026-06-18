@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -312,16 +313,17 @@ def aggregate_ads_rows(ads_rows):
 
     raw_count = len(ads_rows or [])
     aggregated_count = len(aggregated_rows)
-    print("ADS DEDUPLICATION:")
-    print(f"raw rows: {raw_count}")
-    print(f"aggregated rows: {aggregated_count}")
-    print(f"duplicates merged: {raw_count - aggregated_count}")
+    print(
+        "ADS DEDUP: "
+        f"raw={raw_count} aggregated={aggregated_count} "
+        f"duplicates={raw_count - aggregated_count}"
+    )
     top_row = max(
         _aggregate_ads_rows_by_nm(aggregated_rows),
         key=lambda row: _to_number(row.get("spend")),
         default={},
     )
-    if top_row:
+    if top_row and os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug":
         print("ADS PRODUCT CHECK:")
         print(f"nmId: {top_row.get('nmId')}")
         print(f"impressions: {top_row.get('impressions')}")
@@ -410,15 +412,17 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
             enriched["positionDelta"] = ""
         enriched_rows.append(enriched)
 
-    print("ADS HISTORY BASELINE:")
-    print("source: supabase")
-    print(f"products with avg3 baseline: {baseline_counts['avg3']}")
-    print(f"products with previous day baseline: {baseline_counts['previous_day']}")
-    print(f"products without history: {baseline_counts['insufficient']}")
-    print("ADS HISTORY MERGE:")
-    print(f"ads rows current: {len(ads_rows or [])}")
-    print(f"ads rows enriched: {len(enriched_rows)}")
-    print("history source: supabase")
+    print(
+        "ADS HISTORY: "
+        f"avg3={baseline_counts['avg3']} "
+        f"previous_day={baseline_counts['previous_day']} "
+        f"without_history={baseline_counts['insufficient']}"
+    )
+    if os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug":
+        print("ADS HISTORY MERGE:")
+        print(f"ads rows current: {len(ads_rows or [])}")
+        print(f"ads rows enriched: {len(enriched_rows)}")
+        print("history source: supabase")
     if storage and hasattr(storage, "save_daily_ads_metrics"):
         storage.save_daily_ads_metrics(enriched_rows)
     return enriched_rows

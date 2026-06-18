@@ -1,3 +1,4 @@
+import os
 import re
 import unicodedata
 from collections import Counter
@@ -158,18 +159,20 @@ def attribute_ads_rows(ads_rows, products):
     matched_count = sum(
         1 for row in matched_rows if row.get("matchStatus") == "MATCHED"
     )
-    print("ADS MATCHING SUMMARY:")
-    print(f"api ads rows: {len(ads_rows or [])}")
-    print(f"matched: {matched_count}")
-    print(f"unmatched: {len(ads_rows or []) - matched_count}")
-    print("MATCH STRATEGIES:")
-    for name in (
-        "nmId",
-        "vendorCode",
-        "normalized vendorCode",
-        "campaign title vendorCode",
-        "fuzzy title",
-        "failed",
-    ):
-        print(f"{name}: {strategy_counts.get(name, 0)}")
+    print(
+        "ADS MATCHING: "
+        f"rows={len(ads_rows or [])} matched={matched_count} "
+        f"unmatched={len(ads_rows or []) - matched_count}"
+    )
+    if os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug":
+        print("MATCH STRATEGIES:")
+        for name in (
+            "nmId",
+            "vendorCode",
+            "normalized vendorCode",
+            "campaign title vendorCode",
+            "fuzzy title",
+            "failed",
+        ):
+            print(f"{name}: {strategy_counts.get(name, 0)}")
     return matched_rows, debug_rows

@@ -32,6 +32,17 @@ TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 EXECUTIVE_ACTIONS_LIMIT = 5
 
 
+def _is_debug_log():
+    return os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug"
+
+
+def _diagnostic_log(message):
+    logger.info(message)
+    if _is_debug_log():
+        print(message)
+
+
+
 TOP_DROP_METRICS = (
     ("orderCount", "Заказы"),
     ("orderSum", "Выручка"),
@@ -3049,16 +3060,22 @@ def _log_telegram_top_drops(raw_products, selected_products):
     selected_titles = [
         str(product.get("title") or "Без названия") for product, *_ in selected_products
     ]
-    diagnostic = (
-        "TELEGRAM TOP DROPS SOURCE: FUNNEL_PROBLEMS\n"
-        "TELEGRAM TOP DROPS:\n"
-        f"raw problems: {len(raw_problems)}\n"
-        f"unique nmIds: {unique_nm_ids}\n"
-        f"selected nmIds: {selected_nm_ids}\n"
-        f"selected titles: {selected_titles}"
-    )
-    logger.info(diagnostic)
-    print(diagnostic)
+    if _is_debug_log():
+        diagnostic = (
+            "TELEGRAM TOP DROPS SOURCE: FUNNEL_PROBLEMS\n"
+            "TELEGRAM TOP DROPS:\n"
+            f"raw problems: {len(raw_problems)}\n"
+            f"unique nmIds: {unique_nm_ids}\n"
+            f"selected nmIds: {selected_nm_ids}\n"
+            f"selected titles: {selected_titles}"
+        )
+        _diagnostic_log(diagnostic)
+    else:
+        print(
+            "TELEGRAM TOP DROPS: "
+            f"raw={len(raw_problems)} unique={len(set(unique_nm_ids))} "
+            f"selected={len(selected_nm_ids)}"
+        )
 
 
 def _log_telegram_top_drops_grouping(stage, problems_or_products):
@@ -3084,8 +3101,7 @@ def _log_telegram_top_drops_grouping(stage, problems_or_products):
             f"unique nmIds: {nm_ids}\n"
             f"unique titles: {titles}"
         )
-    logger.info(diagnostic)
-    print(diagnostic)
+    _diagnostic_log(diagnostic)
 
 
 def _group_funnel_top_drop_products(records):
@@ -3240,8 +3256,7 @@ def _log_telegram_ads_product_breakdown(products, summary_stats):
         f"with ads data: {with_ads}\n"
         f"without ads data: {without_ads}"
     )
-    logger.info(diagnostic)
-    print(diagnostic)
+    _diagnostic_log(diagnostic)
 
 
 def _normalize_ads_nm_id(value):
@@ -5045,17 +5060,27 @@ def _log_telegram_business_ranking(problems):
         and _is_factual_executive_problem(record)
         and _is_telegram_critical_block_problem(record)
     ]
-    top_problem = log_business_ranking(critical_records, source="telegram")
-    diagnostic = (
-        "TELEGRAM BUSINESS RANKING:\n"
-        f"top nmId: {top_problem.get('nmId') or 'n/a'}\n"
-        f"top title: {top_problem.get('title') or 'n/a'}\n"
-        f"businessImpactScore: {top_problem.get('businessImpactScore') or 0}\n"
-        f"isBelowAbcThreshold: {top_problem.get('isBelowAbcThreshold') or False}\n"
-        f"metric: {top_problem.get('metric') or 'n/a'}"
+    top_problem = log_business_ranking(
+        critical_records,
+        source="telegram" if _is_debug_log() else "telegram_summary",
     )
-    logger.info(diagnostic)
-    print(diagnostic)
+    if _is_debug_log():
+        diagnostic = (
+            "TELEGRAM BUSINESS RANKING:\n"
+            f"top nmId: {top_problem.get('nmId') or 'n/a'}\n"
+            f"top title: {top_problem.get('title') or 'n/a'}\n"
+            f"businessImpactScore: {top_problem.get('businessImpactScore') or 0}\n"
+            f"isBelowAbcThreshold: {top_problem.get('isBelowAbcThreshold') or False}\n"
+            f"metric: {top_problem.get('metric') or 'n/a'}"
+        )
+        _diagnostic_log(diagnostic)
+    else:
+        print(
+            "BUSINESS RANKING: "
+            f"top_nmId={top_problem.get('nmId') or 'n/a'} "
+            f"score={top_problem.get('businessImpactScore') or 0} "
+            f"metric={top_problem.get('metric') or 'n/a'}"
+        )
 
 
 def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insights=None):

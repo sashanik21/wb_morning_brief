@@ -1,3 +1,4 @@
+import os
 from datetime import date
 from pathlib import Path
 
@@ -414,7 +415,7 @@ def print_api_coverage_summary(report):
     missing_supplies_count = len(report["missing_supplies"])
 
     print(
-        "API COVERAGE SUMMARY: "
+        "API COVERAGE: "
         f"cards={cards_count} "
         f"funnel={funnel_count} "
         f"ads={ads_count} "
@@ -423,21 +424,17 @@ def print_api_coverage_summary(report):
         f"telegram_top={telegram_top_count}"
     )
 
-    print(
-        "ADS COVERAGE: "
-        f"campaigns={report.get('adsCampaignCount', 0)} "
-        f"ads_rows={report.get('adsRowsCount', 0)} "
-        f"unique_nmIds={report.get('adsUniqueNmids', ads_count)}"
-    )
+    print(f"MISSING DATA: ads={missing_ads_count} supplies={missing_supplies_count}")
 
-    print(
-        "MISSING DATA SUMMARY: "
-        f"ads_missing={missing_ads_count} "
-        f"supplies_missing={missing_supplies_count}"
-    )
-
-    _print_sample_rows("ADS MISSING SAMPLE:", report["missing_ads"])
-    _print_sample_rows("SUPPLIES MISSING SAMPLE:", report["missing_supplies"])
+    if os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug":
+        print(
+            "ADS COVERAGE: "
+            f"campaigns={report.get('adsCampaignCount', 0)} "
+            f"ads_rows={report.get('adsRowsCount', 0)} "
+            f"unique_nmIds={report.get('adsUniqueNmids', ads_count)}"
+        )
+        _print_sample_rows("ADS MISSING SAMPLE:", report["missing_ads"])
+        _print_sample_rows("SUPPLIES MISSING SAMPLE:", report["missing_supplies"])
 
 
 def coverage_summary_line(report):
