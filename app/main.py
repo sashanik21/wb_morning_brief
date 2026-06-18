@@ -1022,6 +1022,97 @@ def _process_seller(storage, seller, report_date):
     }
 
 
+def _is_business_critical_seller(result):
+    if not isinstance(result, dict):
+        return False
+
+    if result.get("processing_status") != "success":
+        return False
+
+    return any(
+        _to_float(result.get(field)) > 0
+        for field in (
+            "critical_problems_count",
+            "ads_red_count",
+            "oos_zero_count",
+            "oos_risk_count",
+            "zero_stocks_count",
+        )
+    )
+
+
+def _seller_detail_sort_key(result):
+    return (
+        _to_float(result.get("critical_problems_count")),
+        _to_float(result.get("potentialRevenueLoss")),
+        _to_float(result.get("lostOrderSum")),
+        _to_float(result.get("ads_red_count")),
+        _to_float(result.get("oos_zero_count")),
+        _to_float(result.get("oos_risk_count")),
+    )
+
+
+def _filter_by_seller_name(records, seller_name):
+    return [
+        record
+        for record in records or []
+        if isinstance(record, dict)
+        and (record.get("sellerName") or record.get("seller_name")) == seller_name
+    ]
+
+
+def _send_critical_seller_details(
+    seller_results,
+    seller_summary_stats_by_name,
+    combined_problems,
+    combined_root_cause_insights,
+):
+    critical_sellers = [
+        result for result in seller_results if _is_business_critical_seller(result)
+    ]
+
+    selected_sellers = sorted(
+        critical_sellers,
+        key=_seller_detail_sort_key,
+        reverse=True,
+    )[:3]
+
+    print("TELEGRAM MULTI SELLER DETAILS:")
+    print(f"critical sellers total: {len(critical_sellers)}")
+    print(f"details selected: {len(selected_sellers)}")
+    print(
+        "selected sellers: "
+        + ", ".join(result.get("seller_name", "") for result in selected_sellers)
+    )
+
+    for result in selected_sellers:
+        seller_name = result.get("seller_name", "")
+
+        seller_problems = _filter_by_seller_name(combined_problems, seller_name)
+        seller_root_causes = _filter_by_seller_name(
+            combined_root_cause_insights,
+            seller_name,
+        )
+
+        seller_summary_stats = dict(seller_summary_stats_by_name.get(seller_name) or {})
+        seller_summary_stats["sellerName"] = seller_name
+        seller_summary_stats["sellerResults"] = [result]
+        seller_summary_stats["activeSellersCount"] = 1
+        seller_summary_stats["sellersTotal"] = 1
+        seller_summary_stats["sellerNames"] = [seller_name]
+
+        print("TELEGRAM SELLER DETAIL:")
+        print(f"seller: {seller_name}")
+        print(f"problems: {len(seller_problems)}")
+        print(f"root causes: {len(seller_root_causes)}")
+
+        send_telegram_morning_brief(
+            seller_problems,
+            summary_stats=seller_summary_stats,
+            root_cause_insights=seller_root_causes,
+        )
+
+
 def main():
     print("MAIN VERSION: TELEGRAM ENABLED")
     print("=" * 50)
@@ -1040,6 +1131,7 @@ def main():
     report_date = date.today() - timedelta(days=1)
 
     seller_results = []
+    seller_summary_stats_by_name = {}
     combined_problems = []
     combined_root_cause_insights = []
     combined_tasks = []
@@ -1047,12 +1139,17 @@ def main():
 
     for seller in active_sellers:
         processed = _process_seller(storage, seller, report_date)
-        seller_results.append(processed["seller_result"])
+
+        seller_result = processed["seller_result"]
+        seller_name = seller_result.get("seller_name", "")
+
+        seller_results.append(seller_result)
         combined_problems.extend(processed.get("all_problems") or [])
         combined_root_cause_insights.extend(processed.get("root_cause_insights") or [])
         combined_tasks.extend(processed.get("tasks") or [])
 
         if processed.get("summary_stats"):
+            seller_summary_stats_by_name[seller_name] = processed["summary_stats"]
             summary_stats = processed["summary_stats"]
 
     _print_multi_seller_processing(active_sellers, seller_results)
@@ -1069,12 +1166,6 @@ def main():
         summary_stats["totalSkuFromApi"] = sum(
             _to_float(result.get("total_sku")) for result in seller_results
         )
-        summary_stats["adsRows"] = [
-            row
-            for result in seller_results
-            for row in result.get("ads_summary", {}).get("rows", [])
-            if isinstance(row, dict)
-        ]
 
     if summary_stats:
         _print_summary_stats(summary_stats)
@@ -1092,6 +1183,15 @@ def main():
         root_cause_insights=combined_root_cause_insights,
     )
     print("=" * 50)
+
+    if len(active_sellers) > 1:
+        _send_critical_seller_details(
+            seller_results=seller_results,
+            seller_summary_stats_by_name=seller_summary_stats_by_name,
+            combined_problems=combined_problems,
+            combined_root_cause_insights=combined_root_cause_insights,
+        )
+        print("=" * 50)
 
     storage.create_tasks(combined_tasks)
     print("=" * 50)
