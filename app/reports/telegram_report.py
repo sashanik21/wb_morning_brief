@@ -850,20 +850,22 @@ def _has_supply_data(record):
     if record.get("hasSupplyData") is not None:
         return bool(record.get("hasSupplyData"))
     return any(_is_present(record.get(key)) for key in (
-        "readyForSaleStock", "incomingStock", "acceptanceStock", "transitStock",
-        "returningStock", "depersonalizedStock", "blockedStock",
+        "realSellableStock", "wbStocks", "mpStocks", "readyForSaleStock",
+        "incomingStock", "returningStock", "acceptanceStock", "transitStock",
+        "stockState",
     ))
 
 
 def _is_confirmed_zero_stock(record):
     if not isinstance(record, dict):
         return False
-    has_supply = _has_supply_data(record)
-    if _is_present(record.get("realSellableStock")) and to_number(record.get("realSellableStock")) == 0 and has_supply:
+    if not _has_supply_data(record):
+        return False
+    if _is_present(record.get("realSellableStock")) and to_number(record.get("realSellableStock")) == 0:
         return True
-    if _is_present(record.get("wbStocks")) and to_number(record.get("wbStocks")) == 0 and has_supply:
+    if _is_present(record.get("wbStocks")) and to_number(record.get("wbStocks")) == 0:
         return True
-    return has_supply and str(record.get("stockState") or "").upper() == "BLOCKED"
+    return str(record.get("stockState") or "").upper() == "BLOCKED"
 
 def _is_oos_blocked_problem(problem):
     if not _is_confirmed_zero_stock(problem):
