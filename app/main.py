@@ -34,6 +34,7 @@ from app.collectors.funnel import (
 )
 from app.collectors.qbiki import collect_qbiki_metrics
 from app.collectors.supplies import collect_supply_stock_metrics
+from app.config import set_wb_api_token
 from app.reports.api_coverage import (
     build_api_coverage_report,
     coverage_summary_line,
@@ -42,7 +43,6 @@ from app.reports.api_coverage import (
 )
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
 from app.reports.telegram_report import send_telegram_morning_brief
-from app.config import set_wb_api_token
 from app.storage.storage_factory import get_storage
 
 
@@ -111,13 +111,44 @@ def _extract_nm_ids(*collections):
     return nm_ids
 
 
+def _attach_seller_context(rows, seller, seller_id=None):
+    seller_name = seller.get("seller_name", "") if isinstance(seller, dict) else ""
+    current_seller_id = seller_id if seller_id is not None else _seller_id(seller)
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        row["sellerName"] = seller_name
+        row["seller_name"] = seller_name
+        row["seller_id"] = current_seller_id
+
+    return rows or []
+
+
+def _print_problem_owner_check(seller_name, problems):
+    owners = sorted(
+        {
+            str(problem.get("sellerName") or problem.get("seller_name") or "")
+            for problem in problems or []
+            if isinstance(problem, dict)
+        }
+    )
+    print("SELLER PROBLEMS OWNER CHECK:")
+    print(f"seller: {seller_name}")
+    print(f"problems: {len(problems or [])}")
+    print(f"unique sellerNames: {', '.join(owners) if owners else ''}")
+
+
 def _ads_history_row_to_report_row(row, seller_id=None):
     if not isinstance(row, dict):
         return {}
+
     clicks = _to_float(row.get("clicks"))
     impressions = _to_float(row.get("impressions"))
     spend = _to_float(row.get("spend"))
     orders_sum = _to_float(row.get("ordersSum") or row.get("revenue"))
+
     return {
         "date": row.get("date") or row.get("report_date") or row.get("reportDate"),
         "selectedPeriod": row.get("date")
@@ -164,7 +195,9 @@ def _ads_history_row_to_report_row(row, seller_id=None):
 def _load_ads_history_fallback(storage, seller_id, nm_ids):
     if not (storage and hasattr(storage, "get_latest_ads_metrics_by_nm_ids")):
         return []
+
     rows = storage.get_latest_ads_metrics_by_nm_ids(seller_id, nm_ids)
+
     return [
         _ads_history_row_to_report_row(row, seller_id=seller_id) for row in rows or []
     ]
@@ -260,10 +293,10 @@ def _build_summary_stats(
 
 def _print_summary_stats(summary_stats):
     print("MORNING BRIEF SUMMARY:")
-    print(f"totalSkuFromApi: {summary_stats['totalSkuFromApi']}")
-    print(f"skuInProducts: {summary_stats['skuInProducts']}")
-    print(f"skuNotInProducts: {summary_stats['skuNotInProducts']}")
-    print(f"belowAbcThresholdProblems: {summary_stats['belowAbcThresholdProblems']}")
+    print(f"totalSkuFromApi: {summary_stats.get('totalSkuFromApi')}")
+    print(f"skuInProducts: {summary_stats.get('skuInProducts')}")
+    print(f"skuNotInProducts: {summary_stats.get('skuNotInProducts')}")
+    print(f"belowAbcThresholdProblems: {summary_stats.get('belowAbcThresholdProblems')}")
 
 
 def _qbiki_source_status():
@@ -278,40 +311,51 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
     if not (storage and hasattr(storage, "get_latest_ads_bid_history_by_nm_ids")):
         print("ads bid changes found: 0")
         return ads_rows
+
     nm_ids = [row.get("nmId") or row.get("nm_id") for row in ads_rows or []]
     unique_dates_count = None
+
     if hasattr(storage, "get_ads_bid_history_unique_dates_count"):
         unique_dates_count = storage.get_ads_bid_history_unique_dates_count(nm_ids)
+
     bid_rows = storage.get_latest_ads_bid_history_by_nm_ids(
         nm_ids, report_date=report_date
     )
     bid_history_ready = unique_dates_count is not None and unique_dates_count >= 2
+
     by_nm = {}
     for row in bid_rows or []:
         nm_id = str(row.get("nm_id") or row.get("nmId") or "")
         if not nm_id:
             continue
         by_nm.setdefault(nm_id, []).append(row)
+
     changed = 0
     raised = lowered = unchanged = without_history = 0
+
     for bid_row in bid_rows or []:
         if not bid_history_ready or not bid_row.get("has_previous_bid_history"):
             without_history += 1
             continue
+
         search_delta = float(bid_row.get("search_bid_delta") or 0)
         recommendations_delta = float(bid_row.get("recommendations_bid_delta") or 0)
         max_delta = max(search_delta, recommendations_delta, key=abs)
+
         if max_delta > 0:
             raised += 1
         elif max_delta < 0:
             lowered += 1
         else:
             unchanged += 1
+
     for row in ads_rows or []:
         nm_id = str(row.get("nmId") or row.get("nm_id") or "")
         matches = by_nm.get(nm_id) or []
+
         if not matches:
             continue
+
         row["bidChanges"] = matches
         row["adsBidHistoryUniqueDates"] = unique_dates_count
         row["adsBidHistoryReady"] = bid_history_ready
@@ -324,8 +368,10 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
             "unique_dates_count": unique_dates_count,
             "bid_history_ready": bid_history_ready,
         }
+
         if not bid_history_ready:
             continue
+
         significant = max(
             matches,
             key=lambda item: max(
@@ -333,6 +379,7 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
                 abs(float(item.get("recommendations_bid_delta") or 0)),
             ),
         )
+
         for source, target in (
             ("campaign_id", "bidCampaignId"),
             ("bid_type", "bidType"),
@@ -346,10 +393,12 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
         ):
             if significant.get(source) not in (None, ""):
                 row[target] = significant.get(source)
+
         if row.get("searchBidDelta") not in (None, "", 0) or row.get(
             "recommendationsBidDelta"
         ) not in (None, "", 0):
             changed += 1
+
     print(f"ads bid changes found: {changed}")
     print("ADS BID ANALYTICS:")
     print(f"campaigns with history: {raised + lowered + unchanged}")
@@ -357,7 +406,9 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
     print(f"lowered: {lowered}")
     print(f"unchanged: {unchanged}")
     print(f"without history: {without_history}")
+
     return ads_rows
+
 
 def _matched_qbiki_nm_ids(qbiki_rows, funnel_rows, ads_rows):
     known_nm_ids = {
@@ -366,6 +417,7 @@ def _matched_qbiki_nm_ids(qbiki_rows, funnel_rows, ads_rows):
         if isinstance(row, dict)
         and (row.get("nmId") or row.get("nm_id")) not in (None, "")
     }
+
     return len(
         {
             str(row.get("nmId") or row.get("nm_id"))
@@ -387,7 +439,6 @@ def _iter_nested_dicts(value):
             yield from _iter_nested_dicts(item)
 
 
-
 def _count_zero_stock_problems(problems):
     return sum(
         1
@@ -401,6 +452,7 @@ def _count_zero_stock_problems(problems):
             problem.get("currentValue")
             or problem.get("stock")
             or problem.get("wbStocks")
+            or problem.get("selectedValue")
         )
         <= 0
     )
@@ -427,10 +479,14 @@ def _build_seller_result(
     stocks_summary=None,
     error_message=None,
 ):
-    problems = problems or []
-    ads_rows = ads_rows or []
-    funnel_rows = funnel_rows or []
-    supplies_rows = supplies_rows or []
+    seller_id = _seller_id(seller)
+    seller_name = seller.get("seller_name", "")
+
+    problems = _attach_seller_context(problems or [], seller, seller_id)
+    ads_rows = _attach_seller_context(ads_rows or [], seller, seller_id)
+    funnel_rows = _attach_seller_context(funnel_rows or [], seller, seller_id)
+    supplies_rows = _attach_seller_context(supplies_rows or [], seller, seller_id)
+
     critical_count = sum(
         1
         for problem in problems
@@ -449,9 +505,63 @@ def _build_seller_result(
             or _to_float(problem.get("severityScore")) >= 70
         )
     )
+
+    potential_revenue_loss = sum(
+        _to_float(problem.get("potentialRevenueLoss"))
+        for problem in problems
+        if isinstance(problem, dict)
+    )
+    lost_order_sum = sum(
+        _to_float(problem.get("lostOrderSum"))
+        for problem in problems
+        if isinstance(problem, dict)
+    )
+    business_impact_score = max(
+        [_to_float(problem.get("businessImpactScore")) for problem in problems]
+        or [0]
+    )
+
+    ads_red_count = sum(
+        1
+        for problem in problems
+        if isinstance(problem, dict)
+        and (
+            problem.get("problemCategory") == "ads"
+            or str(problem.get("metric") or "").lower() in ("ctr", "cpc", "drr", "cpm")
+        )
+        and (
+            str(problem.get("severity") or "").lower() == "critical"
+            or _to_float(problem.get("severityScore")) >= 70
+        )
+    )
+    ads_yellow_count = sum(
+        1
+        for problem in problems
+        if isinstance(problem, dict)
+        and (
+            problem.get("problemCategory") == "ads"
+            or str(problem.get("metric") or "").lower() in ("ctr", "cpc", "drr", "cpm")
+        )
+        and not (
+            str(problem.get("severity") or "").lower() == "critical"
+            or _to_float(problem.get("severityScore")) >= 70
+        )
+    )
+
+    zero_stocks_count = _count_zero_stock_problems(problems)
+    oos_risk_count = sum(
+        1
+        for problem in problems
+        if isinstance(problem, dict)
+        and (
+            problem.get("forecastType") == "OOS"
+            or _to_float(problem.get("daysUntilOOS")) > 0
+        )
+    )
+
     return {
-        "seller_name": seller.get("seller_name", ""),
-        "seller_id": _seller_id(seller),
+        "seller_name": seller_name,
+        "seller_id": seller_id,
         "status": seller.get("status"),
         "processing_status": processing_status,
         "total_sku": total_sku,
@@ -460,8 +570,17 @@ def _build_seller_result(
         "supplies_coverage": _coverage_status(len(supplies_rows), total_sku),
         "critical_problems_count": critical_count,
         "warning_problems_count": warning_count,
-        "zero_stocks_count": _count_zero_stock_problems(problems),
+        "ads_red_count": ads_red_count,
+        "ads_yellow_count": ads_yellow_count,
+        "ads_green_count": max(len(ads_rows) - ads_red_count - ads_yellow_count, 0),
+        "zero_stocks_count": zero_stocks_count,
+        "oos_zero_count": zero_stocks_count,
+        "oos_risk_count": oos_risk_count,
+        "potentialRevenueLoss": potential_revenue_loss,
+        "lostOrderSum": lost_order_sum,
+        "businessImpactScore": business_impact_score,
         "top_problems": problems[:5],
+        "problems": problems,
         "ads_summary": ads_summary or {},
         "stocks_summary": stocks_summary or {},
         "error_message": error_message,
@@ -488,17 +607,22 @@ def _print_seller_processing_result(result):
 
 def _print_multi_seller_processing(active_sellers, seller_results):
     statuses = {"success": 0, "partial": 0, "no_data": 0, "failed": 0}
+
     for result in seller_results:
         status = result.get("processing_status")
         if status in statuses:
             statuses[status] += 1
+
     print("MULTI SELLER PROCESSING:")
     print(f"active sellers: {len(active_sellers)}")
     print(f"seller results created: {len(seller_results)}")
+
     for status in ("success", "partial", "no_data", "failed"):
         print(f"{status}: {statuses[status]}")
+
     for result in seller_results:
         _print_seller_processing_result(result)
+
     if len(seller_results) < len(active_sellers):
         print("WARNING: seller_results count does not match active sellers count")
 
@@ -558,6 +682,8 @@ def _process_seller(storage, seller, report_date):
     print("=" * 50)
 
     wb_cards = _extract_funnel_products(data)
+    _attach_seller_context(wb_cards, seller, seller_id)
+
     if not wb_cards:
         seller_result = _build_seller_result(
             seller,
@@ -580,6 +706,8 @@ def _process_seller(storage, seller, report_date):
     total_sku_from_api = len(wb_cards)
     data = enrich_funnel_data_with_products(data, products)
     enriched_products = _extract_funnel_products(data)
+    _attach_seller_context(enriched_products, seller, seller_id)
+
     sku_in_products = sum(
         1
         for funnel_product in enriched_products
@@ -604,59 +732,89 @@ def _process_seller(storage, seller, report_date):
         if str(row.get("forecastType") or "").upper() == "OOS"
         or row.get("daysUntilOOS") not in (None, "")
     ]
+
     ads_data = collect_ads_stats(
         seller_id=seller_id, top_drop_nm_ids=top_drop_nm_ids, oos_nm_ids=oos_nm_ids
     )
+    _attach_seller_context(ads_data, seller, seller_id)
+
     raw_ads_rows_count = len(ads_data or [])
     ads_source = "WB Ads API"
     ads_fallback_used = False
+
     if raw_ads_rows_count == 0:
         fallback_nm_ids = _extract_nm_ids(wb_cards, products)
         fallback_ads_data = _load_ads_history_fallback(
             storage, seller_id, fallback_nm_ids
         )
+        _attach_seller_context(fallback_ads_data, seller, seller_id)
+
         print("ADS FALLBACK ACTIVATED")
         print("ADS FALLBACK SOURCE: SUPABASE")
         print(f"ADS FALLBACK ROWS: {len(fallback_ads_data)}")
+
         if fallback_ads_data:
             ads_data = fallback_ads_data
             ads_source = "история Supabase"
             ads_fallback_used = True
+
     ads_data, ads_matching_debug = attribute_ads_rows(ads_data, wb_cards + products)
+    _attach_seller_context(ads_data, seller, seller_id)
+
     ads_data = aggregate_ads_rows(ads_data)
+    _attach_seller_context(ads_data, seller, seller_id)
+
     aggregated_ads_rows_count = len(ads_data or [])
     advertised_sku_count = len(
         {row.get("nmId") for row in ads_data if row.get("nmId") not in (None, "")}
     )
+
     ads_data = enrich_ads_time_series(ads_data, storage=storage, seller_id=seller_id)
+    _attach_seller_context(ads_data, seller, seller_id)
+
     ads_history_available = any(
         row.get("ads_history_status") in {"avg3", "previous_day"}
         for row in ads_data or []
     )
-    ads_current_api_partial = ads_api_had_429() and not (raw_ads_rows_count > 0 and ads_history_available)
+    ads_current_api_partial = ads_api_had_429() and not (
+        raw_ads_rows_count > 0 and ads_history_available
+    )
     ads_data = _merge_ads_bid_history(ads_data, storage, report_date=report_date)
+    _attach_seller_context(ads_data, seller, seller_id)
+
     funnel_report = flatten_sales_funnel_data(data)
     funnel_rows = funnel_report.to_dict("records")
-    for funnel_row in funnel_rows:
-        funnel_row["seller_id"] = seller_id
+    _attach_seller_context(funnel_rows, seller, seller_id)
+
     ads_problems = analyze_ads_problems(
         ads_data, funnel_report, ads_api_partial=ads_current_api_partial
     )
+    _attach_seller_context(ads_problems, seller, seller_id)
+
     perfume_intelligence = build_perfume_intelligence(funnel_rows, ads_data)
     funnel_rows = perfume_intelligence["rows"]
+    _attach_seller_context(funnel_rows, seller, seller_id)
+
     raw_qbiki_rows = collect_qbiki_metrics()
     qbiki_metrics = enrich_qbiki_metrics(
         raw_qbiki_rows, funnel_rows=funnel_rows, ads_rows=ads_data
     )
+    _attach_seller_context(qbiki_metrics, seller, seller_id)
+
     qbiki_source_status = _qbiki_source_status()
     qbiki_matched_nm_ids = _matched_qbiki_nm_ids(qbiki_metrics, funnel_rows, ads_data)
+
     print("QBIKI DATA:")
     print(f"source: {qbiki_source_status}")
     print(f"rows loaded: {len(raw_qbiki_rows)}")
     print(f"matched nmIds: {qbiki_matched_nm_ids}")
+
     qbiki_problems = build_qbiki_problems(qbiki_metrics)
+    _attach_seller_context(qbiki_problems, seller, seller_id)
+
     if qbiki_metrics and hasattr(storage, "save_daily_qbiki_metrics"):
         storage.save_daily_qbiki_metrics(qbiki_metrics)
+
     ads_summary = build_ads_summary(ads_data, ads_problems + qbiki_problems)
     ads_summary["rawRows"] = raw_ads_rows_count
     ads_summary["aggregatedRows"] = aggregated_ads_rows_count
@@ -665,6 +823,7 @@ def _process_seller(storage, seller, report_date):
     ads_summary["source"] = ads_source
     ads_summary["adsSource"] = ads_source
     ads_summary["fallbackUsed"] = ads_fallback_used
+
     print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
     print("ADS SUMMARY:")
     print(f"campaigns: {ads_summary['activeCampaigns']}")
@@ -701,7 +860,6 @@ def _process_seller(storage, seller, report_date):
     print(f"XLSX отчёт по рекламе: {ads_report_path}")
     print("=" * 50)
 
-    # TODO: switch problems XLSX generation to all_problems after ads/stocks problems are enabled
     problems_report_path = save_funnel_problems_report(
         data,
         seller_id=seller_id,
@@ -716,9 +874,13 @@ def _process_seller(storage, seller, report_date):
         problems_report_path, sheet_name="problems"
     ).fillna("")
     funnel_problems = funnel_problems_df.to_dict("records")
+    _attach_seller_context(funnel_problems, seller, seller_id)
+
     all_problems = enrich_perfume_records(
         funnel_problems + ads_problems + qbiki_problems + stocks_problems
     )
+    _attach_seller_context(all_problems, seller, seller_id)
+
     if ads_current_api_partial:
         for problem in all_problems:
             if problem.get("problemCategory") == "ads":
@@ -728,15 +890,26 @@ def _process_seller(storage, seller, report_date):
                 problem["severityScore"] = min(
                     float(problem.get("severityScore") or 0), 20
                 )
+
     all_problems = apply_decision_engine(all_problems)
+    _attach_seller_context(all_problems, seller, seller_id)
+
     all_problems = rank_problem_records(all_problems)
+    _attach_seller_context(all_problems, seller, seller_id)
+
     log_business_ranking(all_problems, source="main")
+
     if funnel_rows:
         storage.save_funnel_snapshot(funnel_rows)
+
     if all_problems:
         storage.save_problems(all_problems)
+
     root_cause_insights = analyze_root_causes(all_problems, data)
+    _attach_seller_context(root_cause_insights, seller, seller_id)
+
     print(f"ROOT CAUSE INSIGHTS: {len(root_cause_insights)}")
+
     summary_stats = _build_summary_stats(
         storage_status=storage.get_storage_status(),
         seller_name=seller_name,
@@ -762,22 +935,28 @@ def _process_seller(storage, seller, report_date):
     summary_stats["adsCoverageConfidence"] = ads_rate_limit_stats().get(
         "adsCoverageConfidence"
     )
+
     if isinstance(ads_summary, dict):
         ads_summary["adsCoverageConfidence"] = summary_stats["adsCoverageConfidence"]
+
     baseline_counts = {}
     for problem in all_problems:
         baseline_type = problem.get("baselineType") or problem.get("baseline_type")
         if baseline_type:
             baseline_counts[baseline_type] = baseline_counts.get(baseline_type, 0) + 1
+
     summary_stats["baselineTypeCounts"] = baseline_counts
+
     if baseline_counts:
         summary_stats["baselineMode"] = max(
             baseline_counts, key=lambda key: baseline_counts.get(key) or 0
         )
+
     summary_stats["qbikiMetrics"] = qbiki_metrics
     summary_stats["qbikiSourceStatus"] = qbiki_source_status
     summary_stats["qbikiRowsLoaded"] = len(raw_qbiki_rows)
     summary_stats["qbikiMatchedNmIds"] = qbiki_matched_nm_ids
+
     api_coverage_report = build_api_coverage_report(
         seller_name=seller_name,
         cards=wb_cards,
@@ -793,10 +972,12 @@ def _process_seller(storage, seller, report_date):
     print_api_coverage_summary(api_coverage_report)
     api_coverage_path = save_api_coverage_report(api_coverage_report)
     print(f"XLSX отчёт покрытия API: {api_coverage_path}")
+
     if hasattr(storage, "save_api_coverage_daily"):
         storage.save_api_coverage_daily(
             api_coverage_report["coverage"].to_dict("records")
         )
+
     summary_stats["apiCoverage"] = {
         "line": coverage_summary_line(api_coverage_report),
         "adsApiHad429": ads_api_had_429(),
@@ -806,8 +987,10 @@ def _process_seller(storage, seller, report_date):
         "totalSku": len(api_coverage_report["coverage"]),
     }
     summary_stats["perfumeIntelligence"] = perfume_intelligence
+
     current_processing_status = "success" if total_sku_from_api else "no_data"
     current_error_message = None if total_sku_from_api else "nmIDs not found"
+
     seller_result = _build_seller_result(
         seller,
         processing_status=current_processing_status,
@@ -823,8 +1006,13 @@ def _process_seller(storage, seller, report_date):
         },
         error_message=current_error_message,
     )
+
+    _print_problem_owner_check(seller_name, all_problems)
     print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+
     tasks = build_tasks_from_problems(all_problems)
+    _attach_seller_context(tasks, seller, seller_id)
+
     return {
         "seller_result": seller_result,
         "summary_stats": summary_stats,
@@ -835,18 +1023,20 @@ def _process_seller(storage, seller, report_date):
 
 
 def main():
-
     print("MAIN VERSION: TELEGRAM ENABLED")
     print("=" * 50)
     print("WB MORNING BRIEF")
     print("=" * 50)
+
     storage = get_storage()
     print("=" * 50)
 
     sellers = storage.get_sellers()
     print(f"SELLERS LOADED: {len(sellers)}")
+
     active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
     print(f"Активных продавцов: {len(active_sellers)}")
+
     report_date = date.today() - timedelta(days=1)
 
     seller_results = []
@@ -861,10 +1051,12 @@ def main():
         combined_problems.extend(processed.get("all_problems") or [])
         combined_root_cause_insights.extend(processed.get("root_cause_insights") or [])
         combined_tasks.extend(processed.get("tasks") or [])
+
         if processed.get("summary_stats"):
             summary_stats = processed["summary_stats"]
 
     _print_multi_seller_processing(active_sellers, seller_results)
+
     summary_stats.setdefault("sellerName", "")
     summary_stats["sellerResults"] = seller_results
     summary_stats["activeSellersCount"] = len(active_sellers)
@@ -872,8 +1064,21 @@ def main():
     summary_stats["sellerNames"] = [
         seller.get("seller_name", "") for seller in active_sellers
     ]
+
+    if seller_results:
+        summary_stats["totalSkuFromApi"] = sum(
+            _to_float(result.get("total_sku")) for result in seller_results
+        )
+        summary_stats["adsRows"] = [
+            row
+            for result in seller_results
+            for row in result.get("ads_summary", {}).get("rows", [])
+            if isinstance(row, dict)
+        ]
+
     if summary_stats:
         _print_summary_stats(summary_stats)
+
     print("=" * 50)
 
     print("TOTAL PROBLEMS:")
