@@ -466,7 +466,52 @@ def _count_zero_stock_problems(problems):
             or problem.get("selectedValue")
         )
         <= 0
+        and _has_factual_stock_data(problem)
     )
+
+
+FACTUAL_STOCK_FIELDS = (
+    "realSellableStock",
+    "wbStocks",
+    "mpStocks",
+    "readyForSaleStock",
+    "incomingStock",
+    "returningStock",
+    "acceptanceStock",
+    "transitStock",
+    "stockState",
+)
+
+
+def _has_factual_stock_data(problem):
+    return any(
+        problem.get(field) not in (None, "")
+        for field in FACTUAL_STOCK_FIELDS
+    )
+
+
+def _is_stock_problem_without_data(problem):
+    if not isinstance(problem, dict):
+        return False
+    return (
+        problem.get("problemType") == "sellableOutOfStock"
+        or problem.get("metric")
+        in {"sellableOutOfStock", "realSellableStock", "wbStocks", "warehouseStockZero", "stocks"}
+        or problem.get("problemCategory") == "stocks"
+    ) and not _has_factual_stock_data(problem)
+
+
+def _downgrade_stock_problems_without_data(problems):
+    for problem in problems or []:
+        if _is_stock_problem_without_data(problem):
+            problem["severity"] = "low"
+            problem["severityScore"] = min(float(problem.get("severityScore") or 0), 20)
+            problem["impactConfidence"] = "LOW"
+            problem["recommendation"] = (
+                "Недостаточно данных по остаткам: проверить Supplies API / складские данные."
+            )
+            problem["isBelowAbcThreshold"] = True
+    return problems
 
 
 def _coverage_status(total_rows, total_sku):
@@ -881,6 +926,7 @@ def _process_seller(storage, seller, report_date):
         funnel_problems + ads_problems + qbiki_problems + stocks_problems
     )
     _attach_seller_context(all_problems, seller, seller_id)
+    all_problems = _downgrade_stock_problems_without_data(all_problems)
 
     if ads_current_api_partial:
         for problem in all_problems:

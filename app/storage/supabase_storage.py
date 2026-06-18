@@ -9,6 +9,15 @@ _STORAGE_STATUS = {"mode": "supabase", "configured": True}
 _CLIENT = None
 
 
+def _is_debug_log():
+    return os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug"
+
+
+def _debug_log(message):
+    if _is_debug_log():
+        print(message)
+
+
 def _supabase_url():
     raw_url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
     parsed_url = urlsplit(raw_url)
@@ -760,6 +769,7 @@ def _problem_seller_name(problem):
 
 def _log_problems_save(problems):
     grouped = {}
+    missing_seller_id_count = 0
     for problem in problems or []:
         if not isinstance(problem, dict):
             continue
@@ -767,22 +777,25 @@ def _log_problems_save(problems):
         seller_id = _problem_seller_id(problem)
         seller_name = _problem_seller_name(problem)
         if seller_id in (None, ""):
-            print("PROBLEM WITHOUT SELLER_ID")
+            missing_seller_id_count += 1
 
         grouped.setdefault((seller_id, seller_name), 0)
         grouped[(seller_id, seller_name)] += 1
 
+    if missing_seller_id_count:
+        print(f"PROBLEMS WITHOUT SELLER_ID: {missing_seller_id_count} rows")
+
     for (seller_id, seller_name), rows_count in grouped.items():
-        print("PROBLEMS SAVE:")
-        print(f"seller_id={seller_id}")
-        print(f"seller_name={seller_name}")
-        print(f"rows={rows_count}")
+        print(
+            "PROBLEMS SAVE: "
+            f"seller_id={seller_id} seller_name={seller_name} rows={rows_count}"
+        )
 
 
 def save_problems(problems):
     _log_problems_save(problems)
     normalized_problems = [_normalize_problem(problem) for problem in problems]
-    print(f"SUPABASE SAVE PROBLEMS: {len(normalized_problems)} rows")
+    _debug_log(f"SUPABASE SAVE PROBLEMS: {len(normalized_problems)} rows")
 
     if normalized_problems:
         _execute_write(
@@ -1000,7 +1013,18 @@ def save_ads_bid_history(rows, seller_id=None, seller_name=None):
         ],
         ["campaign_id", "report_date"],
     )
-    print(f"SUPABASE SAVE ADS BID HISTORY: {len(normalized_rows)} rows")
+    missing_context_count = sum(
+        1
+        for row in normalized_rows
+        if row.get("seller_id") in (None, "")
+        or row.get("seller_name") in (None, "")
+    )
+    if missing_context_count:
+        print(
+            "ADS BID HISTORY WITHOUT SELLER CONTEXT: "
+            f"{missing_context_count} rows"
+        )
+    _debug_log(f"SUPABASE SAVE ADS BID HISTORY: {len(normalized_rows)} rows")
     success = True
     error_message = None
     if normalized_rows:

@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -157,6 +158,20 @@ PROBLEM_RULES = [
     },
 ]
 STOCK_PROBLEM_RECOMMENDATION = "проверить остатки и поставку на склады WB"
+INSUFFICIENT_STOCK_DATA_RECOMMENDATION = (
+    "Недостаточно данных по остаткам: проверить Supplies API / складские данные."
+)
+FACTUAL_STOCK_FIELDS = (
+    "realSellableStock",
+    "wbStocks",
+    "mpStocks",
+    "readyForSaleStock",
+    "incomingStock",
+    "returningStock",
+    "acceptanceStock",
+    "transitStock",
+    "stockState",
+)
 
 
 TRAFFIC_STABLE_THRESHOLD = -5
@@ -196,6 +211,15 @@ def _is_missing(value):
         return bool(pd.isna(value))
     except (TypeError, ValueError):
         return False
+
+
+def _is_debug_log():
+    return os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug"
+
+
+def _debug_log(*args):
+    if _is_debug_log():
+        print(*args)
 
 
 def _get_nested_value(data, path, default=None):
@@ -486,6 +510,7 @@ def _problem_product_value(record, key):
         "orderCount": _metric_paths("selected", "orderCount") + ["orderCount"],
         "orderSum": _metric_paths("selected", "orderSum") + ["orderSum"],
         "wbStocks": ["product.stocks.wb", "stocks.wb", "wbStocks"],
+        "mpStocks": ["product.stocks.mp", "stocks.mp", "mpStocks"],
         "realSellableStock": [
             "realSellableStock",
             "product.stocks.realSellable",
@@ -516,6 +541,15 @@ def _problem_product_value(record, key):
     }
 
     return _first_present(record, paths[key], default="")
+
+
+def _has_factual_stock_data(record, stock_metrics=None):
+    stock_metrics = stock_metrics or {}
+    return any(
+        not _is_missing(stock_metrics.get(key))
+        or not _is_missing(_problem_product_value(record, key))
+        for key in FACTUAL_STOCK_FIELDS
+    )
 
 
 def _normalize_nm_id(nm_id):
@@ -1165,13 +1199,13 @@ def _build_record_problem_rows(
         problem_row.update(attribution_fields)
         record_problem_rows.append(problem_row)
 
-    wb_stocks = _to_number(_problem_product_value(record, "wbStocks"))
     has_supply_data = bool(supply_stock_metrics)
     stock_metrics = enrich_stock_metrics(
         {
             key: _problem_product_value(record, key)
             for key in (
                 "wbStocks",
+                "mpStocks",
                 "realSellableStock",
                 "incomingStock",
                 "returningStock",
@@ -1183,13 +1217,17 @@ def _build_record_problem_rows(
         },
         supply_stock_metrics,
     )
-    stock_metrics["hasSupplyData"] = has_supply_data
+    has_factual_stock_data = _has_factual_stock_data(record, stock_metrics)
+    stock_metrics["hasSupplyData"] = has_factual_stock_data
+    wb_stocks = _to_number(stock_metrics.get("wbStocks"))
     real_sellable_stock = _to_number(stock_metrics.get("realSellableStock"))
-    wb_stock_present = not _is_missing(_problem_product_value(record, "wbStocks"))
     confirmed_zero_stock = (
-        (has_supply_data and real_sellable_stock == 0)
-        or (wb_stock_present and wb_stocks == 0)
-        or (has_supply_data and stock_metrics.get("stockState") == "BLOCKED")
+        has_factual_stock_data
+        and (
+            (not _is_missing(stock_metrics.get("realSellableStock")) and real_sellable_stock == 0)
+            or (not _is_missing(stock_metrics.get("wbStocks")) and wb_stocks == 0)
+            or stock_metrics.get("stockState") == "BLOCKED"
+        )
     )
 
     if confirmed_zero_stock:
@@ -1458,27 +1496,30 @@ def analyze_funnel_problems(
 
 
 def _print_problems_summary(dataframe):
-    print("=" * 50)
-    print("АНАЛИЗ ПРОСАДОК ПО FUNNEL")
-    print(f"Найдено проблем: {len(dataframe)}")
-
-    if dataframe.empty:
-        print("Проблем не найдено")
-        print("=" * 50)
+    if not _is_debug_log():
         return
 
-    print("Топ-5 проблем:")
+    _debug_log("=" * 50)
+    _debug_log("АНАЛИЗ ПРОСАДОК ПО FUNNEL")
+    _debug_log(f"Найдено проблем: {len(dataframe)}")
+
+    if dataframe.empty:
+        _debug_log("Проблем не найдено")
+        _debug_log("=" * 50)
+        return
+
+    _debug_log("Топ-5 проблем:")
 
     for index, row in dataframe.head(5).iterrows():
         dynamic = row["dynamicPercent"]
         dynamic_text = f"{dynamic}%" if dynamic != "" else "n/a"
-        print(
+        _debug_log(
             f"{index + 1}. nmId={row['nmId']} | {row['problemType']} | "
             f"{row['problemLabel']}: {row['selectedValue']} vs {row['pastValue']} "
             f"({dynamic_text}) | {row['recommendation']}"
         )
 
-    print("=" * 50)
+    _debug_log("=" * 50)
 
 
 def flatten_sales_funnel_data(funnel_data):
@@ -1676,19 +1717,19 @@ def save_funnel_problems_report(
 
     _print_problems_summary(dataframe)
 
-    print("СОХРАНЯЕМ ОТЧЁТ ПО ПРОБЛЕМАМ")
-    print(f"Папка отчётов: {REPORTS_DIR}")
-    print(f"Файл отчёта: {report_path}")
-    print(f"Строк в отчёте: {len(dataframe)}")
-    print(f"Колонки: {', '.join(PROBLEMS_REPORT_COLUMNS)}")
+    _debug_log("СОХРАНЯЕМ ОТЧЁТ ПО ПРОБЛЕМАМ")
+    _debug_log(f"Папка отчётов: {REPORTS_DIR}")
+    _debug_log(f"Файл отчёта: {report_path}")
+    _debug_log(f"Строк в отчёте: {len(dataframe)}")
+    _debug_log(f"Колонки: {', '.join(PROBLEMS_REPORT_COLUMNS)}")
 
     with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
         dataframe.to_excel(writer, sheet_name="problems", index=False)
         worksheet = writer.sheets["problems"]
         _adjust_worksheet_layout(worksheet, dataframe)
 
-    print("XLSX отчёт по проблемам сохранён")
-    print("=" * 50)
+    _debug_log("XLSX отчёт по проблемам сохранён")
+    _debug_log("=" * 50)
 
     return report_path
 
@@ -1700,20 +1741,20 @@ def save_sales_funnel_report(funnel_data):
     report_path = REPORTS_DIR / f"funnel_{report_date}.xlsx"
     dataframe = flatten_sales_funnel_data(funnel_data)
 
-    print("=" * 50)
-    print("СОХРАНЯЕМ FUNNEL XLSX ОТЧЁТ")
-    print(f"Папка отчётов: {REPORTS_DIR}")
-    print(f"Файл отчёта: {report_path}")
-    print(f"Строк в отчёте: {len(dataframe)}")
-    print(f"Колонки: {', '.join(FUNNEL_REPORT_COLUMNS)}")
+    _debug_log("=" * 50)
+    _debug_log("СОХРАНЯЕМ FUNNEL XLSX ОТЧЁТ")
+    _debug_log(f"Папка отчётов: {REPORTS_DIR}")
+    _debug_log(f"Файл отчёта: {report_path}")
+    _debug_log(f"Строк в отчёте: {len(dataframe)}")
+    _debug_log(f"Колонки: {', '.join(FUNNEL_REPORT_COLUMNS)}")
 
     with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
         dataframe.to_excel(writer, sheet_name="funnel", index=False)
         worksheet = writer.sheets["funnel"]
         _adjust_worksheet_layout(worksheet, dataframe)
 
-    print("Funnel XLSX отчёт сохранён")
-    print("=" * 50)
+    _debug_log("Funnel XLSX отчёт сохранён")
+    _debug_log("=" * 50)
 
     return report_path
 
