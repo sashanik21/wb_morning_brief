@@ -1166,6 +1166,7 @@ def _build_record_problem_rows(
         record_problem_rows.append(problem_row)
 
     wb_stocks = _to_number(_problem_product_value(record, "wbStocks"))
+    has_supply_data = bool(supply_stock_metrics)
     stock_metrics = enrich_stock_metrics(
         {
             key: _problem_product_value(record, key)
@@ -1182,9 +1183,16 @@ def _build_record_problem_rows(
         },
         supply_stock_metrics,
     )
+    stock_metrics["hasSupplyData"] = has_supply_data
     real_sellable_stock = _to_number(stock_metrics.get("realSellableStock"))
+    wb_stock_present = not _is_missing(_problem_product_value(record, "wbStocks"))
+    confirmed_zero_stock = (
+        (has_supply_data and real_sellable_stock == 0)
+        or (wb_stock_present and wb_stocks == 0)
+        or (has_supply_data and stock_metrics.get("stockState") == "BLOCKED")
+    )
 
-    if real_sellable_stock == 0:
+    if confirmed_zero_stock:
         stock_attribution_fields = {**attribution_fields}
         stock_attribution_fields["declineSource"] = (
             "MIXED_DECLINE"

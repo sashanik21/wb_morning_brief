@@ -644,15 +644,11 @@ def update_ads_campaign_stats_status(
     ]
     if not normalized_ids:
         return
-    if len(normalized_ids) > 1:
+    should_log_status = len(normalized_ids) > 1 or os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug"
+    if should_log_status:
         print(
-            "SUPABASE UPDATE ADS CAMPAIGN STATS: "
-            f"rows={len(normalized_ids)} status={status}"
-        )
-    elif os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug":
-        print(
-            "SUPABASE UPDATE ADS CAMPAIGN STATS: "
-            f"rows={len(normalized_ids)} status={status}"
+            "SUPABASE UPDATE ADS CAMPAIGN STATS STATUS: "
+            f"{len(normalized_ids)} rows status={status}"
         )
     update_payload = {
         "last_stats_at": datetime.now().isoformat(),
