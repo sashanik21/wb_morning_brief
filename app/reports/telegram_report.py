@@ -4771,8 +4771,7 @@ def _trim_telegram_message(text, max_length=3500):
     if len(text) <= max_length:
         return text
 
-    suffix = "\n\n…сокращено до executive-summary лимита."
-    return text[: max_length - len(suffix)].rstrip() + suffix
+    return text[:max_length].rstrip()
 
 
 def _format_evidence_metric(row, label, metric, suffix=""):
@@ -4924,7 +4923,13 @@ def _multi_product_title(record):
 
 
 def _multi_problem_score(record):
-    return (_business_impact_score(record), to_number(record.get("severityScore")))
+    return (
+        _problem_lost_revenue(record),
+        _problem_lost_orders(record),
+        _business_impact_score(record),
+        to_number(record.get("severityScore")),
+        abs(to_number(record.get("dynamicPercent"))),
+    )
 
 
 def _multi_is_critical(record):
@@ -4975,212 +4980,165 @@ def _seller_result_error_reason(result):
         or "данные не получены"
     )
 
-def _build_multi_seller_brief(
-    problems, summary_stats=None, top_limit=5, include_ads=True, include_stocks=True
-):
-    summary_stats = summary_stats or {}
-    records = [
-        record for record in _problems_to_records(problems) if isinstance(record, dict)
-    ]
-    seller_results = [
-        result
-        for result in summary_stats.get("sellerResults", [])
-        if isinstance(result, dict)
-    ]
-    seller_names = set(summary_stats.get("sellerNames") or [])
-    seller_names.update(_multi_seller_name(record) for record in records)
-    seller_names.update(_seller_result_name(result) for result in seller_results)
-    sellers_total = int(
-        summary_stats.get("sellersTotal")
-        or summary_stats.get("activeSellersCount")
-        or len(seller_names)
-        or len(seller_results)
-        or 0
+
+def _multi_loss_text(value, suffix=""):
+    if value is None or value <= 0:
+        return "недостаточно данных"
+    return f"{_format_number(value)}{suffix}"
+
+
+def _multi_problem_cause(record):
+    source = _decline_source(record)
+    if source == "ADS_DECLINE" or _is_ads_problem(record):
+        return "реклама"
+    metric = str(record.get("metric") or "").lower()
+    problem_type = str(record.get("problemType") or "").lower()
+    texts = " ".join(
+        str(record.get(key) or "")
+        for key in ("problemLabel", "diagnosis", "recommendation", "rootCause", "rootRecommendation")
+    ).lower()
+    if source == "CONVERSION_DECLINE" or metric in {"carttoorderpercent", "addtocartpercent", "cartcount"}:
+        return "конверсия"
+    if "цен" in texts or "price" in metric or "price" in problem_type:
+        return "цена"
+    if "реклам" in texts or "ctr" in metric or "cpc" in metric or "drr" in metric:
+        return "реклама"
+    if "конверс" in texts:
+        return "конверсия"
+    return "неизвестно"
+
+
+def _multi_main_reason(records):
+    ranked = sorted(records, key=_multi_problem_score, reverse=True)
+    for record in ranked:
+        cause = _multi_problem_cause(record)
+        if cause != "неизвестно":
+            return cause
+    return "недостаточно данных"
+
+
+def _multi_confirmation(record):
+    label = str(
+        record.get("problemLabel")
+        or get_problem_label(record.get("metric") or record.get("problemType") or "")
+        or "значимое отклонение"
     )
-    by_seller = {name: [] for name in seller_names}
-    for record in records:
-        if not _is_telegram_hidden_stock_problem(record):
-            by_seller.setdefault(_multi_seller_name(record), []).append(record)
+    dynamic = record.get("dynamicPercent")
+    selected = record.get("selectedValue")
+    if dynamic not in (None, ""):
+        return f"{label}: {_format_number(dynamic)}%."
+    if selected not in (None, ""):
+        return f"{label}: {_format_number(selected)}."
+    diagnosis = str(record.get("diagnosis") or record.get("rootCause") or "").strip()
+    return diagnosis or "Есть управленческий сигнал по SKU."
 
-    if seller_results:
-        critical_sellers = sum(1 for result in seller_results if _seller_result_is_critical(result))
-        warning_sellers = sum(
-            1
-            for result in seller_results
-            if not _seller_result_is_critical(result)
-            and _seller_result_needs_attention(result)
-        )
-        ok_sellers = sum(
-            1
-            for result in seller_results
-            if _seller_result_processing_status(result) == "success"
-            and to_number(result.get("critical_problems_count") or result.get("criticalProblemsCount")) == 0
-            and to_number(result.get("warning_problems_count") or result.get("warningProblemsCount")) == 0
-        )
-    else:
-        critical_sellers = sum(
-            1
-            for seller_records in by_seller.values()
-            if any(_multi_is_critical(record) for record in seller_records)
-        )
-        warning_sellers = sum(
-            1
-            for seller_records in by_seller.values()
-            if seller_records and not any(_multi_is_critical(record) for record in seller_records)
-        )
-        ok_sellers = max(sellers_total - critical_sellers - warning_sellers, 0)
 
+def _multi_action(record):
+    action = str(
+        record.get("rootRecommendation")
+        or record.get("recommendation")
+        or "Проверить причину просадки и скорректировать действие сегодня."
+    ).strip()
+    return action or "Проверить причину просадки и скорректировать действие сегодня."
+
+
+def _multi_first_sentence(text, max_length=140):
+    clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not clean:
+        return "недостаточно данных"
+    sentence = re.split(r"(?<=[.!?])\s+", clean, maxsplit=1)[0]
+    if len(sentence) <= max_length:
+        return sentence
+    return sentence[: max_length - 1].rstrip() + "…"
+
+
+def _multi_product_line(index, record):
+    title = _multi_product_title(record)
+    nm_id = record.get("nmId") or record.get("nm_id") or "—"
+    revenue = _loss_value(record, "potentialRevenueLoss", "lostOrderSum")
+    orders = _loss_value(record, "potentialOrdersLoss", "lostOrders")
+    return "\n".join(
+        [
+            f"{index}. <b>{title}</b> — {_format_wb_label(nm_id, missing='—')}",
+            f"   Потеря выручки: {_multi_loss_text(revenue, ' ₽')}",
+            f"   Потеря заказов: {_multi_loss_text(orders)}",
+            f"   Причина: {html.escape(_multi_problem_cause(record))}",
+            f"   Подтверждение: {html.escape(_multi_first_sentence(_multi_confirmation(record)))}",
+            f"   Действие: {html.escape(_multi_first_sentence(_multi_action(record)))}",
+        ]
+    )
+
+
+def _build_multi_seller_brief(problems, summary_stats=None, top_limit=5, include_ads=True, include_stocks=True):
+    summary_stats = summary_stats or {}
+    records = [record for record in _problems_to_records(problems) if isinstance(record, dict)]
     telegram_records = [record for record in records if not _is_telegram_hidden_stock_problem(record)]
-    top_records = sorted(
-        telegram_records, key=lambda record: _multi_problem_score(record), reverse=True
-    )[:top_limit]
+    seller_results = [result for result in summary_stats.get("sellerResults", []) if isinstance(result, dict)]
+    seller_names = set(summary_stats.get("sellerNames") or [])
+    seller_names.update(_multi_seller_name(record) for record in telegram_records)
+    seller_names.update(_seller_result_name(result) for result in seller_results)
+    sellers_total = int(summary_stats.get("sellersTotal") or summary_stats.get("activeSellersCount") or len(seller_names) or len(seller_results) or 0)
+
+    critical_sellers = len({_multi_seller_name(record) for record in telegram_records if _multi_is_critical(record)})
+    if seller_results:
+        critical_sellers = max(critical_sellers, sum(1 for result in seller_results if _seller_result_is_critical(result)))
+    critical_sku = _unique_nmid_count([record for record in telegram_records if _multi_is_critical(record)])
+    lost_revenue_values = [_loss_value(record, "potentialRevenueLoss", "lostOrderSum") for record in telegram_records]
+    lost_order_values = [_loss_value(record, "potentialOrdersLoss", "lostOrders") for record in telegram_records]
+    lost_revenue_known = [value for value in lost_revenue_values if value is not None and value > 0]
+    lost_orders_known = [value for value in lost_order_values if value is not None and value > 0]
+    total_lost_revenue = sum(lost_revenue_known)
+    total_lost_orders = sum(lost_orders_known)
+    top_records = sorted(telegram_records, key=_multi_problem_score, reverse=True)[:top_limit]
+
     lines = [
-        "🌅 <b>WB Morning Brief</b>",
-        "",
-        "Период: вчера 00:00–24:00 МСК",
-        "Сравнение: со средним за 3 дня",
+        "🌅 <b>WB Morning Brief — Executive Brief</b>",
+        f"Потеря выручки за день: {_multi_loss_text(total_lost_revenue if lost_revenue_known else None, ' ₽')}",
+        f"Потеря заказов за день: {_multi_loss_text(total_lost_orders if lost_orders_known else None)}",
+        f"Критичных продавцов: {_format_number(critical_sellers)}",
+        f"Критичных SKU: {_format_number(critical_sku)}",
+        f"Главная причина просадок: {html.escape(_multi_main_reason(telegram_records))}",
         "",
         f"Проверено продавцов: {_format_number(sellers_total)}",
-        "",
-        f"🔴 Критичные: {_format_number(critical_sellers)}",
-        f"🟡 Требуют внимания: {_format_number(warning_sellers)}",
-        f"🟢 Без критичных проблем: {_format_number(ok_sellers)}",
     ]
 
-    problem_seller_results = [
-        result
-        for result in seller_results
-        if _seller_result_processing_status(result) in {"no_data", "failed"}
-    ]
+    problem_seller_results = [result for result in seller_results if _seller_result_processing_status(result) in {"no_data", "failed"}]
     if problem_seller_results:
-        lines.extend(["", "⚠️ <b>Продавцы без данных / с ошибкой</b>", ""])
-        for index, result in enumerate(problem_seller_results, start=1):
-            lines.extend(
-                [
-                    f"{index}. {html.escape(_seller_result_name(result))}",
-                    f"   Статус: {html.escape(_seller_result_processing_status(result))}",
-                    f"   Причина: {html.escape(_seller_result_error_reason(result))}",
-                    "",
-                ]
+        lines.extend(["", "⚠️ <b>Продавцы без данных / с ошибкой</b>"])
+        for index, result in enumerate(problem_seller_results[:2], start=1):
+            lines.append(
+                f"{index}. {html.escape(_seller_result_name(result))}: "
+                f"{html.escape(_seller_result_processing_status(result))}; "
+                f"{html.escape(_seller_result_error_reason(result))}"
             )
-        if lines[-1] == "":
-            lines.pop()
 
     if top_records:
-        lines.extend(["", f"🔴 <b>ТОП-{len(top_records)} проблем дня</b>", ""])
+        lines.extend(["", f"🔴 <b>ТОП-{len(top_records)} проблем: деньги → причина → действие</b>"])
         for index, record in enumerate(top_records, start=1):
-            nm_id = html.escape(str(record.get("nmId") or record.get("nm_id") or "—"))
-            problem_bits = []
-            metric_label = get_problem_label(
-                record.get("metric") or record.get("problemType") or ""
-            )
-            dynamic = record.get("dynamicPercent")
-            if metric_label:
-                problem_bits.append(metric_label)
-            if dynamic not in (None, ""):
-                problem_bits.append(f"{_format_number(dynamic)}%")
-            if not problem_bits and record.get("problem"):
-                problem_bits.append(str(record.get("problem")))
-            diagnosis = (
-                record.get("diagnosis")
-                or record.get("rootCause")
-                or record.get("recommendation")
-                or record.get("problemName")
-                or "проверить ключевой драйвер просадки"
-            )
-            lines.extend(
-                [
-                    f"{index}. Продавец: {html.escape(_multi_seller_name(record))}",
-                    f"   Товар: {_multi_product_title(record)}",
-                    f"   WB: {nm_id}",
-                    "   Проблема: "
-                    f"{html.escape(', '.join(problem_bits) or 'значимое отклонение')}",
-                    f"   Диагноз: {html.escape(str(diagnosis))}",
-                    "",
-                ]
-            )
-        if lines[-1] == "":
-            lines.pop()
-
-    if include_ads:
-        ads_records = [record for record in records if _is_ads_problem(record)]
-        ads_summary = summary_stats.get("adsSummary") or {}
-        total_sku = to_number(
-            ads_summary.get("totalSku") or summary_stats.get("totalSkuFromApi")
-        )
-        advertised_sku = to_number(
-            ads_summary.get("advertisedSku") or summary_stats.get("advertisedSkuCount")
-        )
-        if ads_records or ads_summary:
-            red = len(
-                {
-                    _problem_group_key(record)
-                    for record in ads_records
-                    if _multi_is_critical(record)
-                }
-            )
-            yellow = len(
-                {
-                    _problem_group_key(record)
-                    for record in ads_records
-                    if not _multi_is_critical(record)
-                }
-            )
-            green = max(int(total_sku - red - yellow), 0) if total_sku else 0
-            lines.extend([
-                "", "📢 <b>Реклама</b>", "",
-                f"Покрытие: {_format_number(advertised_sku)}/{_format_number(total_sku)} товаров",
-                f"CTR: {_format_metric_with_previous(ads_summary.get('currentCtr'), ads_summary.get('previousCtr'), '%')}",
-                f"Изменение CTR: {_format_change_percent(ads_summary.get('currentCtr'), ads_summary.get('previousCtr'))}",
-                f"CPC: {_format_metric_with_previous(ads_summary.get('currentCpc'), ads_summary.get('previousCpc'), ' ₽')}",
-                f"Изменение CPC: {_format_change_percent(ads_summary.get('currentCpc'), ads_summary.get('previousCpc'))}",
-                f"ДРР: {_format_metric_with_previous(ads_summary.get('currentDrr'), ads_summary.get('previousDrr'), '%')}",
-                f"Изменение ДРР: {_format_change_percent(ads_summary.get('currentDrr'), ads_summary.get('previousDrr'))}",
-                "",
-                f"🔴 Требует проверки: {_format_number(red)} товаров",
-                f"🟡 Недостаточно данных: {_format_number(yellow)} товаров",
-                f"🟢 Стабильно: {_format_number(green)} товаров",
-            ])
-            warning_lines = _ads_partial_warning_lines(summary_stats, ads_summary)
-            if warning_lines:
-                lines.extend(["", *warning_lines])
-
-    first_sellers = sorted(
-        ((seller, seller_records) for seller, seller_records in by_seller.items() if seller_records),
-        key=lambda item: sum(_business_impact_score(record) for record in item[1]),
-        reverse=True,
-    )[:4]
-    if first_sellers:
-        lines.extend(["", "🎯 <b>Кого смотреть первым</b>", ""])
-        for index, (seller, seller_records) in enumerate(first_sellers, start=1):
-            critical_count = sum(1 for record in seller_records if _multi_is_critical(record))
-            revenue_drop = sum(_absolute_metric_drop(record) for record in seller_records if record.get("metric") in ("orderSum", "revenue"))
-            ads_attention = any(_is_ads_problem(record) for record in seller_records)
-            reason_parts = []
-            if critical_count:
-                reason_parts.append(f"{_format_number(critical_count)} критичных товаров")
-            if revenue_drop:
-                reason_parts.append(f"просадка выручки {_format_number(revenue_drop)} ₽")
-            if ads_attention:
-                reason_parts.append("реклама требует проверки")
-            lines.extend([f"{index}. {html.escape(seller)}", f"   Причина: {', '.join(reason_parts) or 'есть значимые сигналы'}", ""])
-        if lines[-1] == "":
-            lines.pop()
+            lines.append(_multi_product_line(index, record))
+    else:
+        lines.extend(["", "🔴 <b>ТОП проблем</b>", "недостаточно данных"])
 
     message = "\n".join(lines)
-    diagnostic = ("TELEGRAM MULTI SELLER BRIEF:\n" f"sellers total: {sellers_total}\n" f"critical sellers: {critical_sellers}\n" f"warning sellers: {warning_sellers}\n" f"ok sellers: {ok_sellers}\n" f"top problems selected: {len(top_records)}\n" f"message length: {len(message)}")
+    diagnostic = (
+        "TELEGRAM MULTI SELLER BRIEF:\n"
+        f"sellers total: {sellers_total}\n"
+        f"critical sellers: {critical_sellers}\n"
+        f"critical sku: {critical_sku}\n"
+        f"top problems selected: {len(top_records)}\n"
+        f"message length: {len(message)}"
+    )
     logger.info(diagnostic)
     print(diagnostic)
     return message
 
 
 def _build_multi_seller_brief_limited(problems, summary_stats=None, max_length=3500):
-    for top_limit, include_ads, include_stocks in ((5, True, False), (3, True, False), (3, False, False)):
-        message = _build_multi_seller_brief(problems, summary_stats, top_limit=top_limit, include_ads=include_ads, include_stocks=include_stocks)
+    for top_limit in (5, 4, 3, 2, 1, 0):
+        message = _build_multi_seller_brief(problems, summary_stats, top_limit=top_limit, include_ads=False, include_stocks=False)
         if len(sanitize_telegram_text(message)) <= max_length:
             return message
-    return _trim_telegram_message(message, max_length=max_length)
-
+    return message
 
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = [
