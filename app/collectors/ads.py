@@ -11,6 +11,7 @@ import app.config as wb_config
 ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
 ADS_CAMPAIGN_DETAILS_URL = "https://advert-api.wildberries.ru/api/advert/v2/adverts"
+
 ADS_TIMEOUT_SECONDS = 60
 ADS_CAMPAIGN_BATCH_SIZE = 50
 ADS_CAMPAIGN_DETAILS_STATUSES = (7, 9, 11)
@@ -18,9 +19,25 @@ ADS_CAMPAIGN_DETAILS_TYPES = (4, 5, 6, 7, 8, 9)
 ADS_CAMPAIGN_DETAILS_LIMIT = 100
 ADS_CAMPAIGN_CACHE_TTL_HOURS = 12
 REPORTS_DIR = Path("reports")
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "summary").strip().lower()
+
 _ADS_API_HAD_429 = False
 _ADS_RATE_LIMIT_STATS = {}
 _ADS_COLLECTOR_DEADLINE = None
+
+
+def _is_debug_log():
+    return LOG_LEVEL == "debug"
+
+
+def _debug_log(*args):
+    if _is_debug_log():
+        print(*args)
+
+
+def _summary_log(*args):
+    print(*args)
 
 
 def ads_api_had_429():
@@ -33,6 +50,7 @@ def ads_rate_limit_stats():
 
 def _mark_ads_api_status(status_code):
     global _ADS_API_HAD_429
+
     if status_code == 429 or (status_code is not None and status_code >= 500):
         _ADS_API_HAD_429 = True
         _ADS_RATE_LIMIT_STATS["partial"] = True
@@ -62,11 +80,13 @@ def _extract_campaign_type(campaign):
 
 def _campaign_raw_json(campaign):
     raw_json = campaign.get("raw_json") if isinstance(campaign, dict) else None
+
     if isinstance(raw_json, str):
         try:
             raw_json = json.loads(raw_json)
         except ValueError:
             raw_json = {"raw_json": raw_json}
+
     return raw_json if isinstance(raw_json, dict) else campaign
 
 
@@ -80,12 +100,15 @@ def _ensure_campaign_type_from_raw_json(campaigns):
     for campaign in campaigns or []:
         if not isinstance(campaign, dict):
             continue
+
         if campaign.get("campaign_type") in (None, ""):
             campaign["campaign_type"] = _extract_campaign_type(
                 _campaign_raw_json(campaign)
             )
+
         if campaign.get("campaign_type") in (None, ""):
             campaign["campaign_type"] = "unknown"
+
     return campaigns
 
 
@@ -99,9 +122,9 @@ def _campaign_type_is_unknown(campaign):
 def _log_ads_campaign_raw(campaigns):
     for campaign in (campaigns or [])[:10]:
         raw_json = _campaign_raw_json(campaign)
-        print("ADS CAMPAIGN RAW:")
-        print(f"campaign_id: {_campaign_record_id(campaign, raw_json)}")
-        print(f"raw_json: {json.dumps(raw_json, ensure_ascii=False, default=str)}")
+        _debug_log("ADS CAMPAIGN RAW:")
+        _debug_log(f"campaign_id: {_campaign_record_id(campaign, raw_json)}")
+        _debug_log(f"raw_json: {json.dumps(raw_json, ensure_ascii=False, default=str)}")
 
 
 def _log_ads_campaign_type_detection(campaigns):
@@ -109,16 +132,17 @@ def _log_ads_campaign_type_detection(campaigns):
         raw_json = _campaign_raw_json(campaign)
         campaign_id = _campaign_record_id(campaign, raw_json)
         source_field, raw_value = _campaign_type_field(raw_json)
+
         if source_field:
-            print("ADS CAMPAIGN TYPE FOUND:")
-            print(f"campaign_id: {campaign_id}")
-            print(f"source_field: {source_field}")
-            print(f"raw_value: {raw_value}")
-            print(f"resolved_type: {raw_value}")
+            _debug_log("ADS CAMPAIGN TYPE FOUND:")
+            _debug_log(f"campaign_id: {campaign_id}")
+            _debug_log(f"source_field: {source_field}")
+            _debug_log(f"raw_value: {raw_value}")
+            _debug_log(f"resolved_type: {raw_value}")
         else:
-            print("ADS CAMPAIGN TYPE NOT FOUND:")
-            print(f"campaign_id: {campaign_id}")
-            print(f"available_keys: {list(raw_json.keys())}")
+            _debug_log("ADS CAMPAIGN TYPE NOT FOUND:")
+            _debug_log(f"campaign_id: {campaign_id}")
+            _debug_log(f"available_keys: {list(raw_json.keys())}")
 
 
 def _extract_campaign_records(payload):
@@ -129,8 +153,10 @@ def _extract_campaign_records(payload):
         campaign_id = (
             value.get("advertId") or value.get("campaignId") or value.get("id")
         )
+
         if campaign_id in (None, "") or str(campaign_id) in seen:
             return
+
         seen.add(str(campaign_id))
         records.append(
             {
@@ -199,6 +225,15 @@ def _safe_percent(numerator, denominator):
     return round(_to_number(numerator) / denominator * 100, 2)
 
 
+def _safe_ratio(numerator, denominator):
+    denominator = _to_number(denominator)
+
+    if not denominator:
+        return 0
+
+    return round(_to_number(numerator) / denominator, 2)
+
+
 def _ads_collect_time_exceeded():
     return (
         _ADS_COLLECTOR_DEADLINE is not None
@@ -209,24 +244,19 @@ def _ads_collect_time_exceeded():
 def _ads_sleep(seconds, deadline=None):
     if seconds <= 0 or _ads_collect_time_exceeded():
         return
+
     deadlines = [
         value for value in (_ADS_COLLECTOR_DEADLINE, deadline) if value is not None
     ]
+
     if not deadlines:
         time.sleep(seconds)
         return
+
     remaining = min(deadlines) - time.monotonic()
+
     if remaining > 0:
         time.sleep(min(seconds, remaining))
-
-
-def _safe_ratio(numerator, denominator):
-    denominator = _to_number(denominator)
-
-    if not denominator:
-        return 0
-
-    return round(_to_number(numerator) / denominator, 2)
 
 
 def _request_ads_campaign_ids(token):
@@ -239,15 +269,15 @@ def _request_ads_campaign_ids(token):
     _mark_ads_api_status(response.status_code)
 
     if response.status_code != 200:
-        print("WB Ads campaigns API error")
-        print("STATUS:", response.status_code)
-        print("TEXT:", response.text)
+        _summary_log("WB Ads campaigns API error")
+        _summary_log("STATUS:", response.status_code)
+        _summary_log("TEXT:", response.text)
         return None, response.status_code
 
     try:
         payload = response.json()
     except ValueError:
-        print("WB Ads campaigns API returned invalid JSON")
+        _summary_log("WB Ads campaigns API returned invalid JSON")
         return None, response.status_code
 
     return _extract_campaign_records(payload), response.status_code
@@ -277,37 +307,40 @@ def _extract_campaign_detail_records(payload, requested_ids):
 
 
 def _log_ads_campaign_details_request(url, status, campaign_type, limit, offset):
-    print("ADS CAMPAIGN DETAILS REQUEST:")
-    print(f"url: {url}")
-    print(f"status: {status}")
-    print(f"type: {campaign_type}")
-    print(f"limit: {limit}")
-    print(f"offset: {offset}")
+    _debug_log("ADS CAMPAIGN DETAILS REQUEST:")
+    _debug_log(f"url: {url}")
+    _debug_log(f"status: {status}")
+    _debug_log(f"type: {campaign_type}")
+    _debug_log(f"limit: {limit}")
+    _debug_log(f"offset: {offset}")
 
 
 def _log_ads_campaign_details_result(rows_loaded, matched_campaign_ids):
-    print("ADS CAMPAIGN DETAILS RESULT:")
-    print(f"rows loaded: {rows_loaded}")
-    print(f"matched campaign ids: {len(matched_campaign_ids or [])}")
+    _summary_log("ADS CAMPAIGN DETAILS RESULT:")
+    _summary_log(f"rows loaded: {rows_loaded}")
+    _summary_log(f"matched campaign ids: {len(matched_campaign_ids or [])}")
 
 
 def _log_ads_campaign_details(campaigns):
     for campaign in campaigns or []:
-        print("ADS CAMPAIGN DETAILS:")
-        print(f"campaign_id: {campaign.get('campaign_id')}")
-        print(f"campaign_type: {campaign.get('campaign_type') or 'unknown'}")
-        print(f"campaign_name: {campaign.get('campaign_name')}")
+        _debug_log("ADS CAMPAIGN DETAILS:")
+        _debug_log(f"campaign_id: {campaign.get('campaign_id')}")
+        _debug_log(f"campaign_type: {campaign.get('campaign_type') or 'unknown'}")
+        _debug_log(f"campaign_name: {campaign.get('campaign_name')}")
 
 
 def _campaign_detail_items(payload):
     if isinstance(payload, list):
         return payload
+
     if not isinstance(payload, dict):
         return []
+
     for key in ("adverts", "campaigns", "data", "items", "content"):
         value = payload.get(key)
         if isinstance(value, list):
             return value
+
     return []
 
 
@@ -317,6 +350,7 @@ def _request_ads_campaign_details(token, campaign_ids):
         for campaign_id in campaign_ids or []
         if campaign_id not in (None, "")
     }
+
     if not requested_ids:
         _log_ads_campaign_details_request(
             ADS_CAMPAIGN_DETAILS_URL, None, None, ADS_CAMPAIGN_DETAILS_LIMIT, 0
@@ -327,6 +361,7 @@ def _request_ads_campaign_details(token, campaign_ids):
     loaded_campaigns = {}
     rows_loaded = 0
     status_code = None
+
     for status in ADS_CAMPAIGN_DETAILS_STATUSES:
         for campaign_type in ADS_CAMPAIGN_DETAILS_TYPES:
             offset = 0
@@ -339,6 +374,7 @@ def _request_ads_campaign_details(token, campaign_ids):
                     "limit": ADS_CAMPAIGN_DETAILS_LIMIT,
                     "offset": offset,
                 }
+
                 _log_ads_campaign_details_request(
                     ADS_CAMPAIGN_DETAILS_URL,
                     status,
@@ -346,6 +382,7 @@ def _request_ads_campaign_details(token, campaign_ids):
                     ADS_CAMPAIGN_DETAILS_LIMIT,
                     offset,
                 )
+
                 response = requests.get(
                     ADS_CAMPAIGN_DETAILS_URL,
                     headers={"Authorization": token},
@@ -354,30 +391,35 @@ def _request_ads_campaign_details(token, campaign_ids):
                 )
                 status_code = response.status_code
                 _mark_ads_api_status(status_code)
+
                 if status_code != 200:
-                    print("WB Ads campaign details API error")
-                    print("STATUS:", status_code)
-                    print("TEXT:", response.text)
+                    _summary_log("WB Ads campaign details API error")
+                    _summary_log("STATUS:", status_code)
+                    _summary_log("TEXT:", response.text)
                     break
+
                 try:
                     payload = response.json()
                 except ValueError:
-                    print("WB Ads campaign details API returned invalid JSON")
+                    _summary_log("WB Ads campaign details API returned invalid JSON")
                     break
 
                 items = _campaign_detail_items(payload)
                 rows_loaded += len(items)
+
                 for detail in _extract_campaign_detail_records(items, requested_ids):
                     loaded_campaigns[str(detail.get("campaign_id"))] = detail
 
                 if len(items) < ADS_CAMPAIGN_DETAILS_LIMIT:
                     break
+
                 offset += ADS_CAMPAIGN_DETAILS_LIMIT
 
     campaigns = list(loaded_campaigns.values())
     _ensure_campaign_type_from_raw_json(campaigns)
     _log_ads_campaign_details_result(rows_loaded, sorted(loaded_campaigns.keys()))
     _log_ads_campaign_details(campaigns)
+
     return campaigns, status_code
 
 
@@ -387,14 +429,18 @@ def _merge_campaign_details(campaigns, details):
         for row in details or []
         if row.get("campaign_id") not in (None, "")
     }
+
     merged = []
+
     for campaign in campaigns or []:
         campaign_id = str(campaign.get("campaign_id"))
         detail = details_by_id.get(campaign_id)
+
         if detail:
             merged.append({**campaign, **detail})
         else:
             merged.append({**campaign, "campaign_type": "unknown"})
+
     return _ensure_campaign_type_from_raw_json(merged)
 
 
@@ -407,6 +453,7 @@ def _env_int(name, default):
 
 def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=None):
     global _ADS_RATE_LIMIT_STATS
+
     retry_sleep = 20
     _ADS_RATE_LIMIT_STATS["retry_sleep_seconds"] = retry_sleep
     response = None
@@ -419,14 +466,17 @@ def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=N
             if _ads_collect_time_exceeded():
                 _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = True
             break
+
         request_timeout = ADS_TIMEOUT_SECONDS
         deadlines = [
             value for value in (_ADS_COLLECTOR_DEADLINE, deadline) if value is not None
         ]
+
         if deadlines:
             request_timeout = max(
                 1, min(ADS_TIMEOUT_SECONDS, min(deadlines) - time.monotonic())
             )
+
         response = requests.get(
             ADS_FULLSTATS_URL,
             headers={"Authorization": token},
@@ -439,30 +489,33 @@ def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=N
         )
 
         _mark_ads_api_status(response.status_code)
+
         if response.status_code == 429:
             _ADS_RATE_LIMIT_STATS["429_count"] = (
                 _ADS_RATE_LIMIT_STATS.get("429_count", 0) + 1
             )
             _ADS_RATE_LIMIT_STATS["partial"] = True
             break
+
         if response.status_code >= 500 and attempt == 0:
             _ADS_RATE_LIMIT_STATS["retries_used"] = (
                 _ADS_RATE_LIMIT_STATS.get("retries_used", 0) + 1
             )
             _ads_sleep(retry_sleep, deadline=deadline)
             continue
+
         break
 
     if response is None or response.status_code != 200:
-        print("WB Ads API error")
-        print("STATUS:", response.status_code if response is not None else "n/a")
-        print("TEXT:", response.text if response is not None else "")
+        _summary_log("WB Ads API error")
+        _summary_log("STATUS:", response.status_code if response is not None else "n/a")
+        _summary_log("TEXT:", response.text if response is not None else "")
         return None, response.status_code if response is not None else None
 
     try:
         return response.json(), response.status_code
     except ValueError:
-        print("WB Ads API returned invalid JSON")
+        _summary_log("WB Ads API returned invalid JSON")
         return None, response.status_code
 
 
@@ -478,12 +531,14 @@ def _flatten_nm_stats(campaign):
 
     append_nm_rows(campaign.get("nms"))
     append_nm_rows(campaign.get("nmIds"))
+
     for advert_item in campaign.get("advertItems") or campaign.get("items") or []:
         if isinstance(advert_item, dict):
             append_nm_rows(advert_item.get("nms"))
             append_nm_rows(advert_item.get("nmIds"))
             if advert_item.get("nm") or advert_item.get("nmId"):
                 nm_rows.append(advert_item)
+
     for day in campaign.get("days") or []:
         for app in day.get("apps") or []:
             append_nm_rows(app.get("nms"))
@@ -513,18 +568,22 @@ def _extract_search_queries(campaign):
         campaign.get("keywords"),
         campaign.get("searchPhrases"),
     )
+
     for container in containers:
         if not isinstance(container, list):
             continue
+
         for item in container:
             if not isinstance(item, dict):
                 continue
+
             query = item.get("query") or item.get("keyword") or item.get("phrase")
             impressions = _to_number(item.get("views") or item.get("impressions"))
             clicks = _to_number(item.get("clicks"))
             spend = _to_number(item.get("sum") or item.get("spend"))
             orders = _to_number(item.get("orders"))
             revenue = _to_number(item.get("sum_price") or item.get("ordersSum"))
+
             query_rows.append(
                 {
                     "query": query,
@@ -536,6 +595,7 @@ def _extract_search_queries(campaign):
                     "drr": _safe_percent(spend, revenue),
                 }
             )
+
     return query_rows
 
 
@@ -558,9 +618,13 @@ def _extract_status(campaign):
 
 
 def _debug_ads_raw(campaigns, report_date):
+    if not _is_debug_log():
+        return
+
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORTS_DIR / f"debug_ads_raw_{report_date.strftime('%Y_%m_%d')}.json"
     payload = []
+
     for campaign in campaigns or []:
         nm_rows = _flatten_nm_stats(campaign)
         payload.append(
@@ -581,8 +645,9 @@ def _debug_ads_raw(campaigns, report_date):
                 "raw": campaign,
             }
         )
+
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"ADS RAW DEBUG DUMP: {path}")
+    _debug_log(f"ADS RAW DEBUG DUMP: {path}")
 
 
 def _aggregate_campaign(campaign, nm_row=None):
@@ -612,6 +677,7 @@ def _aggregate_campaign(campaign, nm_row=None):
         )
 
     first_nm = nm_row or (nm_rows[0] if nm_rows else {})
+
     if nm_row:
         impressions = _to_number(
             nm_row.get("views") or nm_row.get("impressions"), impressions
@@ -622,6 +688,7 @@ def _aggregate_campaign(campaign, nm_row=None):
         orders_sum = _to_number(
             nm_row.get("sum_price") or nm_row.get("ordersSum"), orders_sum
         )
+
     ctr = _to_number(campaign.get("ctr")) or _safe_percent(clicks, impressions)
     cpc = _to_number(campaign.get("cpc")) or _safe_ratio(spend, clicks)
     cpm = _to_number(campaign.get("cpm")) or _safe_ratio(spend * 1000, impressions)
@@ -663,12 +730,15 @@ def _enrich_ads_rows_with_campaign_details(rows, campaigns):
         for campaign in campaigns or []
         if campaign.get("campaign_id") not in (None, "")
     }
+
     for row in rows or []:
         campaign_id = str(row.get("campaignId") or row.get("advertId") or "")
         campaign = campaigns_by_id.get(campaign_id)
+
         if not campaign:
             row["campaignType"] = row.get("campaignType") or "unknown"
             continue
+
         row["campaignType"] = (
             row.get("campaignType")
             or campaign.get("campaign_type")
@@ -681,6 +751,7 @@ def _enrich_ads_rows_with_campaign_details(rows, campaigns):
         row["campaignStatus"] = (
             row.get("campaignStatus") or campaign.get("campaign_status")
         )
+
     return rows
 
 
@@ -694,6 +765,7 @@ def _merge_previous_period(current_rows, previous_rows):
         previous = previous_by_campaign_nm.get(
             (row.get("campaignId"), row.get("nmId"))
         ) or previous_by_campaign.get(row.get("campaignId"), {})
+
         for metric in (
             "impressions",
             "clicks",
@@ -713,73 +785,76 @@ def _merge_previous_period(current_rows, previous_rows):
 def _append_campaign_rows(target_rows, campaign):
     campaign_rows = []
     nm_rows = _flatten_nm_stats(campaign)
+
     if nm_rows:
         campaign_rows.extend(
             _aggregate_campaign(campaign, nm_row) for nm_row in nm_rows
         )
     else:
         campaign_rows.append(_aggregate_campaign(campaign))
+
     target_rows.extend(campaign_rows)
     return campaign_rows
 
 
 def _log_ads_campaign_result(campaign_id, status, rows):
-    print("ADS CAMPAIGN RESULT:")
-    print(f"campaign_id: {campaign_id}")
-    print(f"status: {status}")
-    print(f"rows: {rows}")
+    _debug_log("ADS CAMPAIGN RESULT:")
+    _debug_log(f"campaign_id: {campaign_id}")
+    _debug_log(f"status: {status}")
+    _debug_log(f"rows: {rows}")
 
 
 def _log_ads_campaign_time_limit(campaign_id, elapsed):
-    print("ADS CAMPAIGN TIME LIMIT:")
-    print(f"campaign_id: {campaign_id}")
-    print(f"elapsed: {elapsed:.1f}")
-    print("status: timeout")
+    _summary_log("ADS CAMPAIGN TIME LIMIT:")
+    _summary_log(f"campaign_id: {campaign_id}")
+    _summary_log(f"elapsed: {elapsed:.1f}")
+    _summary_log("status: timeout")
 
 
 def _update_campaign_health(seller_id, campaign_id, status, rows=0, error_code=None):
     storage = _storage()
+
     if (
         not seller_id
         or not storage
         or not hasattr(storage, "update_ads_campaign_stats_status")
     ):
         return
+
     storage.update_ads_campaign_stats_status(
         seller_id, [campaign_id], status, rows=rows, error_code=error_code
     )
 
 
 def _log_ads_fullstats_batch_mode(campaign_ids, batches):
-    print("ADS FULLSTATS BATCH MODE:")
-    print(f"campaign ids total: {len(campaign_ids or [])}")
-    print(f"batch size: {ADS_CAMPAIGN_BATCH_SIZE}")
-    print(f"batches: {len(batches or [])}")
+    _summary_log("ADS FULLSTATS BATCH MODE:")
+    _summary_log(f"campaign ids total: {len(campaign_ids or [])}")
+    _summary_log(f"batch size: {ADS_CAMPAIGN_BATCH_SIZE}")
+    _summary_log(f"batches: {len(batches or [])}")
 
 
 def _log_ads_fullstats_batch_request(
     batch_index, batches_count, batch, begin_date, end_date
 ):
-    print("ADS FULLSTATS BATCH REQUEST:")
-    print(f"batch: {batch_index}/{batches_count}")
-    print(f"campaigns in batch: {len(batch or [])}")
-    print(f"beginDate: {begin_date}")
-    print(f"endDate: {end_date}")
+    _debug_log("ADS FULLSTATS BATCH REQUEST:")
+    _debug_log(f"batch: {batch_index}/{batches_count}")
+    _debug_log(f"campaigns in batch: {len(batch or [])}")
+    _debug_log(f"beginDate: {begin_date}")
+    _debug_log(f"endDate: {end_date}")
 
 
 def _log_ads_fullstats_batch_result(batch_index, batches_count, rows, status):
-    print("ADS FULLSTATS BATCH RESULT:")
-    print(f"batch: {batch_index}/{batches_count}")
-    print(f"rows: {rows}")
-    print(f"status: {status}")
+    _summary_log("ADS FULLSTATS BATCH RESULT:")
+    _summary_log(f"batch: {batch_index}/{batches_count}")
+    _summary_log(f"rows: {rows}")
+    _summary_log(f"status: {status}")
 
 
-def _collect_ads_period_batches(
-    token, campaign_ids, begin_date, end_date, report_date
-):
+def _collect_ads_period_batches(token, campaign_ids, begin_date, end_date, report_date):
     payloads = []
     batches = list(_chunked(campaign_ids or [], ADS_CAMPAIGN_BATCH_SIZE))
     batches_count = len(batches)
+
     for index, batch in enumerate(batches, start=1):
         if _ads_collect_time_exceeded():
             _ADS_RATE_LIMIT_STATS["partial"] = True
@@ -793,15 +868,15 @@ def _collect_ads_period_batches(
         payload, status_code = _request_ads_fullstats(
             token, batch, begin_date, end_date
         )
+
         if status_code == 429:
             _ADS_RATE_LIMIT_STATS["partial"] = True
             _log_ads_fullstats_batch_result(index, batches_count, 0, "partial")
             continue
+
         if payload is None:
             _ADS_RATE_LIMIT_STATS["partial"] = True
-            batch_status = (
-                "partial" if status_code and status_code >= 500 else "error"
-            )
+            batch_status = "partial" if status_code and status_code >= 500 else "error"
             _log_ads_fullstats_batch_result(index, batches_count, 0, batch_status)
             continue
 
@@ -812,6 +887,7 @@ def _collect_ads_period_batches(
 
         if index < batches_count:
             _ads_sleep(20)
+
     return payloads
 
 
@@ -845,6 +921,7 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date, seller_id=None
     )
 
     loaded_campaign_ids = set()
+
     for campaign in current_payload:
         campaign_id = str(_campaign_id(campaign) or "")
         if campaign_id:
@@ -862,6 +939,7 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date, seller_id=None
 
     for campaign_id in success_campaign_ids:
         _update_campaign_health(seller_id, campaign_id, "success")
+
     for campaign_id in partial_campaign_ids:
         _update_campaign_health(seller_id, campaign_id, "partial")
 
@@ -890,21 +968,25 @@ def _storage():
     try:
         from app.storage import supabase_storage as storage
     except Exception as error:
-        print(f"WARNING: Ads Supabase storage unavailable: {error}")
+        _summary_log(f"WARNING: Ads Supabase storage unavailable: {error}")
         return None
+
     return storage
 
 
 def _env_bool(name, default=False):
     value = os.getenv(name)
+
     if value is None:
         return default
+
     return value.strip().lower() in {"1", "true", "yes", "y", "да"}
 
 
 def _parse_datetime(value):
     if not value:
         return None
+
     if isinstance(value, datetime):
         parsed = value
     else:
@@ -912,22 +994,27 @@ def _parse_datetime(value):
             parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         except ValueError:
             return None
+
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
     return parsed
 
 
 def _campaign_cache_age(campaigns):
     timestamps = [_parse_datetime(row.get("last_seen_at")) for row in campaigns or []]
     timestamps = [ts for ts in timestamps if ts]
+
     if not timestamps:
         return None
+
     newest = max(timestamps)
     return datetime.utcnow() - newest
 
 
 def _campaign_cache_is_fresh(campaigns):
     age = _campaign_cache_age(campaigns)
+
     return (
         bool(campaigns)
         and age is not None
@@ -946,21 +1033,25 @@ def _campaign_ids_from_records(records):
 def _campaign_cache_log(source, campaigns, force_refresh):
     age = _campaign_cache_age(campaigns)
     age_text = "n/a" if age is None else str(age).split(".")[0]
-    print("ADS CAMPAIGN CACHE:")
-    print(f"source: {source}")
-    print(f"campaigns: {len(campaigns or [])}")
-    print(f"cache age: {age_text}")
-    print(f"force refresh: {str(bool(force_refresh)).lower()}")
+
+    _summary_log("ADS CAMPAIGN CACHE:")
+    _summary_log(f"source: {source}")
+    _summary_log(f"campaigns: {len(campaigns or [])}")
+    _summary_log(f"cache age: {age_text}")
+    _summary_log(f"force refresh: {str(bool(force_refresh)).lower()}")
 
 
 def _load_campaigns(token, seller_id):
     storage = _storage()
     force_refresh = _env_bool("WB_ADS_FORCE_REFRESH_CAMPAIGNS", False)
     cached_campaigns = []
+
     if storage and hasattr(storage, "get_ads_campaigns_cache"):
         cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
+
     if not force_refresh and _campaign_cache_is_fresh(cached_campaigns):
         _ensure_campaign_type_from_raw_json(cached_campaigns)
+
         if any(_campaign_type_is_unknown(campaign) for campaign in cached_campaigns):
             campaign_ids = _campaign_ids_from_records(cached_campaigns)
             detail_campaigns, _ = _request_ads_campaign_details(token, campaign_ids)
@@ -970,35 +1061,41 @@ def _load_campaigns(token, seller_id):
             if storage and hasattr(storage, "save_ads_campaigns_cache"):
                 storage.save_ads_campaigns_cache(seller_id, cached_campaigns)
                 cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
+
             _ensure_campaign_type_from_raw_json(cached_campaigns)
+
         _log_ads_campaign_raw(cached_campaigns)
         _log_ads_campaign_type_detection(cached_campaigns)
         _campaign_cache_log("cache", cached_campaigns, force_refresh)
+
         return cached_campaigns, 200
 
     api_campaigns, campaign_status = _request_ads_campaign_ids(token)
+
     if api_campaigns is None:
         _campaign_cache_log("api", cached_campaigns, force_refresh)
         return None, campaign_status
+
     campaign_ids = _campaign_ids_from_records(api_campaigns)
     detail_campaigns, _ = _request_ads_campaign_details(token, campaign_ids)
     api_campaigns = _merge_campaign_details(api_campaigns, detail_campaigns)
     _log_ads_campaign_raw(api_campaigns)
     _log_ads_campaign_type_detection(api_campaigns)
+
     if storage and hasattr(storage, "save_ads_campaigns_cache"):
         storage.save_ads_campaigns_cache(seller_id, api_campaigns)
         cached_campaigns = storage.get_ads_campaigns_cache(seller_id)
-    campaigns = _ensure_campaign_type_from_raw_json(
-        cached_campaigns or api_campaigns
-    )
-    _campaign_cache_log("api", campaigns, force_refresh)
-    return campaigns, campaign_status
 
+    campaigns = _ensure_campaign_type_from_raw_json(cached_campaigns or api_campaigns)
+    _campaign_cache_log("api", campaigns, force_refresh)
+
+    return campaigns, campaign_status
 
 
 def _bid_kopecks_to_rubles(value):
     if value in (None, ""):
         return None
+
     try:
         return round(float(value) / 100, 2)
     except (TypeError, ValueError):
@@ -1007,13 +1104,17 @@ def _bid_kopecks_to_rubles(value):
 
 def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
     rows = []
+
     for campaign in campaigns or []:
         if not isinstance(campaign, dict):
             continue
+
         raw_json = _campaign_raw_json(campaign)
         campaign_id = _campaign_record_id(campaign, raw_json)
+
         if campaign_id in (None, ""):
             continue
+
         settings = (
             raw_json.get("settings")
             if isinstance(raw_json.get("settings"), dict)
@@ -1024,6 +1125,7 @@ def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
             if isinstance(raw_json.get("timestamps"), dict)
             else {}
         )
+
         base = {
             "seller_id": seller_id,
             "seller_name": os.getenv("SELLER_NAME"),
@@ -1038,7 +1140,9 @@ def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
             "campaign_updated_at": timestamps.get("updated")
             or raw_json.get("updatedAt"),
         }
+
         nm_settings = raw_json.get("nm_settings") or raw_json.get("nmSettings")
+
         if not isinstance(nm_settings, list) or not nm_settings:
             rows.append(
                 {
@@ -1049,14 +1153,17 @@ def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
                 }
             )
             continue
+
         for item in nm_settings:
             if not isinstance(item, dict):
                 continue
+
             bids = (
                 item.get("bids_kopecks")
                 if isinstance(item.get("bids_kopecks"), dict)
                 else {}
             )
+
             rows.append(
                 {
                     **base,
@@ -1067,6 +1174,7 @@ def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
                     ),
                 }
             )
+
     return rows
 
 
@@ -1074,12 +1182,15 @@ def _save_ads_bid_history(campaigns, report_date, seller_id=None):
     bid_rows = _extract_ads_bid_history_rows(
         campaigns, report_date, seller_id=seller_id
     )
-    print(f"ads bids collected: {len(bid_rows)}")
+    _summary_log(f"ads bids collected: {len(bid_rows)}")
+
     storage = _storage()
     saved = 0
     changed = 0
+
     if storage and hasattr(storage, "save_ads_bid_history"):
         saved = storage.save_ads_bid_history(bid_rows) or 0
+
     if storage and hasattr(storage, "enrich_ads_bid_history_changes"):
         enriched = storage.enrich_ads_bid_history_changes(
             bid_rows, seller_id=seller_id
@@ -1090,8 +1201,12 @@ def _save_ads_bid_history(campaigns, report_date, seller_id=None):
             if row.get("search_bid_delta") not in (None, "", 0)
             or row.get("recommendations_bid_delta") not in (None, "", 0)
         )
-    print(f"ads bids saved: {saved}")
-    print(f"ads bid changes found: {changed}")
+
+    _summary_log("ADS BID HISTORY:")
+    _summary_log(f"rows collected: {len(bid_rows)}")
+    _summary_log(f"rows saved: {saved}")
+    _summary_log(f"changes found: {changed}")
+
 
 def _is_active_campaign(campaign):
     status = str(campaign.get("campaign_status") or "").strip().lower()
@@ -1119,9 +1234,12 @@ def _campaign_nm_ids(campaign):
 def _is_repeated_error_cooldown(campaign, now=None):
     if _to_number(campaign.get("consecutive_errors")) < 3:
         return False
+
     last_stats = _parse_datetime(campaign.get("last_stats_at"))
+
     if last_stats is None:
         return False
+
     return (now or datetime.utcnow()) - last_stats < timedelta(hours=6)
 
 
@@ -1135,15 +1253,18 @@ def _select_staged_campaigns(campaigns, top_drop_nm_ids=None, oos_nm_ids=None):
     }
     oos_nm_ids = {str(value) for value in oos_nm_ids or [] if value not in (None, "")}
     now = datetime.utcnow()
+
     eligible_campaigns = []
     cooldown_skipped = 0
+
     for campaign in campaigns or []:
         if _is_repeated_error_cooldown(campaign, now=now):
             cooldown_skipped += 1
-            print("ADS CAMPAIGN SKIPPED:")
-            print(f"campaign_id: {campaign.get('campaign_id')}")
-            print("reason: repeated errors cooldown")
+            _debug_log("ADS CAMPAIGN SKIPPED:")
+            _debug_log(f"campaign_id: {campaign.get('campaign_id')}")
+            _debug_log("reason: repeated errors cooldown")
             continue
+
         eligible_campaigns.append(campaign)
 
     def sort_key(row):
@@ -1153,6 +1274,7 @@ def _select_staged_campaigns(campaigns, top_drop_nm_ids=None, oos_nm_ids=None):
         nm_ids = _campaign_nm_ids(row)
         top_drop_rank = 0 if top_drop_nm_ids & nm_ids else 1
         oos_rank = 0 if oos_nm_ids & nm_ids else 1
+
         return (
             top_drop_rank,
             oos_rank,
@@ -1165,33 +1287,47 @@ def _select_staged_campaigns(campaigns, top_drop_nm_ids=None, oos_nm_ids=None):
 
     selected = sorted(eligible_campaigns, key=sort_key)[:max_per_run]
     skipped = max(0, len(campaigns or []) - len(selected))
-    print("ADS PRIORITY QUEUE:")
-    print(f"campaigns total: {len(campaigns or [])}")
-    print(f"campaigns selected: {len(selected)}")
-    print(f"campaigns skipped: {skipped}")
-    print(
+
+    _summary_log("ADS PRIORITY QUEUE:")
+    _summary_log(f"campaigns total: {len(campaigns or [])}")
+    _summary_log(f"campaigns selected: {len(selected)}")
+    _summary_log(f"campaigns skipped: {skipped}")
+    _summary_log(
         "selection reason: TOP drops, OOS forecast, no stats, oldest stats update, then active status"
     )
+
     if cooldown_skipped:
-        print(f"campaigns skipped by repeated errors cooldown: {cooldown_skipped}")
+        _summary_log(f"campaigns skipped by repeated errors cooldown: {cooldown_skipped}")
+
     selected_ids = {str(row.get("campaign_id")) for row in selected}
+    queued_for_future = 0
+
     for campaign in eligible_campaigns:
         campaign_id = str(campaign.get("campaign_id"))
         if campaign_id and campaign_id not in selected_ids:
-            print("ADS CAMPAIGN NEXT RUN:")
-            print(f"campaign_id: {campaign_id}")
-            print("reason: campaign remains queued for a future run")
+            queued_for_future += 1
+            _debug_log("ADS CAMPAIGN NEXT RUN:")
+            _debug_log(f"campaign_id: {campaign_id}")
+            _debug_log("reason: campaign remains queued for a future run")
+
+    if queued_for_future:
+        _summary_log(f"campaigns queued for future run: {queued_for_future}")
+
     return selected
 
 
 def _coverage_confidence(processed, total):
     if not total:
         return "HIGH"
+
     coverage = processed / total
+
     if coverage < 0.8:
         return "LOW"
+
     if coverage <= 0.95:
         return "MEDIUM"
+
     return "HIGH"
 
 
@@ -1199,6 +1335,7 @@ def collect_ads_stats(
     report_date=None, seller_id=None, top_drop_nm_ids=None, oos_nm_ids=None
 ):
     global _ADS_API_HAD_429, _ADS_RATE_LIMIT_STATS, _ADS_COLLECTOR_DEADLINE
+
     _ADS_API_HAD_429 = False
     _ADS_RATE_LIMIT_STATS = {
         "429_count": 0,
@@ -1207,22 +1344,24 @@ def collect_ads_stats(
         "campaigns_requested": 0,
         "campaigns_loaded": 0,
     }
+
     max_collect_seconds = max(1, _env_int("WB_ADS_MAX_COLLECT_SECONDS", 60))
     collect_started_at = time.monotonic()
     _ADS_COLLECTOR_DEADLINE = collect_started_at + max_collect_seconds
     _ADS_RATE_LIMIT_STATS["max_collect_seconds"] = max_collect_seconds
     _ADS_RATE_LIMIT_STATS["stopped_by_time_limit"] = False
     _ADS_RATE_LIMIT_STATS["partial_rows_saved"] = 0
+
     report_date = report_date or (datetime.now().date() - timedelta(days=1))
     token_source = wb_config.CURRENT_WB_TOKEN_SECRET_NAME
     token = wb_config.WB_API_TOKEN or os.getenv(token_source)
 
     if token:
-        print(f"ADS TOKEN SOURCE: {token_source}")
+        _summary_log(f"ADS TOKEN SOURCE: {token_source}")
     else:
-        print("ADS TOKEN: not configured")
-        print("Ads collector работает в stub mode")
-        print("Ads rows: 0")
+        _summary_log("ADS TOKEN: not configured")
+        _summary_log("Ads collector работает в stub mode")
+        _summary_log("Ads rows: 0")
         return []
 
     seller_id = (
@@ -1232,18 +1371,18 @@ def collect_ads_stats(
 
     if campaigns is None:
         if _is_stub_status(campaign_status):
-            print("Ads collector работает в stub mode")
+            _summary_log("Ads collector работает в stub mode")
         else:
-            print("Ads collector fallback to stub mode")
-        print("Ads rows: 0")
+            _summary_log("Ads collector fallback to stub mode")
+        _summary_log("Ads rows: 0")
         return []
 
-    print(f"ADS CAMPAIGNS FOUND: {len(campaigns)}")
+    _summary_log(f"ADS CAMPAIGNS FOUND: {len(campaigns)}")
     _save_ads_bid_history(campaigns, report_date, seller_id=seller_id)
 
     if not campaigns:
-        print("Ads collector работает в stub mode")
-        print("Ads rows: 0")
+        _summary_log("Ads collector работает в stub mode")
+        _summary_log("Ads rows: 0")
         return []
 
     selected_campaigns = _select_staged_campaigns(
@@ -1255,6 +1394,7 @@ def collect_ads_stats(
     _ADS_RATE_LIMIT_STATS["campaigns_skipped"] = max(
         0, len(campaigns) - len(campaign_ids)
     )
+
     if _ADS_RATE_LIMIT_STATS["campaigns_skipped"]:
         _ADS_RATE_LIMIT_STATS["partial"] = True
 
@@ -1275,49 +1415,58 @@ def collect_ads_stats(
         for row in ads_rows
         if row.get("campaignId") or row.get("advertId")
     }
-    print("ADS RATE LIMIT:")
-    print(f"429 count: {_ADS_RATE_LIMIT_STATS.get('429_count', 0)}")
-    print(f"retries used: {_ADS_RATE_LIMIT_STATS.get('retries_used', 0)}")
-    print(f"partial: {str(bool(_ADS_RATE_LIMIT_STATS.get('partial'))).lower()}")
-    print(
+
+    _summary_log("ADS RATE LIMIT:")
+    _summary_log(f"429 count: {_ADS_RATE_LIMIT_STATS.get('429_count', 0)}")
+    _summary_log(f"retries used: {_ADS_RATE_LIMIT_STATS.get('retries_used', 0)}")
+    _summary_log(f"partial: {str(bool(_ADS_RATE_LIMIT_STATS.get('partial'))).lower()}")
+    _summary_log(
         f"campaigns requested: {_ADS_RATE_LIMIT_STATS.get('campaigns_requested') or len(campaign_ids)}"
     )
-    print(
+    _summary_log(
         f"campaigns loaded: {_ADS_RATE_LIMIT_STATS.get('campaigns_loaded') or len(row_campaign_ids)}"
     )
-    print("ADS COLLECTION SUMMARY:")
-    print(
+
+    _summary_log("ADS COLLECTION SUMMARY:")
+    _summary_log(
         f"campaigns attempted: {_ADS_RATE_LIMIT_STATS.get('campaigns_attempted', len(campaign_ids))}"
     )
-    print(f"campaigns success: {_ADS_RATE_LIMIT_STATS.get('campaigns_success', 0)}")
-    print(f"campaigns partial: {_ADS_RATE_LIMIT_STATS.get('campaigns_partial', 0)}")
-    print(f"campaigns failed: {_ADS_RATE_LIMIT_STATS.get('campaigns_failed', 0)}")
-    print(f"ads rows total: {len(ads_rows)}")
+    _summary_log(f"campaigns success: {_ADS_RATE_LIMIT_STATS.get('campaigns_success', 0)}")
+    _summary_log(f"campaigns partial: {_ADS_RATE_LIMIT_STATS.get('campaigns_partial', 0)}")
+    _summary_log(f"campaigns failed: {_ADS_RATE_LIMIT_STATS.get('campaigns_failed', 0)}")
+    _summary_log(f"ads rows total: {len(ads_rows)}")
+
     elapsed = round(time.monotonic() - collect_started_at, 2)
     _ADS_RATE_LIMIT_STATS["elapsed_seconds"] = elapsed
-    print("ADS COLLECTOR TIME LIMIT:")
-    print(f"max seconds: {max_collect_seconds}")
-    print(f"elapsed: {elapsed}")
-    print(
+
+    _summary_log("ADS COLLECTOR TIME LIMIT:")
+    _summary_log(f"max seconds: {max_collect_seconds}")
+    _summary_log(f"elapsed: {elapsed}")
+    _summary_log(
         "stopped by limit: "
         f"{str(bool(_ADS_RATE_LIMIT_STATS.get('stopped_by_time_limit'))).lower()}"
     )
-    print(
+    _summary_log(
         f"partial rows saved: {_ADS_RATE_LIMIT_STATS.get('partial_rows_saved', len(ads_rows))}"
     )
-    print("ADS COVERAGE:")
-    print(f"campaigns: {len(campaign_ids) or len(row_campaign_ids)}")
-    print(f"ads rows: {len(ads_rows)}")
-    print(f"unique nmIds: {len(unique_nmids)}")
+
+    _summary_log("ADS COVERAGE:")
+    _summary_log(f"campaigns: {len(campaign_ids) or len(row_campaign_ids)}")
+    _summary_log(f"ads rows: {len(ads_rows)}")
+    _summary_log(f"unique nmIds: {len(unique_nmids)}")
+
     total_campaigns = len(campaigns) or len(row_campaign_ids)
     processed_campaigns = _ADS_RATE_LIMIT_STATS.get("campaigns_loaded") or len(
         row_campaign_ids
     )
     confidence = _coverage_confidence(processed_campaigns, total_campaigns)
     _ADS_RATE_LIMIT_STATS["adsCoverageConfidence"] = confidence
-    print(f"coverage confidence: {confidence}")
-    print(f"Ads rows: {len(ads_rows)}")
+
+    _summary_log(f"coverage confidence: {confidence}")
+    _summary_log(f"Ads rows: {len(ads_rows)}")
+
     storage = _storage()
+
     if storage and hasattr(storage, "update_ads_campaign_stats_status"):
         processed_ids = {
             str(row.get("campaignId") or row.get("advertId"))
@@ -1325,11 +1474,14 @@ def collect_ads_stats(
             if row.get("campaignId") or row.get("advertId")
         }
         failed_ids = set(campaign_ids) - processed_ids
+
         if processed_ids:
             storage.update_ads_campaign_stats_status(
                 seller_id, processed_ids, "success"
             )
+
         if failed_ids:
             status = "partial" if _ADS_RATE_LIMIT_STATS.get("partial") else "error"
             storage.update_ads_campaign_stats_status(seller_id, failed_ids, status)
+
     return ads_rows
