@@ -41,6 +41,7 @@ FUNNEL_METRIC_FIELDS = [
     "mpStocks",
     "realSellableStock",
 ]
+
 ADS_METRIC_FIELDS = [
     "impressions",
     "clicks",
@@ -55,6 +56,7 @@ ADS_METRIC_FIELDS = [
     "drr",
     "bid",
 ]
+
 SUPPLY_METRIC_FIELDS = [
     "incomingStock",
     "acceptanceStock",
@@ -63,6 +65,7 @@ SUPPLY_METRIC_FIELDS = [
     "returningStock",
     "realSellableStock",
 ]
+
 BUSINESS_IMPACT_FIELDS = [
     "lostOrders",
     "lostOrderSum",
@@ -71,6 +74,7 @@ BUSINESS_IMPACT_FIELDS = [
     "blockedRevenuePerDay",
     "blockedOrdersPerDay",
 ]
+
 FORECAST_FIELDS = [
     "forecastEtaHours",
     "daysUntilOOS",
@@ -82,15 +86,19 @@ FORECAST_FIELDS = [
 def _first_present(row, keys, default=""):
     if not isinstance(row, dict):
         return default
+
     for key in keys:
         value = row.get(key)
+
         if value not in (None, ""):
             return value
+
     return default
 
 
 def _nm_id(row):
     value = _first_present(row, ["nmId", "nmID", "nm_id", "nm"], None)
+
     try:
         return int(float(str(value)))
     except (TypeError, ValueError):
@@ -100,30 +108,40 @@ def _nm_id(row):
 def _product_container(row):
     if not isinstance(row, dict):
         return {}
+
     product = row.get("product")
+
     if isinstance(product, dict):
         return {**row, **product}
+
     return row
 
 
 def _records_by_nm_id(rows):
     result = {}
+
     for row in rows or []:
         if not isinstance(row, dict):
             continue
+
         nm_id = _nm_id(row)
+
         if nm_id is not None:
             result.setdefault(nm_id, []).append(row)
+
     return result
 
 
 def _products_by_nm_id(rows):
     result = {}
+
     for row in rows or []:
         product = _product_container(row)
         nm_id = _nm_id(product)
+
         if nm_id is not None:
             result[nm_id] = product
+
     return result
 
 
@@ -133,19 +151,24 @@ def _value_filled(value):
 
 def _fields_filled(rows, fields):
     seen = set()
+
     for row in rows or []:
         for field in fields:
             if _value_filled(_first_present(row, [field, _snake_case(field)], None)):
                 seen.add(field)
+
     return len(seen)
 
 
 def _snake_case(name):
     chars = []
+
     for char in name:
         if char.isupper() and chars:
             chars.append("_")
+
         chars.append(char.lower())
+
     return "".join(chars)
 
 
@@ -159,15 +182,28 @@ def _problem_category(problem):
     metric = (
         str(problem.get("metric") or "").lower() if isinstance(problem, dict) else ""
     )
+
     if category:
         return category
+
     if problem_type.startswith("ads_") or metric in {"ctr", "cpc", "drr", "spend"}:
         return "ads"
+
     return "funnel"
 
 
 def _has_any(rows, fields):
     return _fields_filled(rows, fields) > 0
+
+
+def _print_sample_rows(title, dataframe, limit=5):
+    if dataframe is None or dataframe.empty:
+        return
+
+    print(title)
+
+    for row in dataframe.head(limit).to_dict("records"):
+        print(f"  nmID={row.get('nmId')} title={row.get('title') or ''}")
 
 
 def build_api_coverage_report(
@@ -186,6 +222,7 @@ def build_api_coverage_report(
     cards_by_nm = _products_by_nm_id(cards)
     products_by_nm = _products_by_nm_id(products)
     funnel_by_nm = _records_by_nm_id(funnel_rows)
+
     ads_rows_count = len([row for row in ads_rows or [] if isinstance(row, dict)])
     ads_campaign_ids = {
         _first_present(row, ["campaignId", "advertId", "adsCampaignId", "id"], None)
@@ -193,19 +230,25 @@ def build_api_coverage_report(
         if isinstance(row, dict)
     }
     ads_campaign_ids.discard(None)
+
     ads_by_nm = _records_by_nm_id(ads_rows)
+
     supply_by_nm = {}
+
     for nm_id, metrics in (supply_stock_metrics_by_nm_id or {}).items():
         try:
             normalized_nm_id = int(float(str(nm_id)))
         except (TypeError, ValueError):
             continue
+
         if metrics is not None:
             supply_by_nm[normalized_nm_id] = [metrics]
+
     problems_by_nm = _records_by_nm_id(problems)
     telegram_nm_ids = set(problems_by_nm.keys())
 
     rows = []
+
     for nm_id in sorted(cards_by_nm):
         card = cards_by_nm[nm_id]
         product = products_by_nm.get(nm_id, {})
@@ -213,12 +256,14 @@ def build_api_coverage_report(
         ads_records = ads_by_nm.get(nm_id, [])
         supply_records = supply_by_nm.get(nm_id, [])
         problem_records = problems_by_nm.get(nm_id, [])
+
         ads_problem_count = sum(
             1 for problem in problem_records if _problem_category(problem) == "ads"
         )
         funnel_problem_count = sum(
             1 for problem in problem_records if _problem_category(problem) == "funnel"
         )
+
         rows.append(
             {
                 "sellerName": seller_name,
@@ -257,12 +302,14 @@ def build_api_coverage_report(
         )
 
     coverage = pd.DataFrame(rows, columns=COVERAGE_COLUMNS)
+
     missing_ads = coverage[~coverage["inAdsApi"]][
         ["sellerName", "nmId", "vendorCode", "title"]
     ]
     missing_supplies = coverage[~coverage["inSuppliesApi"]][
         ["sellerName", "nmId", "vendorCode", "title"]
     ]
+
     api_status = pd.DataFrame(
         [
             {
@@ -307,6 +354,7 @@ def build_api_coverage_report(
             },
         ]
     )
+
     ads_matching_debug_frame = pd.DataFrame(
         ads_matching_debug or [],
         columns=[
@@ -322,6 +370,7 @@ def build_api_coverage_report(
             "reason",
         ],
     )
+
     return {
         "coverage": coverage,
         "missing_ads": missing_ads,
@@ -337,6 +386,7 @@ def build_api_coverage_report(
 def save_api_coverage_report(report):
     REPORTS_DIR.mkdir(exist_ok=True)
     path = REPORTS_DIR / f"api_coverage_{date.today().strftime('%Y_%m_%d')}.xlsx"
+
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for sheet_name in [
             "coverage",
@@ -346,35 +396,54 @@ def save_api_coverage_report(report):
             "ads_matching_debug",
         ]:
             report[sheet_name].to_excel(writer, sheet_name=sheet_name, index=False)
+
     return path
 
 
 def print_api_coverage_summary(report):
     coverage = report["coverage"]
-    print("API COVERAGE SUMMARY:")
-    print(f"cards: {int(coverage['inCardsApi'].sum())}")
-    print(f"funnel: {int(coverage['inFunnelApi'].sum())}")
-    print(f"ads: {int(coverage['inAdsApi'].sum())}")
-    print("ADS COVERAGE:")
-    print(f"campaigns: {report.get('adsCampaignCount', 0)}")
-    print(f"ads rows: {report.get('adsRowsCount', 0)}")
+
+    cards_count = int(coverage["inCardsApi"].sum())
+    funnel_count = int(coverage["inFunnelApi"].sum())
+    ads_count = int(coverage["inAdsApi"].sum())
+    supplies_count = int(coverage["inSuppliesApi"].sum())
+    problems_count = int(coverage["inProblems"].sum())
+    telegram_top_count = int(coverage["inTelegramTop"].sum())
+
+    missing_ads_count = len(report["missing_ads"])
+    missing_supplies_count = len(report["missing_supplies"])
+
     print(
-        f"unique nmIds: {report.get('adsUniqueNmids', int(coverage['inAdsApi'].sum()))}"
+        "API COVERAGE SUMMARY: "
+        f"cards={cards_count} "
+        f"funnel={funnel_count} "
+        f"ads={ads_count} "
+        f"supplies={supplies_count} "
+        f"problems={problems_count} "
+        f"telegram_top={telegram_top_count}"
     )
-    print(f"supplies: {int(coverage['inSuppliesApi'].sum())}")
-    print(f"problems: {int(coverage['inProblems'].sum())}")
-    print(f"telegram top: {int(coverage['inTelegramTop'].sum())}")
-    print("\nMISSING ADS DATA:")
-    for row in report["missing_ads"].to_dict("records"):
-        print(f"- nmID {row.get('nmId')} {row.get('title') or ''}")
-    print("\nMISSING SUPPLIES DATA:")
-    for row in report["missing_supplies"].to_dict("records"):
-        print(f"- nmID {row.get('nmId')} {row.get('title') or ''}")
+
+    print(
+        "ADS COVERAGE: "
+        f"campaigns={report.get('adsCampaignCount', 0)} "
+        f"ads_rows={report.get('adsRowsCount', 0)} "
+        f"unique_nmIds={report.get('adsUniqueNmids', ads_count)}"
+    )
+
+    print(
+        "MISSING DATA SUMMARY: "
+        f"ads_missing={missing_ads_count} "
+        f"supplies_missing={missing_supplies_count}"
+    )
+
+    _print_sample_rows("ADS MISSING SAMPLE:", report["missing_ads"])
+    _print_sample_rows("SUPPLIES MISSING SAMPLE:", report["missing_supplies"])
 
 
 def coverage_summary_line(report):
     coverage = report["coverage"]
     total = len(coverage)
+
     return (
         f"Данные API: воронка {int(coverage['inFunnelApi'].sum())}/{total}, "
         f"реклама {report.get('adsUniqueNmids', int(coverage['inAdsApi'].sum()))}/{total}, "
