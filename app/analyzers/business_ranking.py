@@ -62,10 +62,11 @@ def top_business_problem(records):
 
 def log_business_ranking(records, source="unknown"):
     top = top_business_problem(records)
-    print("BUSINESS RANKING:")
-    print(f"top nmId: {top.get('nmId', '')}")
-    print(f"top title: {top.get('title', '')}")
-    print(f"score: {top.get('businessImpactScore', 0)}")
-    print(f"metric: {top.get('metric', '')}")
-    print(f"source: {source}")
+    if source != "telegram_summary":
+        print("BUSINESS RANKING:")
+        print(f"top nmId: {top.get('nmId', '')}")
+        print(f"top title: {top.get('title', '')}")
+        print(f"score: {top.get('businessImpactScore', 0)}")
+        print(f"metric: {top.get('metric', '')}")
+        print(f"source: {source}")
     return top

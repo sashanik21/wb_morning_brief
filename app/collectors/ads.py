@@ -40,6 +40,39 @@ def _summary_log(*args):
     print(*args)
 
 
+def _ads_error_summary(response):
+    if response is None:
+        return "WB Ads API error: status=n/a"
+
+    title = ""
+    request_id = ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+
+    if isinstance(payload, dict):
+        title = (
+            payload.get("title")
+            or payload.get("error")
+            or payload.get("message")
+            or ""
+        )
+        request_id = (
+            payload.get("requestId")
+            or payload.get("request_id")
+            or payload.get("traceId")
+            or payload.get("trace_id")
+            or ""
+        )
+
+    parts = [f"WB Ads API error: status={response.status_code}"]
+    if title:
+        parts.append(f"title={title}")
+    if request_id:
+        parts.append(f"requestId={request_id}")
+    return " ".join(parts)
+
 def ads_api_had_429():
     return _ADS_API_HAD_429 or bool(_ADS_RATE_LIMIT_STATS.get("partial"))
 
@@ -269,9 +302,8 @@ def _request_ads_campaign_ids(token):
     _mark_ads_api_status(response.status_code)
 
     if response.status_code != 200:
-        _summary_log("WB Ads campaigns API error")
-        _summary_log("STATUS:", response.status_code)
-        _summary_log("TEXT:", response.text)
+        _summary_log(_ads_error_summary(response))
+        _debug_log("TEXT:", response.text)
         return None, response.status_code
 
     try:
@@ -393,9 +425,8 @@ def _request_ads_campaign_details(token, campaign_ids):
                 _mark_ads_api_status(status_code)
 
                 if status_code != 200:
-                    _summary_log("WB Ads campaign details API error")
-                    _summary_log("STATUS:", status_code)
-                    _summary_log("TEXT:", response.text)
+                    _summary_log(_ads_error_summary(response))
+                    _debug_log("TEXT:", response.text)
                     break
 
                 try:
@@ -507,9 +538,8 @@ def _request_ads_fullstats(token, campaign_ids, begin_date, end_date, deadline=N
         break
 
     if response is None or response.status_code != 200:
-        _summary_log("WB Ads API error")
-        _summary_log("STATUS:", response.status_code if response is not None else "n/a")
-        _summary_log("TEXT:", response.text if response is not None else "")
+        _summary_log(_ads_error_summary(response))
+        _debug_log("TEXT:", response.text if response is not None else "")
         return None, response.status_code if response is not None else None
 
     try:
@@ -827,10 +857,10 @@ def _update_campaign_health(seller_id, campaign_id, status, rows=0, error_code=N
 
 
 def _log_ads_fullstats_batch_mode(campaign_ids, batches):
-    _summary_log("ADS FULLSTATS BATCH MODE:")
-    _summary_log(f"campaign ids total: {len(campaign_ids or [])}")
-    _summary_log(f"batch size: {ADS_CAMPAIGN_BATCH_SIZE}")
-    _summary_log(f"batches: {len(batches or [])}")
+    _debug_log("ADS FULLSTATS BATCH MODE:")
+    _debug_log(f"campaign ids total: {len(campaign_ids or [])}")
+    _debug_log(f"batch size: {ADS_CAMPAIGN_BATCH_SIZE}")
+    _debug_log(f"batches: {len(batches or [])}")
 
 
 def _log_ads_fullstats_batch_request(
@@ -844,10 +874,10 @@ def _log_ads_fullstats_batch_request(
 
 
 def _log_ads_fullstats_batch_result(batch_index, batches_count, rows, status):
-    _summary_log("ADS FULLSTATS BATCH RESULT:")
-    _summary_log(f"batch: {batch_index}/{batches_count}")
-    _summary_log(f"rows: {rows}")
-    _summary_log(f"status: {status}")
+    _debug_log("ADS FULLSTATS BATCH RESULT:")
+    _debug_log(f"batch: {batch_index}/{batches_count}")
+    _debug_log(f"rows: {rows}")
+    _debug_log(f"status: {status}")
 
 
 def _collect_ads_period_batches(token, campaign_ids, begin_date, end_date, report_date):

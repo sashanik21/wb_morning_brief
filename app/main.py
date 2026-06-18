@@ -635,8 +635,9 @@ def _print_multi_seller_processing(active_sellers, seller_results):
         f"failed={statuses['failed']}"
     )
 
-    for result in seller_results:
-        _print_seller_processing_result(result)
+    if LOG_LEVEL == "debug":
+        for result in seller_results:
+            _print_seller_processing_result(result)
 
     if len(seller_results) < len(active_sellers):
         _summary_log("WARNING: seller_results count does not match active sellers count")
@@ -1010,9 +1011,12 @@ def _process_seller(storage, seller, report_date):
 
     _summary_log(
         f"SELLER FINISH: {seller_name} status={seller_result.get('processing_status')} "
-        f"sku={total_sku_from_api} funnel={len(funnel_rows)} ads={len(ads_data)} "
+        f"sku={total_sku_from_api} problems={len(all_problems)} tasks={len(tasks)}"
+    )
+    _debug_log(
+        f"SELLER FINISH DETAILS: {seller_name} "
+        f"funnel={len(funnel_rows)} ads={len(ads_data)} "
         f"supplies={len(supply_stock_metrics_by_nm_id or {})} "
-        f"problems={len(all_problems)} tasks={len(tasks)} "
         f"root_causes={len(root_cause_insights)}"
     )
 
@@ -1103,7 +1107,7 @@ def _send_critical_seller_details(
         seller_summary_stats["sellersTotal"] = 1
         seller_summary_stats["sellerNames"] = [seller_name]
 
-        _summary_log(
+        _debug_log(
             f"TELEGRAM DETAIL: {seller_name} "
             f"problems={len(seller_problems)} root_causes={len(seller_root_causes)}"
         )
