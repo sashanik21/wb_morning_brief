@@ -352,7 +352,7 @@ def get_funnel_history(seller_id, nm_id, days):
 def _normalize_problem(problem):
     return {
         "report_date": _report_date(problem),
-        "seller_id": _to_int(problem.get("seller_id")),
+        "seller_id": _to_int(_first_present(problem, ["seller_id", "sellerId"])),
         "nm_id": _to_int(_first_present(problem, ["nm_id", "nmId", "nmID"])),
         "vendor_code": _first_present(problem, ["vendor_code", "vendorCode"]),
         "title": problem.get("title"),
@@ -750,7 +750,37 @@ def save_daily_ads_metrics(rows):
         )
 
 
+def _problem_seller_id(problem):
+    return _first_present(problem, ["seller_id", "sellerId"])
+
+
+def _problem_seller_name(problem):
+    return _first_present(problem, ["seller_name", "sellerName"], default="")
+
+
+def _log_problems_save(problems):
+    grouped = {}
+    for problem in problems or []:
+        if not isinstance(problem, dict):
+            continue
+
+        seller_id = _problem_seller_id(problem)
+        seller_name = _problem_seller_name(problem)
+        if seller_id in (None, ""):
+            print("PROBLEM WITHOUT SELLER_ID")
+
+        grouped.setdefault((seller_id, seller_name), 0)
+        grouped[(seller_id, seller_name)] += 1
+
+    for (seller_id, seller_name), rows_count in grouped.items():
+        print("PROBLEMS SAVE:")
+        print(f"seller_id={seller_id}")
+        print(f"seller_name={seller_name}")
+        print(f"rows={rows_count}")
+
+
 def save_problems(problems):
+    _log_problems_save(problems)
     normalized_problems = [_normalize_problem(problem) for problem in problems]
     print(f"SUPABASE SAVE PROBLEMS: {len(normalized_problems)} rows")
 

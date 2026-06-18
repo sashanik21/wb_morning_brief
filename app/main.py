@@ -134,6 +134,7 @@ def _attach_seller_context(rows, seller, seller_id=None):
         row["sellerName"] = seller_name
         row["seller_name"] = seller_name
         row["seller_id"] = current_seller_id
+        row["sellerId"] = current_seller_id
 
     return rows or []
 
