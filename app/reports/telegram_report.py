@@ -3218,66 +3218,126 @@ def _format_optional_dynamic(value):
 def _format_product_metric_current_line(product, metric, label, suffix=""):
     value = _product_metric_current_value(product, metric)
     if value is None:
-        return f"   {label}: н/д"
+        return ""
     return f"   {label}: {_format_number(value)}{suffix}"
 
 
-def _compact_product_reason(product, summary_stats=None):
+def _ads_coverage_is_low(summary_stats=None):
     ads_summary = (summary_stats or {}).get("adsSummary") or {}
+    return (
+        ads_summary.get("adsCoverageConfidence") == "LOW"
+        or (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
+    )
+
+
+def _clean_reason_status_text(text):
+    return (
+        str(text or "")
+        .replace("🔴 ", "")
+        .replace("🟡 ", "")
+        .replace("🟢 ", "")
+        .strip(" .")
+    )
+
+
+def _reason_requires_manual_check(reason_text):
+    lowered = str(reason_text or "").lower()
+    return "требует проверки" in lowered or "недостаточно данных" in lowered
+
+
+def _compact_product_reason_info(product, summary_stats=None):
     totals = _product_ads_totals(product, summary_stats)
     has_ads_history = totals and totals.get("ads_history_status") in {
         "avg3",
         "previous_day",
     }
-    ads_coverage_low = (
-        ads_summary.get("adsCoverageConfidence") == "LOW"
-        or (summary_stats or {}).get("adsCoverageConfidence") == "LOW"
-    )
-    if ads_coverage_low and totals:
-        return "Возможная причина: реклама требует проверки"
+
+    if totals and _ads_coverage_is_low(summary_stats):
+        return {"kind": "ads", "text": "реклама требует проверки", "tentative": True}
+
     if totals and has_ads_history:
         diagnosis = _ads_product_diagnosis(totals)
-        reason = str(diagnosis.get("reason") or "").replace("🔴 ", "").replace("🟡 ", "").replace("🟢 ", "")
+        reason = _clean_reason_status_text(diagnosis.get("reason"))
         has_confirmation = any(
             _is_present(totals.get(key)) and _is_present(totals.get(f"previous_{key}"))
             for key in ("ctr", "cpc", "drr", "clicks", "orders", "ordersSum")
         )
         if has_confirmation and reason:
-            return f"Причина: {html.escape(reason)}"
+            lowered = reason.lower()
+            if "цен" in lowered:
+                kind = "price"
+            elif "карточ" in lowered or "конверс" in lowered or "кликабель" in lowered:
+                kind = "conversion"
+            elif "реклам" in lowered or "ctr" in lowered or "cpc" in lowered or "дrr" in lowered or "дрр" in lowered or "ставк" in lowered:
+                kind = "ads"
+            else:
+                kind = "unknown"
+            return {
+                "kind": kind,
+                "text": reason,
+                "diagnosis": diagnosis,
+                "tentative": _reason_requires_manual_check(reason),
+            }
+
+    primary = _product_primary_problem(product)
+    combined_text = " ".join(
+        str(value or "")
+        for value in (
+            primary.get("rootCause"),
+            primary.get("problemLabel"),
+            primary.get("recommendation"),
+            _product_problem_summary(product),
+        )
+    ).lower()
     problem_summary = _product_problem_summary(product)
+    if "цен" in combined_text:
+        return {"kind": "price", "text": problem_summary or "цена"}
+    if "остат" in combined_text or _is_stock_impact_problem(primary):
+        return {"kind": "unknown", "text": "требуется ручная проверка", "tentative": True}
     if problem_summary:
-        return f"Причина: {html.escape(problem_summary)}"
-    return "Причина: Требует проверки"
+        return {"kind": "conversion", "text": problem_summary}
+    return {"kind": "unknown", "text": "требуется ручная проверка", "tentative": True}
+
+
+def _compact_product_reason(product, summary_stats=None):
+    reason = _compact_product_reason_info(product, summary_stats)
+    return f"Возможная причина: {html.escape(reason.get('text') or 'требуется ручная проверка')}"
 
 
 def _compact_product_confirmation(product, summary_stats=None):
-    totals = _product_ads_totals(product, summary_stats)
-    if totals and totals.get("ads_history_status") not in {"avg3", "previous_day"}:
-        return "Подтверждение: Реклама: данных для сравнения недостаточно"
+    reason = _compact_product_reason_info(product, summary_stats)
+    if reason.get("tentative") or _reason_requires_manual_check(reason.get("text")):
+        return ""
+
+    diagnosis = reason.get("diagnosis") or {}
+    confirmation = diagnosis.get("confirmation") or []
+    if confirmation:
+        text = _multi_first_sentence("; ".join(str(line) for line in confirmation), 160)
+        if text and not _reason_requires_manual_check(text):
+            return "Подтверждение: " + html.escape(text)
+
     dynamics = _top_drop_metric_dynamics(product)
     if dynamics:
         label, dynamic = dynamics[0][1], dynamics[0][2]
         return f"Подтверждение: {label} {_format_optional_dynamic(dynamic)}"
+
     primary = _product_primary_problem(product)
-    return "Подтверждение: " + html.escape(
-        _multi_first_sentence(_multi_confirmation(primary), 160)
-    )
+    text = _multi_first_sentence(_multi_confirmation(primary), 160)
+    if not text or _reason_requires_manual_check(text):
+        return ""
+    return "Подтверждение: " + html.escape(text)
 
 
 def _compact_product_action(product, summary_stats=None):
-    totals = _product_ads_totals(product, summary_stats)
-    if totals and totals.get("ads_history_status") not in {"avg3", "previous_day"}:
-        return "Действие: проверить рекламу вручную и сопоставить с карточкой/ценой."
-    primary = _product_primary_problem(product)
-    action = (
-        primary.get("rootRecommendation")
-        or primary.get("recommendation")
-        or "проверить цену, карточку, рекламу и конверсию."
-    )
-    action = re.sub(r",?\s*остатк[а-яё]*", "", str(action), flags=re.IGNORECASE)
-    action = re.sub(r"\s+(и|или)\s*$", "", action.strip(" ,.;"), flags=re.IGNORECASE)
-    action = re.sub(r"\s{2,}", " ", action).strip(" ,.;") + "."
-    return f"Действие: {html.escape(_multi_first_sentence(action, 160))}"
+    reason = _compact_product_reason_info(product, summary_stats)
+    action_by_kind = {
+        "conversion": "Проверить фото, цену, отзывы и конкурентов.",
+        "ads": "Проверить CTR, CPC и рекламные ставки.",
+        "price": "Проверить позиционирование и цены конкурентов.",
+        "unknown": "Требуется ручная проверка.",
+    }
+    action = action_by_kind.get(reason.get("kind"), action_by_kind["unknown"])
+    return f"Действие: {html.escape(action)}"
 
 
 def _merge_products_by_nm_id(problem_products):
@@ -3317,11 +3377,10 @@ def _top_drop_metric_dynamics(product):
 
 
 def _top_drop_sort_key(product):
-    primary_problem = _product_primary_problem(product)
     return (
-        _business_sort_key(primary_problem),
         -_product_lost_revenue(product),
         -_product_lost_orders(product),
+        -to_number(product.get("businessImpactScore")),
         product.get("first_index", 0),
     )
 
@@ -3412,6 +3471,7 @@ def _group_funnel_top_drop_products(records):
         key=lambda product: (
             -_product_lost_revenue(product),
             -_product_lost_orders(product),
+            -to_number(product.get("businessImpactScore")),
             product.get("first_index", 0),
         ),
     )
@@ -3497,23 +3557,19 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
     ) in enumerate(products, start=1):
         product_lines = [f"{index}. <b>{_executive_problem_title(product)}</b>"]
         if direction == "drop":
-            product_lines.extend(
-                [
-                    _format_product_metric_current_line(product, "orderCount", "Заказы"),
-                    _format_product_metric_current_line(product, "orderSum", "Выручка", " ₽"),
-                    _format_product_metric_current_line(
-                        product, "cartToOrderPercent", "Конверсия в заказ", "%"
-                    ),
-                    f"   {_compact_product_reason(product, summary_stats)}",
-                    f"   {_compact_product_confirmation(product, summary_stats)}",
-                ]
-            )
-            ads_breakdown = _build_product_ads_breakdown(
-                product, traffic_dynamic, orders_dynamic, summary_stats, open_count
-            )
-            if ads_breakdown:
-                product_lines.append(ads_breakdown)
-            product_lines.append(f"   {_compact_product_action(product, summary_stats)}")
+            detail_lines = [
+                _format_product_metric_current_line(product, "orderCount", "Заказы"),
+                _format_product_metric_current_line(product, "orderSum", "Выручка", " ₽"),
+                _format_product_metric_current_line(
+                    product, "cartToOrderPercent", "Конверсия в заказ", "%"
+                ),
+                f"   {_compact_product_reason(product, summary_stats)}",
+            ]
+            confirmation_line = _compact_product_confirmation(product, summary_stats)
+            if confirmation_line:
+                detail_lines.append(f"   {confirmation_line}")
+            detail_lines.append(f"   {_compact_product_action(product, summary_stats)}")
+            product_lines.extend(line for line in detail_lines if line)
         lines.append("\n".join(product_lines))
     return title + "\n\n" + "\n\n".join(lines)
 
