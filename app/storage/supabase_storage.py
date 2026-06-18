@@ -924,10 +924,19 @@ def _to_nullable_number(value):
     return _to_number(value)
 
 
-def _normalize_ads_bid_history_row(row):
+def _normalize_ads_bid_history_row(row, seller_id=None, seller_name=None):
     return _json_safe_row(
         {
-            "seller_name": _first_present(row, ["seller_name", "sellerName"]),
+            "seller_id": _to_int(
+                seller_id
+                if seller_id not in (None, "")
+                else _first_present(row, ["seller_id", "sellerId"])
+            ),
+            "seller_name": (
+                seller_name
+                if seller_name not in (None, "")
+                else _first_present(row, ["seller_name", "sellerName"])
+            ),
             "campaign_id": _to_int(
                 _first_present(row, ["campaign_id", "campaignId", "id"])
             ),
@@ -951,9 +960,14 @@ def _normalize_ads_bid_history_row(row):
     )
 
 
-def save_ads_bid_history(rows):
+def save_ads_bid_history(rows, seller_id=None, seller_name=None):
     normalized_rows = _drop_empty_required(
-        [_normalize_ads_bid_history_row(row) for row in rows or []],
+        [
+            _normalize_ads_bid_history_row(
+                row, seller_id=seller_id, seller_name=seller_name
+            )
+            for row in rows or []
+        ],
         ["campaign_id", "report_date"],
     )
     print(f"SUPABASE SAVE ADS BID HISTORY: {len(normalized_rows)} rows")
@@ -966,14 +980,14 @@ def save_ads_bid_history(rows):
             .upsert(normalized_rows, on_conflict="campaign_id,nm_id,report_date"),
             "ads_bid_history",
         )
-    print("ADS BID HISTORY:")
+    print(
+        "ADS BID HISTORY SAVED: "
+        f"rows={len(normalized_rows) if success else 0} "
+        f"seller_id={seller_id} seller_name={seller_name}"
+    )
     if success:
-        print(f"rows collected: {len(rows or [])}")
-        print(f"rows saved: {len(normalized_rows)}")
-        print("save status: success")
         return len(normalized_rows)
-    print("save status: failed")
-    print(f"error: {error_message}")
+    print(f"WARNING: ADS BID HISTORY SAVE FAILED: {error_message}")
     return 0
 
 
@@ -988,7 +1002,7 @@ def enrich_ads_bid_history_changes(rows, seller_id=None):
     enriched_rows = []
     for row in rows or []:
         enriched = dict(row)
-        normalized = _normalize_ads_bid_history_row(row)
+        normalized = _normalize_ads_bid_history_row(row, seller_id=seller_id)
         campaign_id, nm_id = _bid_history_key(normalized)
         report_date = normalized.get("report_date")
         if campaign_id is None or report_date in (None, ""):
@@ -1003,6 +1017,8 @@ def enrich_ads_bid_history_changes(rows, seller_id=None):
             .order("report_date", desc=True)
             .limit(1)
         )
+        if seller_id not in (None, ""):
+            query = query.eq("seller_id", _to_int(seller_id))
         if nm_id is None:
             query = query.is_("nm_id", "null")
         else:
