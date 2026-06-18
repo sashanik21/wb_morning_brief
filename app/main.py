@@ -744,7 +744,10 @@ def _process_seller(storage, seller, report_date):
     ]
 
     ads_data = collect_ads_stats(
-        seller_id=seller_id, top_drop_nm_ids=top_drop_nm_ids, oos_nm_ids=oos_nm_ids
+        seller_id=seller_id,
+        seller_name=seller_name,
+        top_drop_nm_ids=top_drop_nm_ids,
+        oos_nm_ids=oos_nm_ids,
     )
     _attach_seller_context(ads_data, seller, seller_id)
 

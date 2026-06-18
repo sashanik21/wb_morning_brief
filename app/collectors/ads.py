@@ -1132,7 +1132,9 @@ def _bid_kopecks_to_rubles(value):
         return None
 
 
-def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
+def _extract_ads_bid_history_rows(
+    campaigns, report_date, seller_id=None, seller_name=None
+):
     rows = []
 
     for campaign in campaigns or []:
@@ -1158,7 +1160,7 @@ def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
 
         base = {
             "seller_id": seller_id,
-            "seller_name": os.getenv("SELLER_NAME"),
+            "seller_name": seller_name or os.getenv("SELLER_NAME"),
             "campaign_id": campaign_id,
             "report_date": report_date,
             "bid_type": raw_json.get("bid_type") or raw_json.get("bidType"),
@@ -1208,18 +1210,19 @@ def _extract_ads_bid_history_rows(campaigns, report_date, seller_id=None):
     return rows
 
 
-def _save_ads_bid_history(campaigns, report_date, seller_id=None):
+def _save_ads_bid_history(campaigns, report_date, seller_id=None, seller_name=None):
     bid_rows = _extract_ads_bid_history_rows(
-        campaigns, report_date, seller_id=seller_id
+        campaigns, report_date, seller_id=seller_id, seller_name=seller_name
     )
     _summary_log(f"ads bids collected: {len(bid_rows)}")
 
     storage = _storage()
-    saved = 0
     changed = 0
 
     if storage and hasattr(storage, "save_ads_bid_history"):
-        saved = storage.save_ads_bid_history(bid_rows) or 0
+        storage.save_ads_bid_history(
+            bid_rows, seller_id=seller_id, seller_name=seller_name
+        )
 
     if storage and hasattr(storage, "enrich_ads_bid_history_changes"):
         enriched = storage.enrich_ads_bid_history_changes(
@@ -1232,10 +1235,7 @@ def _save_ads_bid_history(campaigns, report_date, seller_id=None):
             or row.get("recommendations_bid_delta") not in (None, "", 0)
         )
 
-    _summary_log("ADS BID HISTORY:")
-    _summary_log(f"rows collected: {len(bid_rows)}")
-    _summary_log(f"rows saved: {saved}")
-    _summary_log(f"changes found: {changed}")
+    _summary_log(f"ads bid changes found: {changed}")
 
 
 def _is_active_campaign(campaign):
@@ -1362,7 +1362,11 @@ def _coverage_confidence(processed, total):
 
 
 def collect_ads_stats(
-    report_date=None, seller_id=None, top_drop_nm_ids=None, oos_nm_ids=None
+    report_date=None,
+    seller_id=None,
+    seller_name=None,
+    top_drop_nm_ids=None,
+    oos_nm_ids=None,
 ):
     global _ADS_API_HAD_429, _ADS_RATE_LIMIT_STATS, _ADS_COLLECTOR_DEADLINE
 
@@ -1408,7 +1412,9 @@ def collect_ads_stats(
         return []
 
     _summary_log(f"ADS CAMPAIGNS FOUND: {len(campaigns)}")
-    _save_ads_bid_history(campaigns, report_date, seller_id=seller_id)
+    _save_ads_bid_history(
+        campaigns, report_date, seller_id=seller_id, seller_name=seller_name
+    )
 
     if not campaigns:
         _summary_log("Ads collector работает в stub mode")
