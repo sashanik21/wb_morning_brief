@@ -402,6 +402,61 @@ def _split_long_telegram_line(line, max_length):
     return [chunk for chunk in chunks if chunk]
 
 
+def _telegram_html_to_plain_text(text):
+    if text is None:
+        return ""
+
+    text = str(text)
+
+    def replace_link(match):
+        url = match.group(1)
+        label = html.unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
+        url = html.unescape(url).strip()
+        if label and url:
+            return f"{label} ({url})"
+        return label or url
+
+    text = re.sub(
+        r"<a\s+[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>",
+        replace_link,
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(r"</?b\b[^>]*>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"<[^>]+>",
+        lambda match: match.group(0).replace("<", "‹").replace(">", "›"),
+        text,
+    )
+    return html.unescape(text)
+
+
+def _is_telegram_parse_entities_error(response):
+    if response.status_code != 400:
+        return False
+    return "can't parse entities" in (response.text or "").lower()
+
+
+def _post_telegram_message(url, payload):
+    response = requests.post(
+        url,
+        json=payload,
+        timeout=TELEGRAM_TIMEOUT_SECONDS,
+    )
+    if payload.get("parse_mode") and _is_telegram_parse_entities_error(response):
+        logger.warning("Telegram parse_mode failed, retrying as plain text")
+        print("Telegram parse_mode failed, retrying as plain text")
+        plain_payload = dict(payload)
+        plain_payload.pop("parse_mode", None)
+        return requests.post(
+            url,
+            json=plain_payload,
+            timeout=TELEGRAM_TIMEOUT_SECONDS,
+        )
+    return response
+
+
 def split_telegram_message(text, max_length=3500):
     if not text:
         return []
@@ -5253,23 +5308,18 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
         )
         _log_telegram_business_ranking(problems)
     url = TELEGRAM_API_URL.format(token=token)
-    message_parts = split_telegram_message(sanitize_telegram_text(message))
+    message_parts = split_telegram_message(_telegram_html_to_plain_text(message))
     total_parts = len(message_parts)
 
     for part_index, message_part in enumerate(message_parts, start=1):
         payload = {
             "chat_id": chat_id,
             "text": message_part,
-            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
 
         try:
-            response = requests.post(
-                url,
-                json=payload,
-                timeout=TELEGRAM_TIMEOUT_SECONDS,
-            )
+            response = _post_telegram_message(url, payload)
         except requests.RequestException as error:
             logger.error(
                 "Telegram text brief part %s/%s request failed: %s",
