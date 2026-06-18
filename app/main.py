@@ -46,6 +46,18 @@ from app.reports.telegram_report import send_telegram_morning_brief
 from app.storage.storage_factory import get_storage
 
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "summary").strip().lower()
+
+
+def _debug_log(*args):
+    if LOG_LEVEL == "debug":
+        print(*args)
+
+
+def _summary_log(*args):
+    print(*args)
+
+
 def _extract_funnel_products(data):
     if isinstance(data, list):
         return data
@@ -134,10 +146,11 @@ def _print_problem_owner_check(seller_name, problems):
             if isinstance(problem, dict)
         }
     )
-    print("SELLER PROBLEMS OWNER CHECK:")
-    print(f"seller: {seller_name}")
-    print(f"problems: {len(problems or [])}")
-    print(f"unique sellerNames: {', '.join(owners) if owners else ''}")
+
+    _debug_log("SELLER PROBLEMS OWNER CHECK:")
+    _debug_log(f"seller: {seller_name}")
+    _debug_log(f"problems: {len(problems or [])}")
+    _debug_log(f"unique sellerNames: {', '.join(owners) if owners else ''}")
 
 
 def _ads_history_row_to_report_row(row, seller_id=None):
@@ -292,11 +305,11 @@ def _build_summary_stats(
 
 
 def _print_summary_stats(summary_stats):
-    print("MORNING BRIEF SUMMARY:")
-    print(f"totalSkuFromApi: {summary_stats.get('totalSkuFromApi')}")
-    print(f"skuInProducts: {summary_stats.get('skuInProducts')}")
-    print(f"skuNotInProducts: {summary_stats.get('skuNotInProducts')}")
-    print(f"belowAbcThresholdProblems: {summary_stats.get('belowAbcThresholdProblems')}")
+    _debug_log("MORNING BRIEF SUMMARY:")
+    _debug_log(f"totalSkuFromApi: {summary_stats.get('totalSkuFromApi')}")
+    _debug_log(f"skuInProducts: {summary_stats.get('skuInProducts')}")
+    _debug_log(f"skuNotInProducts: {summary_stats.get('skuNotInProducts')}")
+    _debug_log(f"belowAbcThresholdProblems: {summary_stats.get('belowAbcThresholdProblems')}")
 
 
 def _qbiki_source_status():
@@ -309,7 +322,7 @@ def _qbiki_source_status():
 
 def _merge_ads_bid_history(ads_rows, storage, report_date=None):
     if not (storage and hasattr(storage, "get_latest_ads_bid_history_by_nm_ids")):
-        print("ads bid changes found: 0")
+        _summary_log("ADS BID: changes=0")
         return ads_rows
 
     nm_ids = [row.get("nmId") or row.get("nm_id") for row in ads_rows or []]
@@ -399,13 +412,10 @@ def _merge_ads_bid_history(ads_rows, storage, report_date=None):
         ) not in (None, "", 0):
             changed += 1
 
-    print(f"ads bid changes found: {changed}")
-    print("ADS BID ANALYTICS:")
-    print(f"campaigns with history: {raised + lowered + unchanged}")
-    print(f"raised: {raised}")
-    print(f"lowered: {lowered}")
-    print(f"unchanged: {unchanged}")
-    print(f"without history: {without_history}")
+    _summary_log(
+        f"ADS BID: changes={changed} raised={raised} lowered={lowered} "
+        f"unchanged={unchanged} without_history={without_history}"
+    )
 
     return ads_rows
 
@@ -591,18 +601,20 @@ def _build_seller_result(
 
 
 def _print_seller_processing_result(result):
-    print("SELLER PROCESSING RESULT:")
-    print(f"seller: {result.get('seller_name')}")
-    print(f"status: {result.get('processing_status')}")
-    print(f"total_sku: {result.get('total_sku')}")
-    print(f"funnel rows: {result.get('funnel_rows_count')}")
-    print(f"ads rows: {result.get('ads_rows_count')}")
-    print(f"supplies rows: {result.get('supplies_rows_count')}")
-    print(
-        "problems: "
-        f"{result.get('critical_problems_count', 0) + result.get('warning_problems_count', 0)}"
+    problems_count = result.get("critical_problems_count", 0) + result.get(
+        "warning_problems_count", 0
     )
-    print(f"error: {result.get('error_message') or ''}")
+    _summary_log(
+        "SELLER | "
+        f"{result.get('seller_name')} | "
+        f"status={result.get('processing_status')} | "
+        f"sku={result.get('total_sku')} | "
+        f"funnel={result.get('funnel_rows_count')} | "
+        f"ads={result.get('ads_rows_count')} | "
+        f"supplies={result.get('supplies_rows_count')} | "
+        f"problems={problems_count} | "
+        f"error={result.get('error_message') or ''}"
+    )
 
 
 def _print_multi_seller_processing(active_sellers, seller_results):
@@ -613,18 +625,21 @@ def _print_multi_seller_processing(active_sellers, seller_results):
         if status in statuses:
             statuses[status] += 1
 
-    print("MULTI SELLER PROCESSING:")
-    print(f"active sellers: {len(active_sellers)}")
-    print(f"seller results created: {len(seller_results)}")
-
-    for status in ("success", "partial", "no_data", "failed"):
-        print(f"{status}: {statuses[status]}")
+    _summary_log(
+        "MULTI SELLER | "
+        f"active={len(active_sellers)} | "
+        f"results={len(seller_results)} | "
+        f"success={statuses['success']} | "
+        f"partial={statuses['partial']} | "
+        f"no_data={statuses['no_data']} | "
+        f"failed={statuses['failed']}"
+    )
 
     for result in seller_results:
         _print_seller_processing_result(result)
 
     if len(seller_results) < len(active_sellers):
-        print("WARNING: seller_results count does not match active sellers count")
+        _summary_log("WARNING: seller_results count does not match active sellers count")
 
 
 def _process_seller(storage, seller, report_date):
@@ -633,11 +648,7 @@ def _process_seller(storage, seller, report_date):
     wb_token_secret_name = seller.get("wb_token_secret_name")
     wb_token = set_wb_api_token(wb_token_secret_name)
 
-    print(f"Текущий продавец: {seller_name}")
-    print("SELLER TOKEN:")
-    print(f"seller: {seller_name}")
-    print(f"secret: {wb_token_secret_name or ''}")
-    print(f"token found: {str(bool(wb_token)).lower()}")
+    _summary_log(f"SELLER START: {seller_name}")
 
     if not wb_token:
         seller_result = _build_seller_result(
@@ -645,7 +656,7 @@ def _process_seller(storage, seller, report_date):
             processing_status="failed",
             error_message="secret not found",
         )
-        print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+        _summary_log(f"SELLER FINISH: {seller_name} status=failed error=secret not found")
         return {
             "seller_result": seller_result,
             "summary_stats": {},
@@ -655,21 +666,19 @@ def _process_seller(storage, seller, report_date):
         }
 
     products = storage.get_products()
-    print(f"PRODUCTS LOADED: {len(products)}")
-
     change_log = storage.get_change_log()
-    print(f"CHANGE_LOG LOADED: {len(change_log)}")
+    _debug_log(f"PRODUCTS LOADED: {len(products)}")
+    _debug_log(f"CHANGE_LOG LOADED: {len(change_log)}")
 
     data = collect_sales_funnel()
 
     if data is None:
-        print("Данные funnel не получены")
         seller_result = _build_seller_result(
             seller,
             processing_status="no_data",
             error_message="nmIDs not found",
         )
-        print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+        _summary_log(f"SELLER FINISH: {seller_name} status=no_data error=nmIDs not found")
         return {
             "seller_result": seller_result,
             "summary_stats": {},
@@ -677,9 +686,6 @@ def _process_seller(storage, seller, report_date):
             "root_cause_insights": [],
             "tasks": [],
         }
-
-    print("FUNNEL ДАННЫЕ ПОЛУЧЕНЫ")
-    print("=" * 50)
 
     wb_cards = _extract_funnel_products(data)
     _attach_seller_context(wb_cards, seller, seller_id)
@@ -690,7 +696,7 @@ def _process_seller(storage, seller, report_date):
             processing_status="no_data",
             error_message="nmIDs not found",
         )
-        print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
+        _summary_log(f"SELLER FINISH: {seller_name} status=no_data error=nmIDs not found")
         return {
             "seller_result": seller_result,
             "summary_stats": {},
@@ -701,7 +707,6 @@ def _process_seller(storage, seller, report_date):
 
     storage.sync_products_from_wb_cards(seller_id, wb_cards)
     products = storage.get_products()
-    print(f"PRODUCTS LOADED: {len(products)}")
 
     total_sku_from_api = len(wb_cards)
     data = enrich_funnel_data_with_products(data, products)
@@ -719,7 +724,11 @@ def _process_seller(storage, seller, report_date):
         is True
     )
     sku_not_in_products = len(enriched_products) - sku_in_products
-    print("=" * 50)
+
+    _summary_log(
+        f"FUNNEL: seller={seller_name} sku={total_sku_from_api} "
+        f"in_catalog={sku_in_products} not_in_catalog={sku_not_in_products}"
+    )
 
     top_drop_nm_ids = [
         signal.get("nmId") or signal.get("nm_id")
@@ -749,9 +758,9 @@ def _process_seller(storage, seller, report_date):
         )
         _attach_seller_context(fallback_ads_data, seller, seller_id)
 
-        print("ADS FALLBACK ACTIVATED")
-        print("ADS FALLBACK SOURCE: SUPABASE")
-        print(f"ADS FALLBACK ROWS: {len(fallback_ads_data)}")
+        _summary_log(
+            f"ADS FALLBACK: seller={seller_name} source=supabase rows={len(fallback_ads_data)}"
+        )
 
         if fallback_ads_data:
             ads_data = fallback_ads_data
@@ -804,10 +813,10 @@ def _process_seller(storage, seller, report_date):
     qbiki_source_status = _qbiki_source_status()
     qbiki_matched_nm_ids = _matched_qbiki_nm_ids(qbiki_metrics, funnel_rows, ads_data)
 
-    print("QBIKI DATA:")
-    print(f"source: {qbiki_source_status}")
-    print(f"rows loaded: {len(raw_qbiki_rows)}")
-    print(f"matched nmIds: {qbiki_matched_nm_ids}")
+    _summary_log(
+        f"QBIKI: seller={seller_name} source={qbiki_source_status} "
+        f"rows={len(raw_qbiki_rows)} matched={qbiki_matched_nm_ids}"
+    )
 
     qbiki_problems = build_qbiki_problems(qbiki_metrics)
     _attach_seller_context(qbiki_problems, seller, seller_id)
@@ -824,41 +833,25 @@ def _process_seller(storage, seller, report_date):
     ads_summary["adsSource"] = ads_source
     ads_summary["fallbackUsed"] = ads_fallback_used
 
-    print(f"ADS ДАННЫЕ ПОЛУЧЕНЫ: {len(ads_data)} строк")
-    print("ADS SUMMARY:")
-    print(f"campaigns: {ads_summary['activeCampaigns']}")
-    print(f"ads rows: {ads_summary['adsRows']}")
-    print(f"problems: {ads_summary['problems']}")
-    print(
-        "period: "
-        f"{ads_summary.get('selectedPeriod') or 'n/a'} vs "
-        f"{ads_summary.get('pastPeriod') or 'n/a'}"
+    _summary_log(
+        f"ADS: seller={seller_name} campaigns={ads_summary['activeCampaigns']} "
+        f"rows={ads_summary['adsRows']} problems={ads_summary['problems']} "
+        f"sku={advertised_sku_count}/{total_sku_from_api}"
     )
-    print("=" * 50)
 
     stocks_problems = []
     try:
         supply_stock_metrics_by_nm_id = collect_supply_stock_metrics()
     except Exception as error:
-        print(f"SUPPLIES COLLECTOR WARNING: {error}")
-        print("SUPPLIES DATA: 0 rows")
-        print("SUPPLIES API:")
-        print("status: disabled_or_failed")
-        print(f"reason: {error}")
+        _summary_log(f"SUPPLIES: seller={seller_name} status=failed reason={error}")
         supply_stock_metrics_by_nm_id = {}
 
     report_path = save_sales_funnel_report(data)
-    print(f"XLSX отчёт: {report_path}")
-    print("=" * 50)
+    ads_report_path = save_ads_report(ads_data, ads_problems)
 
     predictive_forecasts = build_predictive_forecasts(
         funnel_rows, ads_rows=ads_data, storage=storage, seller_id=seller_id
     )
-    print(f"PREDICTIVE FORECASTS: {len(predictive_forecasts)}")
-
-    ads_report_path = save_ads_report(ads_data, ads_problems)
-    print(f"XLSX отчёт по рекламе: {ads_report_path}")
-    print("=" * 50)
 
     problems_report_path = save_funnel_problems_report(
         data,
@@ -867,8 +860,11 @@ def _process_seller(storage, seller, report_date):
         ads_rows=ads_data,
         predictive_forecasts=predictive_forecasts,
     )
-    print(f"XLSX отчёт по проблемам: {problems_report_path}")
-    print("=" * 50)
+
+    _debug_log(f"XLSX funnel: {report_path}")
+    _debug_log(f"XLSX ads: {ads_report_path}")
+    _debug_log(f"XLSX problems: {problems_report_path}")
+    _debug_log(f"PREDICTIVE FORECASTS: {len(predictive_forecasts)}")
 
     funnel_problems_df = pd.read_excel(
         problems_report_path, sheet_name="problems"
@@ -897,7 +893,8 @@ def _process_seller(storage, seller, report_date):
     all_problems = rank_problem_records(all_problems)
     _attach_seller_context(all_problems, seller, seller_id)
 
-    log_business_ranking(all_problems, source="main")
+    if LOG_LEVEL == "debug":
+        log_business_ranking(all_problems, source="main")
 
     if funnel_rows:
         storage.save_funnel_snapshot(funnel_rows)
@@ -907,8 +904,6 @@ def _process_seller(storage, seller, report_date):
 
     root_cause_insights = analyze_root_causes(all_problems, data)
     _attach_seller_context(root_cause_insights, seller, seller_id)
-
-    print(f"ROOT CAUSE INSIGHTS: {len(root_cause_insights)}")
 
     summary_stats = _build_summary_stats(
         storage_status=storage.get_storage_status(),
@@ -969,9 +964,10 @@ def _process_seller(storage, seller, report_date):
         qbiki_source_status=qbiki_source_status,
         ads_matching_debug=ads_matching_debug,
     )
+
     print_api_coverage_summary(api_coverage_report)
     api_coverage_path = save_api_coverage_report(api_coverage_report)
-    print(f"XLSX отчёт покрытия API: {api_coverage_path}")
+    _debug_log(f"XLSX API coverage: {api_coverage_path}")
 
     if hasattr(storage, "save_api_coverage_daily"):
         storage.save_api_coverage_daily(
@@ -1008,10 +1004,17 @@ def _process_seller(storage, seller, report_date):
     )
 
     _print_problem_owner_check(seller_name, all_problems)
-    print(f"SELLER RESULT CREATED: {seller_result.get('seller_name')}")
 
     tasks = build_tasks_from_problems(all_problems)
     _attach_seller_context(tasks, seller, seller_id)
+
+    _summary_log(
+        f"SELLER FINISH: {seller_name} status={seller_result.get('processing_status')} "
+        f"sku={total_sku_from_api} funnel={len(funnel_rows)} ads={len(ads_data)} "
+        f"supplies={len(supply_stock_metrics_by_nm_id or {})} "
+        f"problems={len(all_problems)} tasks={len(tasks)} "
+        f"root_causes={len(root_cause_insights)}"
+    )
 
     return {
         "seller_result": seller_result,
@@ -1077,12 +1080,11 @@ def _send_critical_seller_details(
         reverse=True,
     )[:3]
 
-    print("TELEGRAM MULTI SELLER DETAILS:")
-    print(f"critical sellers total: {len(critical_sellers)}")
-    print(f"details selected: {len(selected_sellers)}")
-    print(
-        "selected sellers: "
-        + ", ".join(result.get("seller_name", "") for result in selected_sellers)
+    _summary_log(
+        "TELEGRAM DETAILS | "
+        f"critical={len(critical_sellers)} | "
+        f"selected={len(selected_sellers)} | "
+        f"sellers={', '.join(result.get('seller_name', '') for result in selected_sellers)}"
     )
 
     for result in selected_sellers:
@@ -1101,10 +1103,10 @@ def _send_critical_seller_details(
         seller_summary_stats["sellersTotal"] = 1
         seller_summary_stats["sellerNames"] = [seller_name]
 
-        print("TELEGRAM SELLER DETAIL:")
-        print(f"seller: {seller_name}")
-        print(f"problems: {len(seller_problems)}")
-        print(f"root causes: {len(seller_root_causes)}")
+        _summary_log(
+            f"TELEGRAM DETAIL: {seller_name} "
+            f"problems={len(seller_problems)} root_causes={len(seller_root_causes)}"
+        )
 
         send_telegram_morning_brief(
             seller_problems,
@@ -1114,19 +1116,17 @@ def _send_critical_seller_details(
 
 
 def main():
-    print("MAIN VERSION: TELEGRAM ENABLED")
-    print("=" * 50)
-    print("WB MORNING BRIEF")
-    print("=" * 50)
+    _summary_log("WB MORNING BRIEF START")
 
     storage = get_storage()
-    print("=" * 50)
 
     sellers = storage.get_sellers()
-    print(f"SELLERS LOADED: {len(sellers)}")
-
     active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
-    print(f"Активных продавцов: {len(active_sellers)}")
+
+    _summary_log(
+        f"RUN CONFIG: sellers_loaded={len(sellers)} active_sellers={len(active_sellers)} "
+        f"log_level={LOG_LEVEL}"
+    )
 
     report_date = date.today() - timedelta(days=1)
 
@@ -1170,19 +1170,16 @@ def main():
     if summary_stats:
         _print_summary_stats(summary_stats)
 
-    print("=" * 50)
+    _summary_log(f"TOTAL PROBLEMS: {len(combined_problems)}")
+    _summary_log("TELEGRAM SUMMARY: sending")
 
-    print("TOTAL PROBLEMS:")
-    print(f"all: {len(combined_problems)}")
-    print("=" * 50)
-
-    print("ОТПРАВЛЯЕМ TELEGRAM MORNING BRIEF")
     send_telegram_morning_brief(
         combined_problems,
         summary_stats=summary_stats,
         root_cause_insights=combined_root_cause_insights,
     )
-    print("=" * 50)
+
+    _summary_log("TELEGRAM SUMMARY: sent")
 
     if len(active_sellers) > 1:
         _send_critical_seller_details(
@@ -1191,12 +1188,17 @@ def main():
             combined_problems=combined_problems,
             combined_root_cause_insights=combined_root_cause_insights,
         )
-        print("=" * 50)
 
     storage.create_tasks(combined_tasks)
-    print("=" * 50)
 
-    print("WB Morning Brief completed successfully")
+    _summary_log(
+        "RUN SUMMARY | "
+        f"sellers={len(active_sellers)} | "
+        f"success={sum(1 for result in seller_results if result.get('processing_status') == 'success')} | "
+        f"problems={len(combined_problems)} | "
+        f"tasks={len(combined_tasks)}"
+    )
+    _summary_log("WB MORNING BRIEF FINISHED")
 
 
 if __name__ == "__main__":
