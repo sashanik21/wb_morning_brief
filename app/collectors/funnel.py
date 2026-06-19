@@ -1415,7 +1415,7 @@ def _baseline_period(report_date, days):
         (parsed_date - timedelta(days=1)).strftime("%Y-%m-%d"),
     )
 
-def _load_history_baselines(seller_id, records):
+def _load_history_baselines(seller_id, records, report_date=None):
     try:
         from app.storage.storage_factory import get_storage
     except ImportError:
@@ -1443,16 +1443,16 @@ def _load_history_baselines(seller_id, records):
         if not nm_id or nm_id in baselines_by_nm_id:
             continue
 
-        report_date = _first_present(record, ["date", "selectedPeriod"], default=None)
+        baseline_report_date = report_date or _first_present(record, ["date", "selectedPeriod"], default=None)
         history_rows = storage.get_funnel_history(
-            seller_id, nm_id, 7, before_date=report_date
+            seller_id, nm_id, 7, before_date=baseline_report_date
         )
         baselines = _history_baselines(history_rows)
         baselines_by_nm_id[nm_id] = baselines
         total_rows_loaded += baselines["rowsLoaded"]
         baseline_type_counts[baselines["baselineType"]] += 1
 
-    report_date = (
+    report_date = report_date or (
         _first_present(records[0], ["date", "selectedPeriod"], default=None)
         if records
         else None
@@ -1483,7 +1483,11 @@ def _load_history_baselines(seller_id, records):
 
 
 def analyze_funnel_problems(
-    funnel_data, seller_id=None, supply_stock_metrics_by_nm_id=None, ads_rows=None
+    funnel_data,
+    seller_id=None,
+    supply_stock_metrics_by_nm_id=None,
+    ads_rows=None,
+    report_date=None,
 ):
     problem_rows = []
     below_threshold_problem_count = 0
@@ -1491,7 +1495,7 @@ def analyze_funnel_problems(
     recent_changes_by_nm_id = _build_recent_changes_by_nm_id()
 
     records = _extract_problem_records(funnel_data)
-    history_baselines_by_nm_id = _load_history_baselines(seller_id, records)
+    history_baselines_by_nm_id = _load_history_baselines(seller_id, records, report_date=report_date)
     ads_attribution_by_nm_id = _build_ads_attribution_by_nm_id(ads_rows)
 
     for record in records:
@@ -1731,16 +1735,18 @@ def save_funnel_problems_report(
     supply_stock_metrics_by_nm_id=None,
     ads_rows=None,
     predictive_forecasts=None,
+    report_date=None,
 ):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    report_date = datetime.now().date().strftime("%Y_%m_%d")
-    report_path = REPORTS_DIR / f"problems_{report_date}.xlsx"
+    report_file_date = datetime.now().date().strftime("%Y_%m_%d")
+    report_path = REPORTS_DIR / f"problems_{report_file_date}.xlsx"
     dataframe = analyze_funnel_problems(
         funnel_data,
         seller_id=seller_id,
         supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
         ads_rows=ads_rows,
+        report_date=report_date,
     )
 
     if predictive_forecasts:
