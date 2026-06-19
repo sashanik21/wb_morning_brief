@@ -168,9 +168,13 @@ def _period_bounds(period_label):
 
 def _previous_period_bounds(start_date, end_date):
     days = (end_date - start_date).days + 1
-    previous_end = start_date - timedelta(days=1)
-    previous_start = previous_end - timedelta(days=days - 1)
-    return previous_start, previous_end
+    return start_date - timedelta(days=days), end_date - timedelta(days=days)
+
+
+def _format_period_range(start_date, end_date):
+    if start_date == end_date:
+        return start_date.isoformat()
+    return f"{start_date.isoformat()} — {end_date.isoformat()}"
 
 
 def _filter_rows_by_period(rows, start_date, end_date):
@@ -289,7 +293,8 @@ def _stock_chart_dataframe(stocks_df):
 
 
 def _sum_metric(rows, aliases):
-    return sum(to_number(first_present(row, aliases)) for row in rows)
+    values = [to_number(value) for row in rows if (value := first_present(row, aliases)) not in (None, "")]
+    return sum(values) if values else None
 
 
 def _average_metric(rows, aliases):
@@ -302,9 +307,9 @@ def _period_metrics(history_rows, ads_rows):
     revenue = _sum_metric(history_rows, ["revenue", "order_sum", "orderSum"])
     opens = _sum_metric(history_rows, ["open_count", "openCount"])
     carts = _sum_metric(history_rows, ["cart_count", "cartCount"])
-    avg_check = revenue / orders if orders else 0
-    cart_conversion = (carts / opens * 100) if opens else _average_metric(history_rows, ["add_to_cart_percent", "addToCartPercent"])
-    order_conversion = (orders / carts * 100) if carts else _average_metric(history_rows, ["cart_to_order_percent", "cartToOrderPercent"])
+    avg_check = revenue / orders if revenue is not None and orders else None
+    cart_conversion = (carts / opens * 100) if carts is not None and opens else _average_metric(history_rows, ["add_to_cart_percent", "addToCartPercent"])
+    order_conversion = (orders / carts * 100) if orders is not None and carts else _average_metric(history_rows, ["cart_to_order_percent", "cartToOrderPercent"])
     impressions = _sum_metric(ads_rows, ["impressions", "views"])
     clicks = _sum_metric(ads_rows, ["clicks"])
     spend = _sum_metric(ads_rows, ["spend", "ad_spend", "advertising_cost"])
@@ -319,11 +324,12 @@ def _period_metrics(history_rows, ads_rows):
         "carts": carts,
         "cart_conversion": cart_conversion,
         "order_conversion": order_conversion,
-        "ctr": (clicks / impressions * 100) if impressions else _average_metric(ads_rows, ["ctr"]),
-        "cpc": (spend / clicks) if clicks else _average_metric(ads_rows, ["cpc"]),
-        "drr": (spend / ads_revenue * 100) if ads_revenue else _average_metric(ads_rows, ["drr"]),
+        "ctr": (clicks / impressions * 100) if clicks is not None and impressions else _average_metric(ads_rows, ["ctr"]),
+        "cpc": (spend / clicks) if spend is not None and clicks else _average_metric(ads_rows, ["cpc"]),
+        "drr": (spend / ads_revenue * 100) if spend is not None and ads_revenue else _average_metric(ads_rows, ["drr"]),
         "ad_spend": spend,
         "ads_orders": ads_orders,
+        "has_history": bool(history_rows),
         "has_ads": has_ads,
     }
 
@@ -337,6 +343,12 @@ def _change_percent(current, previous):
 def _metric_delta(current, previous):
     change = _change_percent(current, previous)
     return f"{change:+.1f}%" if change is not None else "—"
+
+
+def _format_comparison_value(value, formatter, no_base=False):
+    if value is None:
+        return "нет базы для сравнения" if no_base else "нет данных"
+    return formatter(value)
 
 
 def _comparison_dataframe(current, previous):
@@ -366,7 +378,14 @@ def _comparison_dataframe(current, previous):
             conclusion = "рост"
         else:
             conclusion = "снижение"
-        records.append({"Метрика": name, "Текущий период": formatter(cur), "Прошлый период": formatter(prev), "Изменение": _metric_delta(cur, prev), "Вывод": conclusion})
+        no_base = not previous.get("has_history") and not previous.get("has_ads")
+        records.append({
+            "Метрика": name,
+            "Текущий период": _format_comparison_value(cur, formatter),
+            "Прошлый период": _format_comparison_value(prev, formatter, no_base=no_base),
+            "Изменение": _metric_delta(cur, prev),
+            "Вывод": conclusion,
+        })
     return pd.DataFrame(records)
 
 
@@ -416,7 +435,9 @@ def _has_confirmed_stock_cause(stock_rows, problem_rows):
 
 
 def _format_transition(name, current, previous):
-    return f"{name}: {format_number(previous)} → {format_number(current)} ({_metric_delta(current, previous)})"
+    previous_text = "нет данных" if previous is None else format_number(previous)
+    current_text = "нет данных" if current is None else format_number(current)
+    return f"{name}: {previous_text} → {current_text} ({_metric_delta(current, previous)})"
 
 
 def _problem_priority(row):
@@ -441,7 +462,8 @@ def _top_sku_loss(problem_rows):
 
 
 def _has_comparison_base(previous):
-    return any(to_number(previous.get(key)) > 0 for key in ("orders", "revenue", "opens", "carts"))
+    return any(previous.get(key) is not None for key in ("orders", "revenue", "opens", "carts"))
+
 
 
 def _build_sku_summary(current, previous, problem_rows, stock_rows):
@@ -460,7 +482,7 @@ def _build_sku_summary(current, previous, problem_rows, stock_rows):
         _change_percent(current.get("drr"), previous.get("drr")) is not None and _change_percent(current.get("drr"), previous.get("drr")) > 5,
     ])
     order_conv_drop = _change_percent(current.get("order_conversion"), previous.get("order_conversion"))
-    if not problem_rows and not current["orders"] and not previous["orders"]:
+    if not problem_rows and not current.get("orders") and not previous.get("orders"):
         reason = "требует проверки"
     elif _has_confirmed_stock_cause(stock_rows, problem_rows):
         reason = "остатки"
@@ -471,8 +493,12 @@ def _build_sku_summary(current, previous, problem_rows, stock_rows):
     else:
         reason = "требует проверки" if status == "товар просел" else "конверсия"
     top_lost_rev, top_lost_ord = _top_sku_loss(problem_rows)
-    calculated_lost_rev = max(previous["revenue"] - current["revenue"], 0)
-    calculated_lost_ord = max(previous["orders"] - current["orders"], 0)
+    calculated_lost_rev = 0
+    calculated_lost_ord = 0
+    if previous.get("revenue") is not None and current.get("revenue") is not None:
+        calculated_lost_rev = max(previous["revenue"] - current["revenue"], 0)
+    if previous.get("orders") is not None and current.get("orders") is not None:
+        calculated_lost_ord = max(previous["orders"] - current["orders"], 0)
     lost_rev = top_lost_rev if top_lost_rev else calculated_lost_rev
     lost_ord = top_lost_ord if top_lost_ord else calculated_lost_ord
     if problem_rows and status == "товар стабилен":
@@ -590,9 +616,9 @@ def _ads_diagnosis(current, previous):
     cpc_change = _change_percent(current.get("cpc"), previous.get("cpc"))
     drr_change = _change_percent(current.get("drr"), previous.get("drr"))
     evidence = [
-        f"CTR: {previous.get('ctr') or 0:.1f}% → {current.get('ctr') or 0:.1f}%",
-        f"CPC: {format_money(previous.get('cpc') or 0)} → {format_money(current.get('cpc') or 0)}",
-        f"ДРР: {previous.get('drr') or 0:.1f}% → {current.get('drr') or 0:.1f}%",
+        f"CTR: {_format_comparison_value(previous.get('ctr'), lambda value: f'{value:.1f}%')} → {_format_comparison_value(current.get('ctr'), lambda value: f'{value:.1f}%')}",
+        f"CPC: {_format_comparison_value(previous.get('cpc'), format_money)} → {_format_comparison_value(current.get('cpc'), format_money)}",
+        f"ДРР: {_format_comparison_value(previous.get('drr'), lambda value: f'{value:.1f}%')} → {_format_comparison_value(current.get('drr'), lambda value: f'{value:.1f}%')}",
     ]
     if any(change is not None and change > 5 for change in (cpc_change, drr_change)) or (ctr_change is not None and ctr_change < -5):
         return "🔴 Реклама ухудшилась", evidence
@@ -713,7 +739,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     abc = first_present(latest_problem, ["abc", "abc_class", "abcClass", "abc_segment", "abcSegment"]) or first_present(product, ["abc", "abc_class", "abcClass", "abc_segment", "abcSegment"], "—")
 
     st.subheader(product.get("title") or "Без названия")
-    st.caption(f"История за период: {start_date.isoformat()} — {end_date.isoformat()}")
+    st.caption(f"История за период: {_format_period_range(start_date, end_date)}")
+    st.caption(f"Прошлый период: {_format_period_range(previous_start, previous_end)}")
     st.markdown(
         """
         <style>
