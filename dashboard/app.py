@@ -21,7 +21,7 @@ from formatters import (
     prepare_seller_table,
     prepare_sku_table,
 )
-from queries import (
+from dashboard_queries import (
     dataframe_for_display,
     fetch_data_quality,
     fetch_problems,
