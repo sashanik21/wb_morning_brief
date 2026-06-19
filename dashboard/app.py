@@ -19,6 +19,7 @@ from formatters import (
     lost_revenue,
     main_reason,
     matches_reason_filter,
+    reason_explanation,
     REASON_FILTER_OPTIONS,
     prepare_seller_table,
     prepare_sku_table,
@@ -86,7 +87,16 @@ unfiltered_problems = fetch_problems(
     date_field=problem_date_field,
 )
 with st.sidebar:
-    selected_reason = st.selectbox("Причина проблемы", REASON_FILTER_OPTIONS)
+    selected_reason = st.selectbox(
+        "Причина проблемы",
+        REASON_FILTER_OPTIONS,
+        help=(
+            "Выберите управленческую группу причин. Технические метрики объединены "
+            "в понятные категории: конверсия, реклама, остатки, заказы, выручка."
+        ),
+    )
+    if selected_reason != "Все причины":
+        st.caption(f"Пояснение: {reason_explanation(selected_reason)}")
     show_debug = st.checkbox("Показать debug", value=False)
 
 problems = [row for row in unfiltered_problems if matches_reason_filter(row, selected_reason)]
@@ -111,7 +121,8 @@ card_1.metric("Потеря выручки за день", format_money(sum(lost
 card_2.metric("Потеря заказов за день", format_number(round(sum(lost_orders(row) for row in problems))))
 card_3.metric("Критичные продавцы", format_number(critical_sellers))
 card_4.metric("Критичные SKU", format_number(critical_sku))
-card_5.metric("Главная причина просадок", reason)
+card_5.metric("Главная причина просадок", reason, help=reason_explanation(reason))
+st.caption(f"Что означает главная причина: {reason_explanation(reason)}")
 
 st.subheader("Что смотреть первым")
 if problems:
