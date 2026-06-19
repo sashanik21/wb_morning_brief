@@ -384,8 +384,9 @@ def _problem_description(problem_rows, reason):
 def _set_dashboard_query_params():
     try:
         st.query_params.clear()
+        st.query_params["mode"] = "Executive Dashboard"
     except AttributeError:
-        st.experimental_set_query_params()
+        st.experimental_set_query_params(mode="Executive Dashboard")
 
 
 def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=None):
@@ -395,7 +396,6 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
 
     if st.button("← Назад к Dashboard"):
         _set_dashboard_query_params()
-        st.session_state["dashboard_mode"] = "Executive Dashboard"
         st.rerun()
 
     seller_options = ["Все продавцы", *[str(row.get("seller_id") or row.get("id")) for row in sellers if row.get("seller_id") or row.get("id")]]
