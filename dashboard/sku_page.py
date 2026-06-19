@@ -1,11 +1,12 @@
 """SKU card page for the Streamlit dashboard."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from html import escape
 
 import pandas as pd
 import streamlit as st
 
+from supabase_client import get_supabase_client
 from wb_dashboard_queries import (
     fetch_sku_ads_history,
     fetch_sku_change_log,
@@ -157,7 +158,12 @@ def _date_value(row):
 def _normalize_date(value):
     if value in (None, ""):
         return None
-    return str(value)[:10]
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    return text[:10] if text else None
 
 
 def _period_bounds(period_label):
@@ -178,14 +184,54 @@ def _format_period_range(start_date, end_date):
 
 
 def _filter_rows_by_period(rows, start_date, end_date):
-    start_text = start_date.isoformat()
-    end_text = end_date.isoformat()
+    start_text = _normalize_date(start_date)
+    end_text = _normalize_date(end_date)
     filtered = []
     for row in rows:
         row_date = _normalize_date(_date_value(row))
         if row_date and start_text <= row_date <= end_text:
             filtered.append(row)
     return filtered
+
+
+def _dedupe_rows(rows):
+    deduped = {}
+    for index, row in enumerate(rows):
+        key = row.get("id") or (
+            first_present(row, ["nm_id", "nmId", "nmID"]),
+            _normalize_date(_date_value(row)),
+            first_present(row, ["seller_id", "sellerId"]),
+            index,
+        )
+        deduped[key] = row
+    return list(deduped.values())
+
+
+def _fetch_daily_funnel_rows_by_date(selected_nm_id, selected_seller, start_date, end_date):
+    rows = fetch_sku_history(selected_nm_id, selected_seller, start_date, end_date)
+    filtered_rows = _filter_rows_by_period(rows, start_date, end_date)
+    if filtered_rows:
+        return filtered_rows
+
+    client = get_supabase_client()
+    fallback_rows = []
+    for nm_field in ("nm_id", "nmId", "nmID"):
+        try:
+            response = client.table("daily_funnel").select("*").eq(nm_field, selected_nm_id).limit(10000).execute()
+            candidate_rows = response.data or []
+        except Exception:
+            continue
+        if candidate_rows:
+            fallback_rows = candidate_rows
+            break
+
+    if selected_seller and selected_seller != "Все продавцы":
+        fallback_rows = [
+            row
+            for row in fallback_rows
+            if str(first_present(row, ["seller_id", "sellerId"], "")) in ("", "None", str(selected_seller))
+        ]
+    return _dedupe_rows(_filter_rows_by_period([*rows, *fallback_rows], start_date, end_date))
 
 
 def _history_dataframe(rows):
@@ -718,8 +764,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     previous_start, previous_end = _previous_period_bounds(start_date, end_date)
 
     product = sku_by_id[selected_nm_id]
-    history_rows = fetch_sku_history(selected_nm_id, selected_seller, start_date, end_date)
-    previous_history_rows = fetch_sku_history(selected_nm_id, selected_seller, previous_start, previous_end)
+    history_rows = _fetch_daily_funnel_rows_by_date(selected_nm_id, selected_seller, start_date, end_date)
+    previous_history_rows = _fetch_daily_funnel_rows_by_date(selected_nm_id, selected_seller, previous_start, previous_end)
     problem_rows = fetch_sku_problems(selected_nm_id, selected_seller, start_date, end_date)
     ads_rows = fetch_sku_ads_history(selected_nm_id, selected_seller, start_date, end_date)
     previous_ads_rows = fetch_sku_ads_history(selected_nm_id, selected_seller, previous_start, previous_end)
