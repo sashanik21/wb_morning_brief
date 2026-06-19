@@ -20,8 +20,8 @@ import streamlit as st
 from core.date_engine import (
     align_time_series,
     closest_available_date,
-    date_debug_diagnostics,
-    normalize_selected_date,
+    debug_date_filter,
+    normalize_report_date,
     to_business_date,
 )
 from formatters import (
@@ -197,7 +197,7 @@ with st.sidebar:
     st.header("Фильтры")
     if report_dates:
         selected_date_raw = st.selectbox("Дата отчёта", report_dates, index=0)
-        selected_date = normalize_selected_date(selected_date_raw)
+        selected_date = normalize_report_date(selected_date_raw)
         report_date = selected_date.isoformat() if selected_date else None
     else:
         selected_date_raw = None
@@ -229,7 +229,7 @@ if report_date and not date_problems:
         st.warning(f"FALLBACK_USED: shifted to closest available date {fallback_report_date}")
         fallback_message = f"FALLBACK_USED: shifted to closest available date {fallback_report_date}"
         report_date = fallback_report_date
-        selected_date = normalize_selected_date(report_date)
+        selected_date = normalize_report_date(report_date)
         date_problems = fetch_problems(
             report_date=report_date,
             limit=1,
@@ -246,7 +246,7 @@ all_date_filter_rows = fetch_problems(
     seller_id=selected_seller,
     date_field=problem_date_field,
 )
-empty_data_debug = date_debug_diagnostics(
+empty_data_debug = debug_date_filter(
     all_date_filter_rows,
     report_date,
     date_field=problem_date_field,

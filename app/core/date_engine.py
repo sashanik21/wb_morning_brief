@@ -181,6 +181,11 @@ def normalize_selected_date(value):
     return parsed.date()
 
 
+def normalize_report_date(value):
+    """Normalize a Dashboard report date to a Python DATE value."""
+    return normalize_selected_date(value)
+
+
 def date_debug_diagnostics(rows, selected_date, date_field="report_date", filtered_count=None):
     """Return structured diagnostics for DATE == DATE filters.
 
@@ -266,3 +271,13 @@ def fill_missing_dates(data, start, end):
         filled.append(row)
         current += timedelta(days=1)
     return filled
+
+
+def debug_date_filter(rows, selected_date, date_field="report_date", filtered_count=None):
+    """Return diagnostics for Dashboard date filtering."""
+    return date_debug_diagnostics(
+        rows,
+        selected_date,
+        date_field=date_field,
+        filtered_count=filtered_count,
+    )
