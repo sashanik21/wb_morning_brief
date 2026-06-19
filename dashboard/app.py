@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
@@ -56,11 +57,21 @@ except Exception as error:
     problems_access_status = "FAILED"
     problems_access_error = str(error)
 
-with st.sidebar:
-    dashboard_mode = st.selectbox("Режим Dashboard", ["Executive Dashboard", "Карточка SKU"], index=0)
+query_nm_id = st.query_params.get("nm_id")
+query_seller_id = st.query_params.get("seller_id")
+default_mode = "Карточка SKU" if query_nm_id else "Executive Dashboard"
+st.session_state.setdefault("dashboard_mode", default_mode)
 
-if dashboard_mode == "Карточка SKU":
-    render_sku_page(sellers, sellers_by_id)
+with st.sidebar:
+    dashboard_mode = st.selectbox(
+        "Режим Dashboard",
+        ["Executive Dashboard", "Карточка SKU"],
+        index=["Executive Dashboard", "Карточка SKU"].index(st.session_state["dashboard_mode"]),
+        key="dashboard_mode",
+    )
+
+if dashboard_mode == "Карточка SKU" or query_nm_id:
+    render_sku_page(sellers, sellers_by_id, initial_nm_id=query_nm_id, selected_seller=query_seller_id)
     st.stop()
 
 st.title("Панель управления WB")
@@ -187,7 +198,19 @@ st.dataframe(seller_table, width="stretch", hide_index=True)
 
 st.subheader("TOP SKU")
 sku_table = dataframe_for_display(prepare_sku_table(problems, sellers_by_id).head(100))
-st.dataframe(sku_table, width="stretch", hide_index=True)
+if not sku_table.empty:
+    sku_table = sku_table.copy()
+    sku_table.insert(
+        0,
+        "открыть",
+        sku_table["артикул WB"].apply(lambda nm_id: f"?nm_id={quote(str(nm_id))}" if nm_id else ""),
+    )
+st.dataframe(
+    sku_table,
+    width="stretch",
+    hide_index=True,
+    column_config={"открыть": st.column_config.LinkColumn("Карточка", display_text="Открыть")},
+)
 
 st.subheader("Качество данных")
 quality_1, quality_2, quality_3, quality_4 = st.columns(4)
