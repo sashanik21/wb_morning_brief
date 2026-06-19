@@ -369,17 +369,30 @@ def fetch_sku_history(nm_id, seller_id=None):
 
 @st.cache_data(ttl=300)
 def fetch_sku_ads_history(nm_id, seller_id=None):
-    """Return ads rows for one SKU from available ads tables."""
+    """Return daily_ads_metrics rows for one SKU without assuming exact column names."""
     client = get_supabase_client()
     rows = []
-    for table_name in ("daily_ads_metrics", "ads_daily"):
-        for nm_field in ("nm_id", "nmId", "nmID"):
-            query = client.table(table_name).select("*").eq(nm_field, nm_id)
-            candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
-            if succeeded:
-                rows = candidate_rows
-                break
-        if rows:
+    for nm_field in ("nm_id", "nmId", "nmID"):
+        query = client.table("daily_ads_metrics").select("*").eq(nm_field, nm_id)
+        candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
+        if succeeded:
+            rows = candidate_rows
+            break
+    if seller_id and seller_id != "Все продавцы":
+        rows = [row for row in rows if str(_row_seller_id(row)) in ("None", str(seller_id)) or _row_seller_id(row) in (None, "")]
+    return rows
+
+
+@st.cache_data(ttl=300)
+def fetch_sku_stocks_history(nm_id, seller_id=None):
+    """Return stocks_daily rows for one SKU without assuming exact column names."""
+    client = get_supabase_client()
+    rows = []
+    for nm_field in ("nm_id", "nmId", "nmID"):
+        query = client.table("stocks_daily").select("*").eq(nm_field, nm_id)
+        candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
+        if succeeded:
+            rows = candidate_rows
             break
     if seller_id and seller_id != "Все продавцы":
         rows = [row for row in rows if str(_row_seller_id(row)) in ("None", str(seller_id)) or _row_seller_id(row) in (None, "")]

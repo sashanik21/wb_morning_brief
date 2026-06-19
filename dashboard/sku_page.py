@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-from dashboard_queries import fetch_sku_ads_history, fetch_sku_history, fetch_sku_options, fetch_sku_problems
+from dashboard_queries import fetch_sku_ads_history, fetch_sku_history, fetch_sku_options, fetch_sku_problems, fetch_sku_stocks_history
 from formatters import (
     first_present,
     format_money,
@@ -13,6 +13,8 @@ from formatters import (
     lost_orders,
     lost_revenue,
     management_reason,
+    main_reason,
+    reason_explanation,
     reason_table_hint,
     to_number,
 )
@@ -266,17 +268,95 @@ def _problem_table(rows):
     return pd.DataFrame(records).sort_values(["дата", "потеря выручки"], ascending=[False, False]) if records else pd.DataFrame()
 
 
-def render_sku_page(sellers, sellers_by_id):
-    """Render SKU history mode."""
-    st.title("Карточка SKU")
-    st.caption("История конкретной карточки Wildberries за выбранный период")
+def _latest_row(rows):
+    dated_rows = [(_normalize_date(_date_value(row)) or "", row) for row in rows]
+    if not dated_rows:
+        return {}
+    return sorted(dated_rows, key=lambda item: item[0], reverse=True)[0][1]
 
-    seller_options = [str(row.get("seller_id") or row.get("id")) for row in sellers if row.get("seller_id") or row.get("id")]
-    if not seller_options:
-        seller_options = ["Все продавцы"]
+
+def _campaign_count(rows):
+    campaign_ids = {
+        first_present(row, ["campaign_id", "campaignId", "advert_id", "advertId", "advertising_campaign_id"])
+        for row in rows
+        if first_present(row, ["campaign_id", "campaignId", "advert_id", "advertId", "advertising_campaign_id"]) not in (None, "")
+    }
+    if campaign_ids:
+        return len(campaign_ids)
+    return len(rows) if rows else 0
+
+
+def _stock_total(rows):
+    latest = _latest_row(rows)
+    if not latest:
+        return 0
+    return to_number(
+        first_present(
+            latest,
+            [
+                "real_sellable_stock",
+                "realSellableStock",
+                "quantity",
+                "qty",
+                "stock",
+                "stocks",
+                "wb_stocks",
+                "wbStocks",
+            ],
+        )
+    )
+
+
+def _stock_status(rows):
+    latest = _latest_row(rows)
+    if not latest:
+        return "нет данных"
+    explicit_status = first_present(latest, ["stock_state", "stockState", "status"])
+    if explicit_status not in (None, ""):
+        return str(explicit_status)
+    stock = _stock_total(rows)
+    if stock <= 0:
+        return "нет остатка"
+    if stock < 5:
+        return "низкий остаток"
+    return "в наличии"
+
+
+def _problem_description(problem_rows, reason):
+    latest_problem = _latest_row(problem_rows)
+    if not latest_problem:
+        return reason_explanation(reason)
+    return first_present(
+        latest_problem,
+        ["root_cause_description", "reason_description", "diagnosis", "forecast_message", "recommendation", "root_recommendation"],
+        reason_explanation(reason),
+    )
+
+
+def _set_dashboard_query_params():
+    try:
+        st.query_params.clear()
+    except AttributeError:
+        st.experimental_set_query_params()
+
+
+def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=None):
+    """Render SKU detail page with diagnostics from existing dashboard tables."""
+    st.title("Карточка SKU")
+    st.caption("Диагностика конкретного артикула Wildberries по существующим данным Dashboard")
+
+    if st.button("← Назад к Dashboard"):
+        _set_dashboard_query_params()
+        st.session_state["dashboard_mode"] = "Executive Dashboard"
+        st.rerun()
+
+    seller_options = ["Все продавцы", *[str(row.get("seller_id") or row.get("id")) for row in sellers if row.get("seller_id") or row.get("id")]]
+    if selected_seller not in seller_options:
+        selected_seller = "Все продавцы"
     selected_seller = st.selectbox(
         "Продавец",
         seller_options,
+        index=seller_options.index(selected_seller),
         format_func=lambda value: sellers_by_id.get(str(value), str(value)),
     )
 
@@ -286,74 +366,75 @@ def render_sku_page(sellers, sellers_by_id):
         return
 
     sku_by_id = {str(option["nm_id"]): option for option in sku_options}
+    selected_nm_id = str(initial_nm_id) if initial_nm_id and str(initial_nm_id) in sku_by_id else list(sku_by_id)[0]
     selected_nm_id = st.selectbox(
         "Артикул WB",
         list(sku_by_id),
+        index=list(sku_by_id).index(selected_nm_id),
         format_func=lambda value: f"{value} — {sku_by_id[value].get('title') or 'без названия'}",
     )
-    period_label = st.selectbox("Период", list(PERIOD_OPTIONS), index=0)
-    start_date, end_date = _period_bounds(period_label)
 
     product = sku_by_id[selected_nm_id]
     all_history_rows = fetch_sku_history(selected_nm_id, selected_seller)
     all_problem_rows = fetch_sku_problems(selected_nm_id, selected_seller)
     all_ads_rows = fetch_sku_ads_history(selected_nm_id, selected_seller)
-    previous_start_date, previous_end_date = _previous_period_bounds(start_date, end_date)
-    history_rows = _filter_rows_by_period(all_history_rows, start_date, end_date)
-    previous_history_rows = _filter_rows_by_period(all_history_rows, previous_start_date, previous_end_date)
-    problem_rows = _filter_rows_by_period(all_problem_rows, start_date, end_date)
-    ads_rows = _filter_rows_by_period(all_ads_rows, start_date, end_date)
-    previous_ads_rows = _filter_rows_by_period(all_ads_rows, previous_start_date, previous_end_date)
-    current_metrics = _period_metrics(history_rows, ads_rows)
-    previous_metrics = _period_metrics(previous_history_rows, previous_ads_rows)
-    history_df = _history_dataframe(history_rows)
+    all_stock_rows = fetch_sku_stocks_history(selected_nm_id, selected_seller)
+    current_metrics = _period_metrics(all_history_rows, all_ads_rows)
+    latest_problem = _latest_row(all_problem_rows)
+    reason = main_reason(all_problem_rows) if all_problem_rows else "требует проверки"
+    product_seller_id = product.get("seller_id") or selected_seller
+    seller_name = sellers_by_id.get(str(product_seller_id), product_seller_id)
+    seller_article = product.get("vendor_code") or product.get("vendorCode") or product.get("supplier_article") or product.get("supplierArticle") or "—"
+    abc = first_present(latest_problem, ["abc", "abc_class", "abcClass", "abc_segment", "abcSegment"]) or first_present(product, ["abc", "abc_class", "abcClass", "abc_segment", "abcSegment"], "—")
 
     st.subheader(product.get("title") or "Без названия")
-    seller_name = sellers_by_id.get(str(selected_seller), selected_seller)
-    seller_article = product.get("vendor_code") or product.get("vendorCode") or product.get("supplier_article") or product.get("supplierArticle") or "—"
+    info_1, info_2, info_3, info_4, info_5 = st.columns(5)
+    info_1.metric("WB артикул", selected_nm_id)
+    info_2.metric("Артикул продавца", seller_article)
+    info_3.metric("Название", product.get("title") or "—")
+    info_4.metric("Продавец", seller_name)
+    info_5.metric("ABC", abc)
+
+    st.subheader("Продажи")
+    sales_1, sales_2 = st.columns(2)
+    sales_1.metric("Потеря выручки", format_money(sum(lost_revenue(row) for row in all_problem_rows)))
+    sales_2.metric("Потеря заказов", format_number(round(sum(lost_orders(row) for row in all_problem_rows))))
+
+    st.subheader("Воронка")
+    impressions = _sum_metric(all_history_rows, ["impressions", "views", "view_count", "viewCount"])
+    opens = current_metrics["opens"]
+    clicks = _sum_metric(all_history_rows, ["clicks", "click_count", "clickCount"])
+    funnel_transitions = opens or clicks
+    ctr = (funnel_transitions / impressions * 100) if impressions else _average_metric(all_history_rows, ["ctr"])
+    funnel_1, funnel_2, funnel_3, funnel_4, funnel_5, funnel_6 = st.columns(6)
+    funnel_1.metric("Показы", format_number(impressions))
+    funnel_2.metric("Переходы", format_number(funnel_transitions))
+    funnel_3.metric("CTR", f"{ctr or 0:.1f}%")
+    funnel_4.metric("Корзина", format_number(current_metrics["carts"]))
+    funnel_5.metric("Конверсия в корзину", f"{current_metrics['cart_conversion'] or 0:.1f}%")
+    funnel_6.metric("Конверсия в заказ", f"{current_metrics['order_conversion'] or 0:.1f}%")
+
+    st.subheader("Реклама")
+    ads_1, ads_2, ads_3, ads_4 = st.columns(4)
+    ads_1.metric("CTR рекламы", f"{current_metrics['ctr'] or 0:.1f}%")
+    ads_2.metric("CPC", format_money(current_metrics["cpc"] or 0))
+    ads_3.metric("ДРР", f"{current_metrics['drr'] or 0:.1f}%")
+    ads_4.metric("Количество кампаний", format_number(_campaign_count(all_ads_rows)))
+
+    st.subheader("Остатки")
+    stock_1, stock_2 = st.columns(2)
+    stock_1.metric("Остаток", format_number(_stock_total(all_stock_rows)))
+    stock_2.metric("Статус остатков", _stock_status(all_stock_rows))
+
+    st.subheader("Диагноз")
     st.markdown(
-        f"**Продавец:** {seller_name}  \n"
-        f"**Артикул WB:** {selected_nm_id}  \n"
-        f"**Артикул продавца:** {seller_article}  \n"
-        f"**Ссылка WB:** https://www.wildberries.ru/catalog/{selected_nm_id}/detail.aspx"
+        f"**Главная причина:** {reason}  \n"
+        f"**Описание причины:** {_problem_description(all_problem_rows, reason)}"
     )
 
-    status, reason, confirmation, lost_revenue_total, lost_orders_total, actions = _build_sku_summary(current_metrics, previous_metrics, problem_rows)
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Заказы", f"{format_number(current_metrics['orders'])} / {format_number(previous_metrics['orders'])}", _metric_delta(current_metrics["orders"], previous_metrics["orders"]))
-    col2.metric("Выручка", f"{format_money(current_metrics['revenue'])} / {format_money(previous_metrics['revenue'])}", _metric_delta(current_metrics["revenue"], previous_metrics["revenue"]))
-    col3.metric("Конверсия в корзину", f"{current_metrics['cart_conversion'] or 0:.1f}% / {previous_metrics['cart_conversion'] or 0:.1f}%", _metric_delta(current_metrics["cart_conversion"], previous_metrics["cart_conversion"]))
-    col4.metric("Конверсия в заказ", f"{current_metrics['order_conversion'] or 0:.1f}% / {previous_metrics['order_conversion'] or 0:.1f}%", _metric_delta(current_metrics["order_conversion"], previous_metrics["order_conversion"]))
-    ad1, ad2, ad3 = st.columns(3)
-    ad1.metric("CTR рекламы", f"{current_metrics['ctr'] or 0:.1f}% / {previous_metrics['ctr'] or 0:.1f}%", _metric_delta(current_metrics["ctr"], previous_metrics["ctr"]))
-    ad2.metric("CPC", f"{format_money(current_metrics['cpc'] or 0)} / {format_money(previous_metrics['cpc'] or 0)}", _metric_delta(current_metrics["cpc"], previous_metrics["cpc"]))
-    ad3.metric("ДРР", f"{current_metrics['drr'] or 0:.1f}% / {previous_metrics['drr'] or 0:.1f}%", _metric_delta(current_metrics["drr"], previous_metrics["drr"]))
-
-    st.subheader("Итог по SKU")
-    st.markdown(f"**Итог:** {status}  \n**Главная причина:** {reason}  \n**Подтверждение:** {' '.join(confirmation)}  \n**Потеря выручки:** {format_money(lost_revenue_total)}  \n**Потеря заказов:** {format_number(round(lost_orders_total))}")
-    st.markdown("**Что делать:**")
-    for index, action in enumerate(actions, start=1):
-        st.write(f"{index}. {action}")
-
-    st.subheader("Сравнение периодов")
-    st.caption(f"Текущий период: {start_date.isoformat()} — {end_date.isoformat()}; прошлый период: {previous_start_date.isoformat()} — {previous_end_date.isoformat()}")
-    st.dataframe(_comparison_dataframe(current_metrics, previous_metrics), width="stretch", hide_index=True)
-
-    st.subheader("Динамика")
-    if history_df.empty:
-        st.info("История daily_funnel за выбранный период не найдена.")
-    else:
-        st.line_chart(history_df[["Заказы"]])
-        st.line_chart(history_df[["Выручка"]])
-        st.line_chart(history_df[["Конверсия в заказ, %"]])
-
     st.subheader("История проблем")
-    problems_df = _problem_table(problem_rows)
+    problems_df = _problem_table(all_problem_rows)
     if problems_df.empty:
-        st.success("Проблемы по SKU за выбранный период не найдены.")
+        st.success("Проблемы по SKU не найдены.")
     else:
         st.dataframe(problems_df.reset_index(drop=True), width="stretch", hide_index=True)
-
-    st.subheader("Что проверить")
-    st.info(CHECKLIST_BY_REASON.get(reason, CHECKLIST_BY_REASON["требует проверки"]))
