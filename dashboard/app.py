@@ -31,6 +31,7 @@ from dashboard_queries import (
     fetch_sellers,
     unique_reasons,
 )
+from supabase_client import get_supabase_client, get_supabase_credentials_info
 
 
 st.set_page_config(page_title="Morning Brief — Executive Dashboard", layout="wide")
@@ -38,12 +39,21 @@ st.title("Executive Dashboard")
 st.caption("Morning Brief: управленческая картина по потерям, продавцам и SKU")
 
 try:
+    credentials_info = get_supabase_credentials_info()
     connection_diagnostics = check_dashboard_connection()
     sellers, sellers_by_id = fetch_sellers()
     report_dates, problem_date_field = fetch_report_dates()
 except Exception as error:
     st.error(f"Не удалось подключиться к Supabase: {error}")
     st.stop()
+
+try:
+    get_supabase_client().table("problems").select("id").limit(1).execute()
+    problems_access_status = "OK"
+    problems_access_error = ""
+except Exception as error:
+    problems_access_status = "FAILED"
+    problems_access_error = str(error)
 
 with st.sidebar:
     st.header("Фильтры")
@@ -165,5 +175,11 @@ with st.sidebar:
     st.caption(f"available dates count: {problems_diagnostics['available_dates_count']}")
     st.caption(f"selected date: {problems_diagnostics['selected_date'] or '—'}")
     st.caption(f"last error: {last_error}")
-    st.caption(f"credentials source: {problems_diagnostics['credentials_source']}")
-    st.caption(f"key type: {problems_diagnostics['key_type']}")
+    st.caption(f"Supabase URL: {credentials_info['supabase_url'] or '—'}")
+    st.caption(f"KEY TYPE: {credentials_info['key_type']}")
+    st.caption("Problems table access test")
+    if problems_access_error:
+        st.caption(f"Problems access: {problems_access_status} — {problems_access_error}")
+    else:
+        st.caption(f"Problems access: {problems_access_status}")
+    st.caption(f"credentials source: {credentials_info['credentials_source']}")
