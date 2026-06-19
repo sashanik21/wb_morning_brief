@@ -1,6 +1,12 @@
 """Read-only Supabase queries for the Executive Dashboard."""
 
+import sys
+from pathlib import Path
 from datetime import date, datetime, timedelta
+
+CURRENT_DIR = Path(__file__).resolve().parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
 import pandas as pd
 import streamlit as st
