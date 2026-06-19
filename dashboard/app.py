@@ -124,6 +124,11 @@ if not connection_diagnostics["problems_readable"] or (
 critical_sellers = len({row.get("seller_id") for row in problems if row.get("seller_id")})
 critical_sku = len({row.get("nm_id") or row.get("nmId") for row in problems if row.get("nm_id") or row.get("nmId")})
 reason_summaries = reason_loss_summary(problems)
+sum_reason_lost_revenue = sum(summary["lost_revenue"] for summary in reason_summaries)
+sum_reason_lost_orders = sum(summary["lost_orders"] for summary in reason_summaries)
+total_day_lost_revenue = sum_reason_lost_revenue
+total_day_lost_orders = sum_reason_lost_orders
+reason_revenue_diff = sum_reason_lost_revenue - total_day_lost_revenue
 top_reason = reason_summaries[0] if reason_summaries else None
 reason = top_reason["reason"] if top_reason else main_reason(problems)
 reason_loss_label = "Потеря"
@@ -135,8 +140,8 @@ elif top_reason:
     reason_loss_value = format_money(top_reason["lost_revenue"])
 
 card_1, card_2, card_3, card_4, card_5 = st.columns(5)
-card_1.metric("Потеря выручки за день", format_money(sum(lost_revenue(row) for row in problems)))
-card_2.metric("Потеря заказов за день", format_number(round(sum(lost_orders(row) for row in problems))))
+card_1.metric("Потеря выручки за день", format_money(total_day_lost_revenue))
+card_2.metric("Потеря заказов за день", format_number(round(total_day_lost_orders)))
 card_3.metric("Критичные продавцы", format_number(critical_sellers))
 card_4.metric("Критичные SKU", format_number(critical_sku))
 card_5.metric("Главная причина просадок", reason, help=reason_explanation(reason))
@@ -218,3 +223,7 @@ if show_debug:
         else:
             st.caption(f"Problems access: {problems_access_status}")
         st.caption(f"credentials source: {credentials_info['credentials_source']}")
+        st.caption("Потери по причинам:")
+        st.caption(f"общая потеря = {format_money(total_day_lost_revenue)}")
+        st.caption(f"сумма причин = {format_money(sum_reason_lost_revenue)}")
+        st.caption(f"расхождение = {format_money(reason_revenue_diff)}")
