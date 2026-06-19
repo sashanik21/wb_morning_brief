@@ -5,8 +5,8 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-from dashboard.dashboard_queries import fetch_sku_history, fetch_sku_options, fetch_sku_problems
-from dashboard.formatters import (
+from dashboard_queries import fetch_sku_history, fetch_sku_options, fetch_sku_problems
+from formatters import (
     first_present,
     format_money,
     format_number,

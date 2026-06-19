@@ -12,7 +12,7 @@ for path in (str(CURRENT_DIR), str(PROJECT_ROOT)):
 
 import streamlit as st
 
-from dashboard.formatters import (
+from formatters import (
     format_money,
     format_number,
     lost_orders,
@@ -25,7 +25,7 @@ from dashboard.formatters import (
     prepare_seller_table,
     prepare_sku_table,
 )
-from dashboard.dashboard_queries import (
+from dashboard_queries import (
     check_dashboard_connection,
     dataframe_for_display,
     fetch_data_quality,
@@ -34,8 +34,8 @@ from dashboard.dashboard_queries import (
     fetch_report_dates,
     fetch_sellers,
 )
-from dashboard.supabase_client import get_supabase_client, get_supabase_credentials_info
-from dashboard.sku_page import render_sku_page
+from supabase_client import get_supabase_client, get_supabase_credentials_info
+from sku_page import render_sku_page
 
 
 st.set_page_config(page_title="Morning Brief — Панель управления WB", layout="wide")
