@@ -17,7 +17,13 @@ from urllib.parse import quote
 
 import streamlit as st
 
-from core.date_engine import align_time_series, to_business_date
+from core.date_engine import (
+    align_time_series,
+    closest_available_date,
+    date_debug_diagnostics,
+    normalize_selected_date,
+    to_business_date,
+)
 from formatters import (
     format_money,
     format_number,
@@ -190,8 +196,12 @@ st.caption("Ежедневная аналитика Wildberries: потери, �
 with st.sidebar:
     st.header("Фильтры")
     if report_dates:
-        report_date = to_business_date({problem_date_field: st.selectbox("Дата отчёта", report_dates, index=0)})
+        selected_date_raw = st.selectbox("Дата отчёта", report_dates, index=0)
+        selected_date = normalize_selected_date(selected_date_raw)
+        report_date = selected_date.isoformat() if selected_date else None
     else:
+        selected_date_raw = None
+        selected_date = None
         report_date = None
         st.warning("Даты отчётов не найдены в problems.")
 
@@ -211,11 +221,39 @@ if report_date:
         limit=1,
         date_field=problem_date_field,
     )
+
+fallback_message = ""
+if report_date and not date_problems:
+    fallback_report_date = closest_available_date(report_dates, report_date, max_shift_days=3)
+    if fallback_report_date and fallback_report_date != report_date:
+        st.warning(f"FALLBACK_USED: shifted to closest available date {fallback_report_date}")
+        fallback_message = f"FALLBACK_USED: shifted to closest available date {fallback_report_date}"
+        report_date = fallback_report_date
+        selected_date = normalize_selected_date(report_date)
+        date_problems = fetch_problems(
+            report_date=report_date,
+            limit=1,
+            date_field=problem_date_field,
+        )
+
 unfiltered_problems = fetch_problems(
     report_date=report_date,
     seller_id=selected_seller,
     date_field=problem_date_field,
 )
+all_date_filter_rows = fetch_problems(
+    report_date=None,
+    seller_id=selected_seller,
+    date_field=problem_date_field,
+)
+empty_data_debug = date_debug_diagnostics(
+    all_date_filter_rows,
+    report_date,
+    date_field=problem_date_field,
+    filtered_count=len(unfiltered_problems),
+)
+if fallback_message:
+    empty_data_debug["fallback"] = fallback_message
 with st.sidebar:
     selected_reason = st.selectbox(
         "Причина проблемы",
@@ -343,6 +381,15 @@ else:
     excluded_problems_without_seller_id = len(unfiltered_problems) - len(dashboard_problems)
 
 problems = [row for row in dashboard_problems if matches_reason_filter(row, selected_reason)]
+if date_problems and not problems:
+    empty_data_debug["reason"] = "FILTER_EXCLUDED_ALL_ROWS"
+    empty_data_debug["rows_before_filter"] = len(unfiltered_problems)
+    empty_data_debug["rows_after_filter"] = len(problems)
+    empty_data_debug["filter_reason"] = {
+        "selected_reason": selected_reason,
+        "show_rows_without_seller_id": show_rows_without_seller_id,
+        "excluded_problems_without_seller_id": excluded_problems_without_seller_id,
+    }
 problems_diagnostics = fetch_problems_diagnostics(
     report_date=report_date,
     date_field=problem_date_field,
@@ -416,9 +463,14 @@ if problems:
 elif not report_dates:
     st.warning("Даты отчётов не найдены в problems.")
 elif not date_problems:
-    st.warning("По выбранной дате данные не найдены.")
+    debug_reason = empty_data_debug.get("reason") or "NO_DATA_FOR_SELECTED_DATE"
+    st.warning(f"По выбранной дате данные не найдены. Причина: {debug_reason}")
+    with st.expander("Техническое объяснение", expanded=False):
+        st.json(empty_data_debug)
 else:
     st.success("По выбранным фильтрам критичных проблем не найдено.")
+    with st.expander("Техническое объяснение", expanded=False):
+        st.json(empty_data_debug)
 
 st.subheader("Продавцы")
 seller_table = dataframe_for_display(prepare_seller_table(problems, sellers_by_id))
@@ -489,6 +541,15 @@ if show_debug:
         st.caption(f"available dates count: {problems_diagnostics['available_dates_count']}")
         st.caption(f"available dates list: {problems_diagnostics['available_dates_sample']}")
         st.caption(f"selected date: {problems_diagnostics['selected_date'] or '—'}")
+        st.caption(f"date debug reason: {empty_data_debug.get('reason') or '—'}")
+        st.caption(f"source min/max report_date: {empty_data_debug.get('min_report_date') or '—'} / {empty_data_debug.get('max_report_date') or '—'}")
+        st.caption(f"rows before date filter: {empty_data_debug.get('rows_before_filter')}")
+        st.caption(f"rows after date filter: {empty_data_debug.get('rows_after_filter')}")
+        st.caption(f"report_date dtype: {empty_data_debug.get('report_date_dtype')}")
+        st.caption(f"rows in ±3 days: {empty_data_debug.get('rows_in_plus_minus_3_days')}")
+        if empty_data_debug.get("fallback"):
+            st.caption(empty_data_debug["fallback"])
+        st.json(empty_data_debug)
         if problem_date_field == "report_date":
             st.caption("report_date берётся из сохранённых problems.")
         st.caption(f"last error: {last_error}")
