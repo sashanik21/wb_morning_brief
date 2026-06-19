@@ -64,20 +64,30 @@ except Exception as error:
 
 query_nm_id = st.query_params.get("nm_id")
 query_seller_id = st.query_params.get("seller_id")
+query_mode = st.query_params.get("mode")
+dashboard_modes = ["Executive Dashboard", "Карточка SKU"]
 default_mode = "Карточка SKU" if query_nm_id else "Executive Dashboard"
-st.session_state.setdefault("dashboard_mode", default_mode)
+initial_dashboard_mode = query_mode if query_mode in dashboard_modes else default_mode
 
 with st.sidebar:
     dashboard_mode = st.selectbox(
         "Режим Dashboard",
-        ["Executive Dashboard", "Карточка SKU"],
-        index=["Executive Dashboard", "Карточка SKU"].index(st.session_state["dashboard_mode"]),
-        key="dashboard_mode",
+        dashboard_modes,
+        index=dashboard_modes.index(initial_dashboard_mode),
     )
 
-if dashboard_mode == "Карточка SKU" or query_nm_id:
+should_render_sku = (
+    bool(query_nm_id)
+    or query_mode == "Карточка SKU"
+    or (query_mode != "Executive Dashboard" and dashboard_mode == "Карточка SKU")
+)
+
+if should_render_sku:
     render_sku_page(sellers, sellers_by_id, initial_nm_id=query_nm_id, selected_seller=query_seller_id)
     st.stop()
+
+if query_mode == "Executive Dashboard":
+    del st.query_params["mode"]
 
 st.title("Панель управления WB")
 st.caption("Ежедневная аналитика Wildberries: потери, продавцы, товары и причины просадок")
