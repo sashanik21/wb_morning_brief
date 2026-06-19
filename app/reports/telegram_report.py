@@ -2637,13 +2637,15 @@ def _baseline_context(summary_stats):
     if baseline_mode == "avg_3d":
         return "сравнение со средним за 3 дня"
     if baseline_mode in {"fallback_previous_day", "previous_day", "prev_day"}:
-        return "сравнение со вчерашним днём"
+        return "сравнение с доступной историей"
+    if baseline_mode in {"insufficient_history", "INSUFFICIENT_HISTORY"}:
+        return "сравнение с доступной историей"
     if baseline_counts:
         dominant = max(baseline_counts, key=lambda key: baseline_counts.get(key) or 0)
         if dominant == "avg_3d":
             return "сравнение с доступной историей: в основном среднее за 3 дня"
-        if dominant == "fallback_previous_day":
-            return "сравнение с доступной историей: в основном вчерашний день"
+        if dominant in {"fallback_previous_day", "insufficient_history"}:
+            return "сравнение с доступной историей"
     if baseline_mode:
         return f"сравнение: {html.escape(str(baseline_mode))}"
     return "сравнение с доступной историей"

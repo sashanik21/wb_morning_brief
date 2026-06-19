@@ -138,11 +138,13 @@ def _history_average(row, metric, days):
 
 
 def _ads_baseline(row, metric):
-    candidates = (
-        ("avg_7d", _history_average(row, metric, 7), "HIGH"),
+    candidates = [
         ("avg_3d", _history_average(row, metric, 3), "MEDIUM"),
-        ("previous_day", _previous_value(row, metric), "LOW"),
-    )
+        ("avg_7d", _history_average(row, metric, 7), "HIGH"),
+    ]
+
+    if "ads_history_status" not in row:
+        candidates.append(("previous_day", _previous_value(row, metric), "LOW"))
 
     for baseline_type, value, reliability in candidates:
         if value not in (None, "") and _to_number(value) != 0:
@@ -350,7 +352,7 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
         "carts",
         "avgPosition",
     )
-    baseline_counts = {"avg3": 0, "previous_day": 0, "insufficient": 0}
+    baseline_counts = {"avg3": 0, "insufficient": 0}
     for row in ads_rows or []:
         enriched = row.copy()
         if seller_id is not None:
@@ -365,31 +367,32 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
                 seller_id,
                 row.get("campaignId"),
                 row.get("nmId"),
-                3,
+                7,
                 before_date=row.get("date")
                 or row.get("report_date")
                 or row.get("selectedPeriod"),
             )
 
-        has_previous = bool(history)
-        has_avg3 = len(history) >= 3
-        history_status = "avg3" if has_avg3 else "previous_day" if has_previous else "insufficient"
+        has_history = bool(history)
+        history_status = "avg3" if has_history else "insufficient"
         enriched["ads_history_status"] = history_status
         baseline_counts[history_status] += 1
 
-        previous_row = history[0] if has_previous else {}
         for metric in metrics:
-            previous = _metric_from_history(previous_row, metric) if previous_row else None
-            if previous not in (None, ""):
-                enriched[_metric_key(metric, "previous")] = previous
-                enriched[f"previous_{metric}"] = previous
-                enriched[f"previous_day_{metric}"] = previous
-            avg3 = _average([_metric_from_history(item, metric) for item in history[:3]])
-            if has_avg3 and avg3 is not None:
+            avg3 = _average(
+                [_metric_from_history(item, metric) for item in history[:3]]
+            )
+            if has_history and avg3 is not None:
                 enriched[f"avg3_{metric}"] = avg3
                 enriched[f"avg_{metric}_3d"] = avg3
+            avg7 = _average(
+                [_metric_from_history(item, metric) for item in history[:7]]
+            )
+            if has_history and avg7 is not None:
+                enriched[f"avg7_{metric}"] = avg7
+                enriched[f"avg_{metric}_7d"] = avg7
 
-        baseline_prefix = "avg3" if has_avg3 else "previous"
+        baseline_prefix = "avg3"
         for metric in metrics:
             baseline_value = enriched.get(f"{baseline_prefix}_{metric}")
             if baseline_value in (None, ""):
@@ -415,7 +418,6 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
     print(
         "ADS HISTORY: "
         f"avg3={baseline_counts['avg3']} "
-        f"previous_day={baseline_counts['previous_day']} "
         f"without_history={baseline_counts['insufficient']}"
     )
     if os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug":

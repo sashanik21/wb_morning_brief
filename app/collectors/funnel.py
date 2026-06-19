@@ -1088,9 +1088,13 @@ def _history_baselines(history_rows):
     history_3d = history_rows[:3]
     history_7d = history_rows[:7]
     rows_loaded = len(history_rows)
+    days_3d_used = len(history_3d)
+    days_7d_used = len(history_7d)
     baselines = {
         "rowsLoaded": rows_loaded,
-        "baselineType": _baseline_type_for_rows_loaded(rows_loaded),
+        "avg3DaysUsed": days_3d_used,
+        "avg7DaysUsed": days_7d_used,
+        "baselineType": _baseline_type_for_rows_loaded(days_3d_used),
     }
 
     for metric in HISTORY_BASELINE_METRICS:
@@ -1106,13 +1110,10 @@ def _history_baselines(history_rows):
 
 
 def _baseline_type_for_rows_loaded(rows_loaded):
-    if rows_loaded >= 7:
-        return "avg_7d"
-
-    if rows_loaded >= 3:
+    if rows_loaded > 0:
         return "avg_3d"
 
-    return "fallback_previous_day"
+    return "insufficient_history"
 
 
 def _metric_baseline(record, rule, history_baselines=None):
@@ -1122,9 +1123,9 @@ def _metric_baseline(record, rule, history_baselines=None):
     )
     rows_loaded = (history_baselines or {}).get("rowsLoaded", 0)
 
-    if metric in HISTORY_BASELINE_KEYS and rows_loaded >= 3:
-        baseline_type = _baseline_type_for_rows_loaded(rows_loaded)
-        baseline_days = "7d" if baseline_type == "avg_7d" else "3d"
+    if metric in HISTORY_BASELINE_KEYS and rows_loaded > 0:
+        baseline_type = "avg_3d"
+        baseline_days = "3d"
         baseline_key = HISTORY_BASELINE_KEYS[metric]
         baseline_value = (history_baselines or {}).get(
             f"avg_{baseline_key}_{baseline_days}"
@@ -1133,7 +1134,7 @@ def _metric_baseline(record, rule, history_baselines=None):
         return selected_value, baseline_value, dynamic_percent, baseline_type
 
     _, past_value, dynamic_percent = _metric_dynamic_percent(record, rule)
-    return selected_value, past_value, dynamic_percent, "fallback_previous_day"
+    return selected_value, past_value, dynamic_percent, "insufficient_history"
 
 
 def _metric_dynamic_percent(record, rule):
@@ -1403,6 +1404,17 @@ def calculate_funnel_summary_dynamics(funnel_data):
     return summary
 
 
+def _baseline_period(report_date, days):
+    try:
+        parsed_date = datetime.strptime(str(report_date)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return "", ""
+
+    return (
+        (parsed_date - timedelta(days=days)).strftime("%Y-%m-%d"),
+        (parsed_date - timedelta(days=1)).strftime("%Y-%m-%d"),
+    )
+
 def _load_history_baselines(seller_id, records):
     try:
         from app.storage.storage_factory import get_storage
@@ -1422,7 +1434,7 @@ def _load_history_baselines(seller_id, records):
     baseline_type_counts = {
         "avg_7d": 0,
         "avg_3d": 0,
-        "fallback_previous_day": 0,
+        "insufficient_history": 0,
     }
 
     for record in records:
@@ -1431,19 +1443,40 @@ def _load_history_baselines(seller_id, records):
         if not nm_id or nm_id in baselines_by_nm_id:
             continue
 
-        history_rows = storage.get_funnel_history(seller_id, nm_id, 7)
+        report_date = _first_present(record, ["date", "selectedPeriod"], default=None)
+        history_rows = storage.get_funnel_history(
+            seller_id, nm_id, 7, before_date=report_date
+        )
         baselines = _history_baselines(history_rows)
         baselines_by_nm_id[nm_id] = baselines
         total_rows_loaded += baselines["rowsLoaded"]
         baseline_type_counts[baselines["baselineType"]] += 1
 
+    report_date = (
+        _first_present(records[0], ["date", "selectedPeriod"], default=None)
+        if records
+        else None
+    )
+    avg_3d_start, avg_3d_end = _baseline_period(report_date, 3)
+    avg_7d_start, avg_7d_end = _baseline_period(report_date, 7)
+    print("HISTORICAL BASELINE:")
+    print(f"report date: {report_date}")
+    print(f"avg_3d period: {avg_3d_start}..{avg_3d_end}")
+    print(
+        "avg_3d days used: "
+        f"{sum(item.get('avg3DaysUsed', 0) for item in baselines_by_nm_id.values())}"
+    )
+    print(f"avg_7d period: {avg_7d_start}..{avg_7d_end}")
+    print(
+        "avg_7d days used: "
+        f"{sum(item.get('avg7DaysUsed', 0) for item in baselines_by_nm_id.values())}"
+    )
     print("HISTORICAL ANALYTICS:")
     print(f"history rows loaded: {total_rows_loaded}")
-    print(f"baseline avg_7d SKU: {baseline_type_counts['avg_7d']}")
     print(f"baseline avg_3d SKU: {baseline_type_counts['avg_3d']}")
     print(
-        "baseline fallback_previous_day SKU: "
-        f"{baseline_type_counts['fallback_previous_day']}"
+        "baseline insufficient_history SKU: "
+        f"{baseline_type_counts['insufficient_history']}"
     )
 
     return baselines_by_nm_id
