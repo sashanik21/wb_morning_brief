@@ -38,6 +38,10 @@ from supabase_client import get_supabase_client, get_supabase_credentials_info
 from sku_page import render_sku_page
 
 
+def has_seller_id(row):
+    return str(row.get("seller_id") or row.get("sellerId") or "").strip() != ""
+
+
 st.set_page_config(page_title="Morning Brief — Панель управления WB", layout="wide")
 try:
     credentials_info = get_supabase_credentials_info()
@@ -106,9 +110,17 @@ with st.sidebar:
     )
     if selected_reason != "Все причины":
         st.caption(f"Пояснение: {reason_explanation(selected_reason)}")
+    show_rows_without_seller_id = st.checkbox("Показывать строки без seller_id", value=False)
     show_debug = st.checkbox("Показать debug", value=False)
 
-problems = [row for row in unfiltered_problems if matches_reason_filter(row, selected_reason)]
+excluded_problems_without_seller_id = 0
+if show_rows_without_seller_id:
+    dashboard_problems = unfiltered_problems
+else:
+    dashboard_problems = [row for row in unfiltered_problems if has_seller_id(row)]
+    excluded_problems_without_seller_id = len(unfiltered_problems) - len(dashboard_problems)
+
+problems = [row for row in dashboard_problems if matches_reason_filter(row, selected_reason)]
 problems_diagnostics = fetch_problems_diagnostics(
     report_date=report_date,
     date_field=problem_date_field,
@@ -222,6 +234,7 @@ if show_debug:
             st.caption(f"Problems access: {problems_access_status} — {problems_access_error}")
         else:
             st.caption(f"Problems access: {problems_access_status}")
+        st.caption(f"excluded problems without seller_id: {excluded_problems_without_seller_id}")
         st.caption(f"credentials source: {credentials_info['credentials_source']}")
         st.caption("Потери по причинам:")
         st.caption(f"общая потеря = {format_money(total_day_lost_revenue)}")
