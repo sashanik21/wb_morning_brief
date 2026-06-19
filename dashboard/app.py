@@ -19,9 +19,17 @@ import streamlit as st
 
 from core import date_engine
 
-align_time_series = date_engine.align_time_series
-normalize_report_date = date_engine.normalize_report_date
-to_business_date = date_engine.to_business_date
+
+def _get_date_engine_function(name):
+    helper = getattr(date_engine, name, None)
+    if not callable(helper):
+        raise RuntimeError(f"core.date_engine.{name} is required for Dashboard date handling")
+    return helper
+
+
+align_time_series = _get_date_engine_function("align_time_series")
+normalize_report_date = _get_date_engine_function("normalize_report_date")
+to_business_date = _get_date_engine_function("to_business_date")
 
 
 def closest_available_date(available_dates, selected_date, max_shift_days=3):

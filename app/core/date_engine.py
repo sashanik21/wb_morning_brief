@@ -163,27 +163,52 @@ def normalize_report_date_series(values):
     return pd.to_datetime(values, errors="coerce").dt.date
 
 
-def normalize_selected_date(value):
-    """Normalize a selected date to a Python DATE value using pandas semantics."""
-    if value in (None, ""):
+def normalize_report_date(value):
+    """Return a Dashboard report date as a Python DATE value, or None.
+
+    Accepts strings, ``date``/``datetime`` objects, pandas ``Timestamp`` values,
+    or empty values. Invalid and empty inputs are treated as missing dates.
+    """
+    if value is None:
         return None
 
-    import pandas as pd
-
-    parsed = pd.to_datetime(value, errors="coerce")
-    if parsed is None or getattr(parsed, "isna", lambda: False)():
+    if isinstance(value, str) and not value.strip():
         return None
+
     try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return None
+        parsed = pd.to_datetime(value, errors="coerce")
         if pd.isna(parsed):
             return None
-    except TypeError:
-        pass
-    return parsed.date()
+        if isinstance(parsed, datetime):
+            return parsed.date()
+        if isinstance(parsed, date):
+            return parsed
+        return parsed.date()
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
-def normalize_report_date(value):
-    """Normalize a Dashboard report date to a Python DATE value."""
-    return normalize_selected_date(value)
+def normalize_selected_date(value):
+    """Normalize a selected date to a Python DATE value using pandas semantics."""
+    return normalize_report_date(value)
 
 
 def date_debug_diagnostics(rows, selected_date, date_field="report_date", filtered_count=None):
