@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-from dashboard_queries import fetch_sku_ads_history, fetch_sku_history, fetch_sku_options, fetch_sku_problems, fetch_sku_stocks_history
+from wb_dashboard_queries import fetch_sku_ads_history, fetch_sku_history, fetch_sku_options, fetch_sku_problems, fetch_sku_stocks_history
 from formatters import (
     first_present,
     format_money,
