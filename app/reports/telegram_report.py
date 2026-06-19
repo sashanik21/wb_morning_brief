@@ -3251,7 +3251,7 @@ def _reason_requires_manual_check(reason_text):
 def _compact_ads_risk_label(records, summary_stats):
     ads_summary = (summary_stats or {}).get("adsSummary") or {}
     if _ads_coverage_is_low(summary_stats) or _has_partial_ads_data(summary_stats, ads_summary):
-        return "недостаточно данных"
+        return "низкое покрытие данных"
 
     ads_records = [
         record
@@ -3304,19 +3304,21 @@ def _build_compact_executive_ads_block(records, summary_stats):
     )
     return "\n".join([
         "📊 <b>Реклама</b>",
-        f"Покрытие рекламы: {coverage}",
-        f"SKU с ухудшением рекламы: {_format_number(worsened)}",
-        f"SKU требуют проверки: {_format_number(needs_check)}",
-        f"Главный рекламный риск: {_compact_ads_risk_label(ads_records, summary_stats)}",
+        f"Покрытие: {coverage}",
+        f"Требуют проверки: {_format_number(needs_check)} SKU",
+        f"Главный риск: {_compact_ads_risk_label(ads_records, summary_stats)}",
     ])
 
 
 def _product_ads_diagnosis_short(product, summary_stats=None):
-    if _ads_coverage_is_low(summary_stats):
-        return "требует проверки из-за низкого покрытия данных"
     totals = _product_ads_totals(product, summary_stats)
+    has_ads_problem = bool(_product_ads_problems(product))
+    if _ads_coverage_is_low(summary_stats):
+        if totals or has_ads_problem:
+            return "требует проверки из-за неполного покрытия данных"
+        return "данных нет"
     if not totals:
-        return "недостаточно данных"
+        return "данных нет"
     diagnosis = _ads_product_diagnosis(totals)
     status = diagnosis.get("status")
     if status == "red":
@@ -5110,6 +5112,47 @@ def _multi_problem_score(record):
     )
 
 
+def _telegram_top_problem_score(record):
+    return (
+        _problem_lost_revenue(record),
+        _problem_lost_orders(record),
+        _business_impact_score(record),
+        to_number(record.get("severityScore")),
+        abs(to_number(record.get("dynamicPercent"))),
+    )
+
+
+def _record_ads_coverage_is_low(record):
+    return str(
+        record.get("adsCoverageConfidence")
+        or record.get("ads_coverage_confidence")
+        or record.get("adsCoverage")
+        or record.get("ads_coverage")
+        or ""
+    ).upper() == "LOW"
+
+
+def _seller_ads_coverage_is_low(seller):
+    return str(
+        seller.get("ads_coverage")
+        or seller.get("adsCoverage")
+        or seller.get("ads_coverage_confidence")
+        or seller.get("adsCoverageConfidence")
+        or ""
+    ).upper() == "LOW"
+
+
+def _has_confirmed_conversion_problem(records):
+    return any(_multi_problem_cause(record) == "конверсия" for record in records or [])
+
+
+def _seller_has_confirmed_conversion_problem(seller):
+    if seller.get("has_conversion_problem") or seller.get("hasConversionProblem"):
+        return True
+    reason = str(seller.get("confirmed_reason") or seller.get("confirmedReason") or "")
+    return reason.lower() == "конверсия"
+
+
 def _multi_is_critical(record):
     return (
         str(record.get("severity") or "").lower() == "critical"
@@ -5162,13 +5205,19 @@ def _seller_result_error_reason(result):
 def _multi_loss_text(value, suffix=""):
     if value is None or value <= 0:
         return "недостаточно данных"
+    if not suffix:
+        return _format_number(round(to_number(value)))
     return f"{_format_number(value)}{suffix}"
 
 
 def _multi_problem_cause(record):
     source = _decline_source(record)
     if source == "ADS_DECLINE" or _is_ads_problem(record):
-        if record.get("adsConfidence") == "LOW" or record.get("impactConfidence") == "LOW":
+        if (
+            record.get("adsConfidence") == "LOW"
+            or record.get("impactConfidence") == "LOW"
+            or _record_ads_coverage_is_low(record)
+        ):
             return "реклама требует проверки"
         return "реклама"
     metric = str(record.get("metric") or "").lower()
@@ -5182,7 +5231,11 @@ def _multi_problem_cause(record):
     if "цен" in texts or "price" in metric or "price" in problem_type:
         return "цена"
     if "реклам" in texts or "ctr" in metric or "cpc" in metric or "drr" in metric:
-        if record.get("adsConfidence") == "LOW" or record.get("impactConfidence") == "LOW":
+        if (
+            record.get("adsConfidence") == "LOW"
+            or record.get("impactConfidence") == "LOW"
+            or _record_ads_coverage_is_low(record)
+        ):
             return "реклама требует проверки"
         return "реклама"
     if "конверс" in texts:
@@ -5192,13 +5245,41 @@ def _multi_problem_cause(record):
     return "неизвестно"
 
 
-def _multi_main_reason(records):
+def _multi_main_reason(records, summary_stats=None):
     ranked = sorted(records, key=_multi_problem_score, reverse=True)
     for record in ranked:
         cause = _multi_problem_cause(record)
         if cause != "неизвестно":
+            if cause == "реклама" and _ads_coverage_is_low(summary_stats):
+                return (
+                    "конверсия"
+                    if _has_confirmed_conversion_problem(records)
+                    else "требует проверки"
+                )
+            if cause == "реклама требует проверки":
+                return (
+                    "конверсия"
+                    if _has_confirmed_conversion_problem(records)
+                    else "требует проверки"
+                )
             return cause
     return "недостаточно данных"
+
+
+def _deduplicate_telegram_top_records(records, top_limit):
+    by_key = {}
+    for index, record in enumerate(records or []):
+        key = _problem_group_key(record)
+        score = _telegram_top_problem_score(record)
+        current = by_key.get(key)
+        if current is None or (score, -index) > (current["score"], -current["index"]):
+            by_key[key] = {"record": record, "score": score, "index": index}
+    selected = sorted(
+        by_key.values(),
+        key=lambda item: (*item["score"], -item["index"]),
+        reverse=True,
+    )
+    return [item["record"] for item in selected[:top_limit]]
 
 
 def _multi_confirmation(record):
@@ -5238,19 +5319,27 @@ def _multi_first_sentence(text, max_length=140):
     return sentence[: max_length - 1].rstrip() + "…"
 
 
-def _multi_product_line(index, record):
+def _multi_product_cause(record, summary_stats=None):
+    cause = _multi_problem_cause(record)
+    if cause == "реклама" and _ads_coverage_is_low(summary_stats):
+        return "реклама требует проверки"
+    return cause
+
+
+def _multi_product_line(index, record, summary_stats=None):
     title = _multi_product_title(record)
     nm_id = record.get("nmId") or record.get("nm_id") or "—"
     revenue = _loss_value(record, "potentialRevenueLoss", "lostOrderSum")
     orders = _loss_value(record, "potentialOrdersLoss", "lostOrders")
+    cause = _multi_product_cause(record, summary_stats)
     return "\n".join(
         [
             f"{index}. <b>{title}</b> — {_format_wb_label(nm_id, missing='—')}",
             f"   Потеря выручки: {_multi_loss_text(revenue, ' ₽')}",
             f"   Потеря заказов: {_multi_loss_text(orders)}",
-            f"   Причина: {html.escape(_multi_problem_cause(record))}",
+            f"   Причина: {html.escape(cause)}",
             f"   Подтверждение: {html.escape(_multi_first_sentence(_multi_confirmation(record)))}",
-            f"   Реклама: {html.escape('требует проверки' if _multi_problem_cause(record) == 'реклама требует проверки' else 'ухудшилась' if _multi_problem_cause(record) == 'реклама' else 'недостаточно данных')}",
+            f"   Реклама: {html.escape('требует проверки' if cause == 'реклама требует проверки' else 'ухудшилась' if cause == 'реклама' else 'данных нет')}",
             f"   Действие: {html.escape(_multi_first_sentence(_multi_action(record)))}",
         ]
     )
@@ -5276,7 +5365,10 @@ def _build_multi_seller_brief(problems, summary_stats=None, top_limit=5, include
     lost_orders_known = [value for value in lost_order_values if value is not None and value > 0]
     total_lost_revenue = sum(lost_revenue_known)
     total_lost_orders = sum(lost_orders_known)
-    top_records = sorted(telegram_records, key=_multi_problem_score, reverse=True)[:top_limit]
+    top_records = _deduplicate_telegram_top_records(
+        sorted(telegram_records, key=_multi_problem_score, reverse=True),
+        top_limit,
+    )
 
     lines = [
         "🔥 <b>Executive Fire Brief</b>",
@@ -5284,7 +5376,7 @@ def _build_multi_seller_brief(problems, summary_stats=None, top_limit=5, include
         f"Потеря заказов за день: {_multi_loss_text(total_lost_orders if lost_orders_known else None)}",
         f"Критичных продавцов: {_format_number(critical_sellers)}",
         f"Критичных SKU: {_format_number(critical_sku)}",
-        f"Главная причина просадок: {html.escape(_multi_main_reason(telegram_records))}",
+        f"Главная причина просадок: {html.escape(_multi_main_reason(telegram_records, summary_stats))}",
         "",
         f"Проверено продавцов: {_format_number(sellers_total)}",
     ]
@@ -5302,7 +5394,7 @@ def _build_multi_seller_brief(problems, summary_stats=None, top_limit=5, include
     if top_records:
         lines.extend(["", f"🔴 <b>ТОП-{len(top_records)} проблем: деньги → причина → действие</b>"])
         for index, record in enumerate(top_records, start=1):
-            lines.append(_multi_product_line(index, record))
+            lines.append(_multi_product_line(index, record, summary_stats))
     else:
         lines.extend(["", "🔴 <b>ТОП проблем</b>", "недостаточно данных"])
 
@@ -5373,7 +5465,7 @@ def _seller_3d_percent(value):
 
 
 def _seller_3d_action(seller):
-    reason = seller.get("main_reason")
+    reason = _seller_3d_main_reason(seller)
     if reason == "конверсия":
         return "проверить фото, цену, отзывы и конкурентов."
     if reason in {"реклама", "реклама требует проверки"}:
@@ -5383,6 +5475,17 @@ def _seller_3d_action(seller):
     if reason == "остатки":
         return "проверить подтверждённый OOS и поставку."
     return "проверить TOP SKU с наибольшей потерей."
+
+
+def _seller_3d_main_reason(seller):
+    reason = str(seller.get("main_reason") or "требует проверки")
+    if reason == "реклама" and _seller_ads_coverage_is_low(seller):
+        if _seller_has_confirmed_conversion_problem(seller):
+            return "конверсия"
+        return "требует проверки"
+    if reason == "реклама требует проверки":
+        return "требует проверки"
+    return reason
 
 
 def _seller_3d_sort_key(seller):
@@ -5435,7 +5538,7 @@ def _build_seller_3d_analytics_message(sellers, report_date=None):
                     f"Потеря заказов: {_format_number(round(to_number(seller.get('lost_orders'))))}",
                     f"Заказы: {_seller_3d_percent(seller.get('orders_dynamic'))}",
                     f"Выручка: {_seller_3d_percent(seller.get('revenue_dynamic'))}",
-                    f"Главная причина: {html.escape(str(seller.get('main_reason') or 'требует проверки'))}",
+                    f"Главная причина: {html.escape(_seller_3d_main_reason(seller))}",
                     f"Критичных SKU: {_format_number(round(to_number(seller.get('critical_sku'))))}",
                     f"Что делать: {html.escape(_seller_3d_action(seller))}",
                     "",
@@ -5450,7 +5553,7 @@ def _build_seller_3d_analytics_message(sellers, report_date=None):
                     f"{index}. {html.escape(str(seller.get('seller_name') or 'Продавец без названия'))}",
                     f"Заказы: {_seller_3d_percent(seller.get('orders_dynamic'))}",
                     f"Выручка: {_seller_3d_percent(seller.get('revenue_dynamic'))}",
-                    f"Главная причина: {html.escape(str(seller.get('main_reason') or 'требует проверки'))}",
+                    f"Главная причина: {html.escape(_seller_3d_main_reason(seller))}",
                     f"Что делать: {html.escape(_seller_3d_action(seller))}",
                     "",
                 ]
