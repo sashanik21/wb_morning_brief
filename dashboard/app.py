@@ -1,6 +1,7 @@
 """Streamlit Executive Dashboard for Morning Brief."""
 
 import sys
+from datetime import date
 from pathlib import Path
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -35,6 +36,9 @@ from wb_dashboard_queries import (
     fetch_problems_diagnostics,
     fetch_report_dates,
     fetch_sellers,
+    find_product_by_nm_id,
+    insert_change_log_entry,
+    is_change_log_available,
 )
 from supabase_client import get_supabase_client, get_supabase_credentials_info
 from sku_page import render_sku_page
@@ -132,6 +136,95 @@ with st.sidebar:
     )
     if selected_reason != "Все причины":
         st.caption(f"Пояснение: {reason_explanation(selected_reason)}")
+
+    with st.expander("➕ Добавить изменение", expanded=False):
+        st.caption("Быстрое ручное внесение изменения в change_log.")
+        change_log_available = is_change_log_available()
+        if not change_log_available:
+            st.warning("Журнал изменений недоступен. Проверьте таблицу change_log.")
+        change_nm_id = st.text_input("Артикул WB", key="change_log_nm_id").strip()
+        selected_product = None
+        products_available = True
+        if change_nm_id:
+            selected_product, products_available = find_product_by_nm_id(
+                change_nm_id,
+                seller_id=selected_seller if selected_seller != "Все продавцы" else None,
+            )
+            if selected_product:
+                st.success("Товар найден в products.")
+                st.write(f"**Название:** {selected_product.get('title') or '—'}")
+                st.write(
+                    "**Продавец:** "
+                    f"{selected_product.get('seller_name') or sellers_by_id.get(str(selected_product.get('seller_id')), '') or selected_product.get('seller_id') or '—'}"
+                )
+                st.write(f"**Артикул продавца:** {selected_product.get('vendor_code') or '—'}")
+            elif products_available:
+                st.warning(
+                    "Артикул не найден в products. Изменение можно сохранить, "
+                    "но seller_id и vendor_code могут быть пустыми."
+                )
+            else:
+                st.warning("Не удалось проверить артикул в products. Изменение можно сохранить вручную.")
+
+        with st.form("change_log_quick_form", clear_on_submit=True):
+            change_type = st.selectbox(
+                "Тип изменения",
+                [
+                    "фото",
+                    "инфографика",
+                    "SEO",
+                    "цена",
+                    "скидка",
+                    "реклама",
+                    "ставка",
+                    "остатки",
+                    "поставка",
+                    "акция",
+                    "описание",
+                    "характеристики",
+                    "другое",
+                ],
+            )
+            change_date = st.date_input("Дата изменения", value=date.today())
+            old_value = st.text_area("Было", height=80)
+            new_value = st.text_area("Стало", height=80)
+            changed_by = st.text_input("Кто изменил")
+            comment = st.text_area("Комментарий", height=80)
+            submitted_change = st.form_submit_button("Сохранить изменение")
+
+        if submitted_change:
+            if not change_log_available:
+                st.warning("Журнал изменений недоступен. Проверьте таблицу change_log.")
+            elif not change_nm_id:
+                st.warning("Введите артикул WB.")
+            else:
+                product = selected_product
+                if product is None:
+                    product, _ = find_product_by_nm_id(
+                        change_nm_id,
+                        seller_id=selected_seller if selected_seller != "Все продавцы" else None,
+                    )
+                product = product or {}
+                product_seller_id = product.get("seller_id")
+                product_seller_name = product.get("seller_name") or sellers_by_id.get(str(product_seller_id), "")
+                succeeded, _ = insert_change_log_entry(
+                    change_date=change_date,
+                    seller_id=product_seller_id,
+                    seller_name=product_seller_name,
+                    nm_id=change_nm_id,
+                    vendor_code=product.get("vendor_code"),
+                    change_type=change_type,
+                    old_value=old_value,
+                    new_value=new_value,
+                    changed_by=changed_by,
+                    comment=comment,
+                )
+                if succeeded:
+                    st.cache_data.clear()
+                    st.success("Изменение сохранено.")
+                else:
+                    st.error("Не удалось сохранить изменение. Проверьте доступ к change_log.")
+
     show_rows_without_seller_id = st.checkbox("Показывать строки без seller_id", value=False)
     show_debug = st.checkbox("Показать debug", value=False)
 
