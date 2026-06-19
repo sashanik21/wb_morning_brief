@@ -337,6 +337,68 @@ def _deduplicate_top_sku(problems):
     return [*by_nm_id.values(), *without_nm_id]
 
 
+def _group_rows_by_sku(problems):
+    grouped = {}
+    for row in problems:
+        nm_id = first_present(row, ["nm_id", "nmId", "nmID"])
+        key = str(nm_id) if nm_id not in (None, "") else f"__row__:{id(row)}"
+        grouped.setdefault(key, []).append(row)
+    return grouped
+
+
+def _reason_score(row):
+    revenue_loss = lost_revenue(row)
+    orders_loss = lost_orders(row)
+    impact_score = to_number(first_present(row, ["businessImpactScore", "business_impact_score"]))
+    severity_score = to_number(first_present(row, ["severityScore", "severity_score"]))
+    dynamic_percent = abs(to_number(first_present(row, ["dynamicPercent", "dynamic_percent"])))
+    return revenue_loss or orders_loss or impact_score or severity_score or dynamic_percent or 1
+
+
+def sku_reason_ranking(rows, limit=3):
+    scores = {}
+    for row in rows:
+        reason_key = reason_group(row)
+        if reason_key == "unknown":
+            continue
+        scores[reason_key] = scores.get(reason_key, 0) + _reason_score(row)
+
+    if not scores:
+        return [(REASON_LABELS["unknown"], 100)]
+
+    ranked = sorted(
+        scores.items(),
+        key=lambda item: (-item[1], _reason_priority_index(item[0])),
+    )[:limit]
+    total = sum(score for _, score in ranked)
+    if total <= 0:
+        return [(REASON_LABELS[ranked[0][0]], 100)]
+
+    weights = []
+    accumulated = 0
+    for index, (reason_key, score) in enumerate(ranked):
+        if index == len(ranked) - 1:
+            weight = max(100 - accumulated, 0)
+        else:
+            weight = round(score / total * 100)
+            accumulated += weight
+        weights.append((REASON_LABELS[reason_key], weight))
+    return weights
+
+
+def sku_diagnosis(rows):
+    ranking = sku_reason_ranking(rows)
+    lines = [f"{reason.capitalize()} ({weight}%)" for reason, weight in ranking]
+    if len(ranking) > 1 and ranking[0][1] - ranking[1][1] < 10:
+        return "Причина не определена однозначно\n" + "\n".join(lines)
+    return "\n".join(lines)
+
+
+def sku_main_reason(rows):
+    ranking = sku_reason_ranking(rows, limit=1)
+    return ranking[0][0] if ranking else REASON_LABELS["unknown"]
+
+
 def prepare_seller_table(problems, sellers_by_id):
     grouped = {}
     for row in problems:
@@ -361,16 +423,20 @@ def prepare_seller_table(problems, sellers_by_id):
 
 def prepare_sku_table(problems, sellers_by_id):
     records = []
+    rows_by_sku = _group_rows_by_sku(problems)
     for row in _deduplicate_top_sku(problems):
+        nm_id = first_present(row, ["nm_id", "nmId", "nmID"], "")
+        sku_rows = rows_by_sku.get(str(nm_id), [row]) if nm_id not in (None, "") else [row]
+        main_sku_reason = sku_main_reason(sku_rows)
         records.append(
             {
                 "продавец": seller_name(row, sellers_by_id),
-                "артикул WB": first_present(row, ["nm_id", "nmId", "nmID"], ""),
+                "артикул WB": nm_id,
                 "название": first_present(row, ["title", "productName", "product_name"], ""),
                 "потеря выручки": lost_revenue(row),
                 "потеря заказов": round(lost_orders(row)),
-                "причина": management_reason(row),
-                "пояснение причины": reason_table_hint(management_reason(row)),
+                "диагноз SKU": sku_diagnosis(sku_rows),
+                "пояснение причины": reason_table_hint(main_sku_reason),
                 "подтверждение": first_present(row, ["impact_confidence", "report_trust_score", "reportTrustScore"], ""),
                 "действие": first_present(row, ["root_recommendation", "recommendation", "forecast_message"], ""),
             }
