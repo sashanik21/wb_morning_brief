@@ -218,6 +218,73 @@ def _recalculate_ads_ratios(row, prefix=""):
     row[cpm_key] = round(spend / impressions * 1000, 2) if impressions else 0
 
 
+
+def _ads_distribution_warning(row):
+    raw_json = row.get("raw_json") if isinstance(row, dict) else None
+    return bool(
+        (row or {}).get("adsDistributionWarning")
+        or (row or {}).get("ads_distribution_warning")
+        or (isinstance(raw_json, dict) and raw_json.get("adsDistributionWarning"))
+    )
+
+
+def _ads_distribution_key(row):
+    return (
+        row.get("seller_id") or row.get("sellerId"),
+        row.get("date") or row.get("report_date") or row.get("selectedPeriod"),
+        row.get("campaignId") or row.get("campaign_id"),
+        _to_number(row.get("impressions")),
+        _to_number(row.get("clicks")),
+        _to_number(row.get("spend")),
+        _to_number(row.get("orders")),
+    )
+
+
+def _mark_duplicated_campaign_sku_rows(ads_rows):
+    rows = [row for row in ads_rows or [] if isinstance(row, dict)]
+    grouped = {}
+    for row in rows:
+        key = _ads_distribution_key(row)
+        nm_id = row.get("nmId") or row.get("nm_id") or row.get("nm")
+        if key[2] in (None, "") or nm_id in (None, ""):
+            continue
+        grouped.setdefault(key, set()).add(nm_id)
+
+    warning_keys = {key for key, nm_ids in grouped.items() if len(nm_ids) > 1}
+    duplicated_rows = 0
+    warning_rows = 0
+    for row in rows:
+        if _ads_distribution_key(row) not in warning_keys:
+            continue
+        duplicated_rows += 1
+        row["adsDistributionWarning"] = True
+        row["adsDistributionWarningReason"] = (
+            "campaign metrics duplicated across multiple SKU"
+        )
+        raw_json = row.get("raw_json")
+        if isinstance(raw_json, dict):
+            raw_json["adsDistributionWarning"] = True
+            raw_json["adsDistributionWarningReason"] = row[
+                "adsDistributionWarningReason"
+            ]
+        warning_rows += 1
+    return duplicated_rows, warning_rows
+
+
+def _log_ads_data_quality(ads_rows, duplicated_rows, warning_rows):
+    first_row = next((row for row in ads_rows or [] if isinstance(row, dict)), {})
+    seller_name = (
+        first_row.get("sellerName") or first_row.get("seller_name") or SELLER_NAME
+    )
+    print("ADS DATA QUALITY:")
+    print(f"seller: {seller_name}")
+    print(f"ads rows total: {len(ads_rows or [])}")
+    print(f"duplicated campaign sku rows: {duplicated_rows}")
+    print(f"distribution warnings: {warning_rows}")
+    if duplicated_rows > 0:
+        print("ADS DATA QUALITY WARNING:")
+        print("campaign metrics duplicated across multiple SKU")
+
 def _aggregate_ads_rows_by_nm(ads_rows):
     grouped = {}
     order = []
@@ -250,6 +317,8 @@ def _aggregate_ads_rows_by_nm(ads_rows):
 
 def aggregate_ads_rows(ads_rows):
     """Aggregate WB Ads rows to the daily_ads_metrics unique key."""
+    duplicated_rows, warning_rows = _mark_duplicated_campaign_sku_rows(ads_rows)
+    _log_ads_data_quality(ads_rows, duplicated_rows, warning_rows)
     grouped = {}
     order = []
     for row in ads_rows or []:
@@ -300,6 +369,11 @@ def aggregate_ads_rows(ads_rows):
             search_queries.extend(row.get("searchQueries") or [])
         merged["searchQueries"] = search_queries
         merged["adsRawRowsCount"] = len(rows)
+        if any(_ads_distribution_warning(row) for row in rows):
+            merged["adsDistributionWarning"] = True
+            merged["adsDistributionWarningReason"] = (
+                "campaign metrics duplicated across multiple SKU"
+            )
 
         _recalculate_ads_ratios(merged)
         _recalculate_ads_ratios(merged, "previous")
@@ -446,6 +520,14 @@ def _ads_coverage(row):
 
 
 def _ads_management_diagnosis(row):
+    if _ads_distribution_warning(row):
+        return {
+            "status": "🟡 Требует проверки",
+            "confirmation": "подозрение на дублирование рекламных данных по campaign_id",
+            "reason": "ADS_DISTRIBUTION_WARNING",
+            "coverage": _ads_coverage(row),
+        }
+
     coverage = _ads_coverage(row)
     if coverage == "LOW":
         return {
@@ -693,6 +775,8 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "highCPCFlag": row.get("highCPCFlag", False),
         "lowAdsTrafficShareFlag": row.get("lowAdsTrafficShareFlag", False),
         "recommendation": ADS_RECOMMENDATIONS[problem_type],
+        "adsDistributionWarning": _ads_distribution_warning(row),
+        "adsDistributionWarningReason": row.get("adsDistributionWarningReason") or "",
     }
     problem = _apply_ads_management_diagnosis(problem, row)
     problem["businessImpactScore"] = calculate_business_impact_score(problem)
