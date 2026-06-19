@@ -429,6 +429,125 @@ def enrich_ads_time_series(ads_rows, storage=None, seller_id=None):
         storage.save_daily_ads_metrics(enriched_rows)
     return enriched_rows
 
+
+def _format_delta(label, value):
+    if value is None:
+        return None
+    sign = "+" if value > 0 else ""
+    return f"{label} {sign}{round(value)}%"
+
+
+def _ads_coverage(row):
+    coverage = row.get("adsCoverage") or row.get("ads_coverage")
+    confidence = row.get("adsCoverageConfidence") or row.get("ads_coverage_confidence")
+    if str(coverage).upper() == "LOW" or str(confidence).upper() == "LOW":
+        return "LOW"
+    return confidence or coverage or "OK"
+
+
+def _ads_management_diagnosis(row):
+    coverage = _ads_coverage(row)
+    if coverage == "LOW":
+        return {
+            "status": "🟡 Требует проверки",
+            "confirmation": "Низкое покрытие рекламных данных",
+            "reason": "LOW_ADS_COVERAGE",
+            "coverage": coverage,
+        }
+
+    ctr = _to_number(row.get("ctr"), None)
+    cpc = _to_number(row.get("cpc"), None)
+    drr = _to_number(row.get("drr"), None)
+    ctr_baseline, _, ctr_reliability = _ads_baseline(row, "ctr")
+    cpc_baseline, _, cpc_reliability = _ads_baseline(row, "cpc")
+    drr_baseline, _, drr_reliability = _ads_baseline(row, "drr")
+
+    if (
+        ctr_reliability == "INSUFFICIENT_HISTORY"
+        or cpc_reliability == "INSUFFICIENT_HISTORY"
+        or drr_reliability == "INSUFFICIENT_HISTORY"
+    ):
+        return {
+            "status": "🟡 Недостаточно данных",
+            "confirmation": "для сравнения недостаточно рекламной истории",
+            "reason": "INSUFFICIENT_ADS_HISTORY",
+            "coverage": coverage,
+        }
+
+    ctr_delta = _dynamic_percent(ctr, ctr_baseline)
+    cpc_delta = _dynamic_percent(cpc, cpc_baseline)
+    drr_delta = _dynamic_percent(drr, drr_baseline)
+
+    confirmations = [
+        item
+        for item in (
+            _format_delta("CTR", ctr_delta),
+            _format_delta("CPC", cpc_delta),
+            _format_delta("ДРР", drr_delta),
+        )
+        if item is not None
+    ]
+
+    if (
+        ctr_delta is not None
+        and ctr_delta > 0
+        and (cpc_delta or 0) <= CPC_GROWTH_THRESHOLD
+    ) or (drr_delta is not None and drr_delta < 0):
+        return {
+            "status": "🟢 Реклама помогает продажам",
+            "confirmation": ", ".join(confirmations[:2]) or "CTR и ДРР улучшились",
+            "reason": "ADS_HELPED",
+            "coverage": coverage,
+        }
+
+    if (ctr_delta is not None and ctr_delta < 0) or (
+        cpc_delta is not None and cpc_delta > CPC_GROWTH_THRESHOLD
+    ) or (drr_delta is not None and drr_delta > CPC_GROWTH_THRESHOLD):
+        return {
+            "status": "🔴 Реклама ухудшилась",
+            "confirmation": (
+                ", ".join(confirmations[:2]) or "CTR, CPC или ДРР ухудшились"
+            ),
+            "reason": "ADS_WORSENED",
+            "coverage": coverage,
+        }
+
+    stable = all(
+        delta is not None and abs(delta) <= CPC_GROWTH_THRESHOLD
+        for delta in (ctr_delta, cpc_delta, drr_delta)
+    )
+    orders_delta = _dynamic_percent(row.get("orders"), _previous_value(row, "orders"))
+    if stable and (orders_delta is None or orders_delta < 0):
+        return {
+            "status": "⚪ Реклама не является причиной просадки",
+            "confirmation": "CTR, CPC и ДРР без существенных изменений",
+            "reason": "ADS_NOT_CAUSE",
+            "coverage": coverage,
+        }
+
+    return {
+        "status": "🟡 Требует проверки",
+        "confirmation": (
+            ", ".join(confirmations) or "Рекламные метрики требуют ручной проверки"
+        ),
+        "reason": "CHECK_REQUIRED",
+        "coverage": coverage,
+    }
+
+
+def _apply_ads_management_diagnosis(problem, row):
+    diagnosis = _ads_management_diagnosis(row)
+    text = f"{diagnosis['status']}: {diagnosis['confirmation']}"
+    problem["adsDiagnosisStatus"] = diagnosis["status"]
+    problem["adsDiagnosisConfirmation"] = diagnosis["confirmation"]
+    problem["adsDiagnosisReason"] = diagnosis["reason"]
+    problem["adsDiagnosisCoverage"] = diagnosis["coverage"]
+    problem["rootRecommendation"] = text
+    problem["recommendation"] = (
+        f"{text}. {problem.get('recommendation') or ''}"
+    ).strip()
+    return problem
+
 def _ads_root_cause(problem_type, baseline_reliability):
     mapping = {
         "ads_ctr_drop": "CTR_DROP",
@@ -575,6 +694,7 @@ def _ads_problem(row, problem_type, metric, selected_value, past_value=None):
         "lowAdsTrafficShareFlag": row.get("lowAdsTrafficShareFlag", False),
         "recommendation": ADS_RECOMMENDATIONS[problem_type],
     }
+    problem = _apply_ads_management_diagnosis(problem, row)
     problem["businessImpactScore"] = calculate_business_impact_score(problem)
     return problem
 
@@ -896,6 +1016,19 @@ def analyze_ads_problems(ads_rows, funnel_rows=None, ads_api_partial=False):
         print(f"after: {len(problems)}")
         print(f"suppressed: {before - len(problems)}")
         print("reason: partial API data")
+        for problem in problems:
+            problem["adsDiagnosisStatus"] = "🟡 Требует проверки"
+            problem["adsDiagnosisConfirmation"] = "Низкое покрытие рекламных данных"
+            problem["adsDiagnosisReason"] = "LOW_ADS_COVERAGE"
+            problem["adsDiagnosisCoverage"] = "LOW"
+            problem["rootRecommendation"] = (
+                "🟡 Требует проверки: Низкое покрытие рекламных данных"
+            )
+            recommendation = problem.get("recommendation") or ""
+            problem["recommendation"] = (
+                "🟡 Требует проверки: Низкое покрытие рекламных данных. "
+                f"{recommendation}"
+            ).strip()
     enrich_business_impact_scores(problems)
     print(f"Ads problems found: {len(problems)}")
     return problems

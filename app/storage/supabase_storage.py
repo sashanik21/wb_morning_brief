@@ -7,6 +7,10 @@ from supabase import create_client
 
 _STORAGE_STATUS = {"mode": "supabase", "configured": True}
 _CLIENT = None
+_DATA_QUALITY_COUNTERS = {
+    "problems": {"total": 0, "without_seller_id": 0},
+    "ads_bid_history": {"total": 0, "without_seller_id": 0},
+}
 
 
 def _is_debug_log():
@@ -529,6 +533,50 @@ def _drop_empty_required(rows, required_keys):
     ]
 
 
+def _has_value(value):
+    return value not in (None, "") and str(value).strip() != ""
+
+
+def _log_data_quality_warning(entity, rows_count):
+    if not rows_count:
+        return
+    print("DATA QUALITY WARNING:")
+    print("seller_id missing")
+    print(f"entity: {entity}")
+    print(f"rows: {rows_count}")
+
+
+def _log_data_quality_totals():
+    problems = _DATA_QUALITY_COUNTERS["problems"]
+    ads_bid_history = _DATA_QUALITY_COUNTERS["ads_bid_history"]
+    print("DATA QUALITY:")
+    print(f"problems total: {problems['total']}")
+    print(f"problems without seller_id: {problems['without_seller_id']}")
+    print(f"ads_bid_history total: {ads_bid_history['total']}")
+    print(
+        "ads_bid_history without seller_id: "
+        f"{ads_bid_history['without_seller_id']}"
+    )
+    if (
+        problems["without_seller_id"] == 0
+        and ads_bid_history["without_seller_id"] == 0
+    ):
+        print("DATA QUALITY: OK")
+
+
+def _apply_seller_id_quality_gate(rows, entity):
+    total = len(rows or [])
+    valid_rows = [row for row in rows or [] if _has_value(row.get("seller_id"))]
+    missing_count = total - len(valid_rows)
+    _DATA_QUALITY_COUNTERS[entity] = {
+        "total": total,
+        "without_seller_id": missing_count,
+    }
+    _log_data_quality_warning(entity, missing_count)
+    _log_data_quality_totals()
+    return valid_rows
+
+
 def save_funnel_snapshot(rows):
     normalized_rows = _drop_empty_required(
         [_normalize_funnel_row(row) for row in rows],
@@ -798,6 +846,9 @@ def _log_problems_save(problems):
 def save_problems(problems):
     _log_problems_save(problems)
     normalized_problems = [_normalize_problem(problem) for problem in problems]
+    normalized_problems = _apply_seller_id_quality_gate(
+        normalized_problems, "problems"
+    )
     _debug_log(f"SUPABASE SAVE PROBLEMS: {len(normalized_problems)} rows")
 
     if normalized_problems:
@@ -1016,17 +1067,9 @@ def save_ads_bid_history(rows, seller_id=None, seller_name=None):
         ],
         ["campaign_id", "report_date"],
     )
-    missing_context_count = sum(
-        1
-        for row in normalized_rows
-        if row.get("seller_id") in (None, "")
-        or row.get("seller_name") in (None, "")
+    normalized_rows = _apply_seller_id_quality_gate(
+        normalized_rows, "ads_bid_history"
     )
-    if missing_context_count:
-        print(
-            "ADS BID HISTORY WITHOUT SELLER CONTEXT: "
-            f"{missing_context_count} rows"
-        )
     _debug_log(f"SUPABASE SAVE ADS BID HISTORY: {len(normalized_rows)} rows")
     success = True
     error_message = None
