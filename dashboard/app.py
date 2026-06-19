@@ -35,12 +35,10 @@ from dashboard.dashboard_queries import (
     fetch_sellers,
 )
 from dashboard.supabase_client import get_supabase_client, get_supabase_credentials_info
+from dashboard.sku_page import render_sku_page
 
 
 st.set_page_config(page_title="Morning Brief — Панель управления WB", layout="wide")
-st.title("Панель управления WB")
-st.caption("Ежедневная аналитика Wildberries: потери, продавцы, товары и причины просадок")
-
 try:
     credentials_info = get_supabase_credentials_info()
     connection_diagnostics = check_dashboard_connection()
@@ -57,6 +55,16 @@ try:
 except Exception as error:
     problems_access_status = "FAILED"
     problems_access_error = str(error)
+
+with st.sidebar:
+    dashboard_mode = st.selectbox("Режим Dashboard", ["Executive Dashboard", "Карточка SKU"], index=0)
+
+if dashboard_mode == "Карточка SKU":
+    render_sku_page(sellers, sellers_by_id)
+    st.stop()
+
+st.title("Панель управления WB")
+st.caption("Ежедневная аналитика Wildberries: потери, продавцы, товары и причины просадок")
 
 with st.sidebar:
     st.header("Фильтры")
