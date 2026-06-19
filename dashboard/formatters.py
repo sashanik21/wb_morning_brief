@@ -117,23 +117,24 @@ def _normalize_reason(value):
     return str(value or "").strip().lower()
 
 
+REASON_PRIORITY = ("stocks", "ads", "conversion", "price", "unknown")
+
+
 def reason_group(row):
     values = [_normalize_reason(row.get(key)) for key in ("root_cause", "problem_label", "problem_type", "decline_source", "metric")]
     values = [value for value in values if value]
-    if any(value in ADS_STOPPED_REASONS for value in values):
-        return "ads_stopped"
+    if any(value in STOCK_REASONS for value in values):
+        return "stocks"
+    if any(value in ADS_STOPPED_REASONS | ADS_REASONS for value in values):
+        return "ads"
     if any(value in CONVERSION_REASONS for value in values):
         return "conversion"
-    if any(value in ADS_REASONS for value in values):
-        return "ads"
+    if any(value in PRICE_REASONS for value in values):
+        return "price"
     if any(value in ORDER_REASONS for value in values):
         return "orders"
     if any(value in REVENUE_REASONS for value in values):
         return "revenue"
-    if any(value in STOCK_REASONS for value in values):
-        return "stocks"
-    if any(value in PRICE_REASONS for value in values):
-        return "price"
     return "unknown"
 
 
@@ -201,10 +202,66 @@ def severity_status(rows):
     return "стабильно"
 
 
+def _reason_priority_index(reason_key):
+    return REASON_PRIORITY.index(reason_key) if reason_key in REASON_PRIORITY else len(REASON_PRIORITY)
+
+
+def _single_sku_loss_rows(rows):
+    grouped = {}
+    without_nm_id = []
+    for row in rows:
+        nm_id = first_present(row, ["nm_id", "nmId", "nmID"])
+        if nm_id in (None, ""):
+            without_nm_id.append(row)
+            continue
+
+        key = str(nm_id)
+        reason_key = reason_group(row)
+        current = grouped.get(key)
+        row_revenue = lost_revenue(row)
+        row_orders = lost_orders(row)
+        if current is None:
+            grouped[key] = {
+                "row": row,
+                "reason_key": reason_key,
+                "lost_revenue": row_revenue,
+                "lost_orders": row_orders,
+            }
+            continue
+
+        current["lost_revenue"] = max(current["lost_revenue"], row_revenue)
+        current["lost_orders"] = max(current["lost_orders"], row_orders)
+        if (
+            _reason_priority_index(reason_key) < _reason_priority_index(current["reason_key"])
+            or (
+                reason_key == current["reason_key"]
+                and _problem_priority(row) > _problem_priority(current["row"])
+            )
+        ):
+            current["row"] = row
+            current["reason_key"] = reason_key
+
+    records = []
+    for nm_id, record in grouped.items():
+        records.append({**record, "nm_id": nm_id})
+    for row in without_nm_id:
+        records.append(
+            {
+                "row": row,
+                "reason_key": reason_group(row),
+                "lost_revenue": lost_revenue(row),
+                "lost_orders": lost_orders(row),
+                "nm_id": None,
+            }
+        )
+    return records
+
+
 def reason_loss_summary(rows):
     grouped = {}
-    for row in rows:
-        reason = management_reason(row)
+    for record in _single_sku_loss_rows(rows):
+        reason_key = record["reason_key"]
+        reason = REASON_LABELS[reason_key] if reason_key in REASON_PRIORITY else REASON_LABELS["unknown"]
         summary = grouped.setdefault(
             reason,
             {
@@ -214,11 +271,10 @@ def reason_loss_summary(rows):
                 "sku_ids": set(),
             },
         )
-        summary["lost_revenue"] += lost_revenue(row)
-        summary["lost_orders"] += lost_orders(row)
-        nm_id = first_present(row, ["nm_id", "nmId", "nmID"])
-        if nm_id not in (None, ""):
-            summary["sku_ids"].add(str(nm_id))
+        summary["lost_revenue"] += record["lost_revenue"]
+        summary["lost_orders"] += record["lost_orders"]
+        if record["nm_id"] not in (None, ""):
+            summary["sku_ids"].add(str(record["nm_id"]))
 
     total_revenue = sum(summary["lost_revenue"] for summary in grouped.values())
     total_orders = sum(summary["lost_orders"] for summary in grouped.values())
@@ -228,10 +284,7 @@ def reason_loss_summary(rows):
     records = []
     for summary in grouped.values():
         metric_loss = summary[metric_key]
-        if len(grouped) == 1:
-            share = 100
-        else:
-            share = (metric_loss / total_loss * 100) if total_loss else 0
+        share = (metric_loss / total_loss * 100) if total_loss else 0
         records.append(
             {
                 "reason": summary["reason"],
