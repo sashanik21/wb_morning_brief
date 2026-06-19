@@ -6,8 +6,9 @@ from pathlib import Path
 
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
+APP_DIR = PROJECT_ROOT / "app"
 
-for path in (str(CURRENT_DIR), str(PROJECT_ROOT)):
+for path in (str(CURRENT_DIR), str(APP_DIR), str(PROJECT_ROOT)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
@@ -15,7 +16,7 @@ from urllib.parse import quote
 
 import streamlit as st
 
-from app.core.date_engine import align_time_series, to_business_date
+from core.date_engine import align_time_series, to_business_date
 from formatters import (
     format_money,
     format_number,
