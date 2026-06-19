@@ -47,6 +47,53 @@ from supabase_client import get_supabase_client, get_supabase_credentials_info
 from sku_page import render_sku_page
 
 
+
+def metric_tooltip(title, how, sources, check, limits):
+    return (
+        f"{title}\n\n"
+        f"Как считается:\n{how}\n\n"
+        f"Откуда данные:\n{sources}\n\n"
+        f"Как проверить в Wildberries:\n{check}\n\n"
+        f"Ограничения:\n{limits}"
+    )
+
+
+LOST_REVENUE_HELP = metric_tooltip(
+    "Потеря выручки",
+    "Потерянные заказы × средний чек или сохранённая разница выручки между периодами.",
+    "Funnel API: продажи, заказы и воронка по SKU; сохранённые проблемы Dashboard.",
+    "WB кабинет → Продажи → выбрать nm_id → сравнить выручку и заказы за одинаковые периоды.",
+    "Если нет базы сравнения или данные по SKU неполные, сумма может быть приблизительной.",
+)
+LOST_ORDERS_HELP = metric_tooltip(
+    "Потеря заказов",
+    "Сумма потерянных заказов по проблемным SKU за выбранную дату или период.",
+    "Funnel API: заказы и воронка по SKU; сохранённые проблемы Dashboard.",
+    "WB кабинет → Продажи → выбрать nm_id → сравнить количество заказов за одинаковые периоды.",
+    "Если прошлый период отсутствует, используется сохранённая оценка; при неполных данных нужна ручная сверка.",
+)
+MAIN_REASON_TOOLTIP = metric_tooltip(
+    "Главная причина",
+    "Выбирается причина с наибольшим вкладом в потери среди проблемных SKU.",
+    "Funnel API, Ads API, Stocks API и Change Log по товарам.",
+    "В WB/JEM проверить метрику, которая подтверждает причину: продажи, конверсию, рекламу, остатки или изменения карточки.",
+    "Это управленческая подсказка, а не окончательный диагноз; если данных мало, причину нужно подтвердить вручную.",
+)
+REASON_LOSS_TOOLTIP = metric_tooltip(
+    "Потери по причинам",
+    "Сумма потерь по SKU, где причина назначена основной. Доля = потери причины ÷ все потери × 100.",
+    "Сохранённые проблемы SKU, Funnel API, Ads API, Stocks API и Change Log.",
+    "Открыть SKU из причины и сверить в WB/JEM продажи, воронку, рекламные показатели, остатки и последние изменения.",
+    "Если причина неоднозначна или часть данных не пришла, распределение потерь по причинам может быть приблизительным.",
+)
+FIRST_LOOK_HELP = metric_tooltip(
+    "Что смотреть первым",
+    "SKU выбирается по максимальной потере выручки среди текущих проблемных товаров.",
+    "Сохранённые проблемы Dashboard и Funnel API по SKU.",
+    "Открыть указанный nm_id в WB/JEM и сверить продажи, заказы, конверсию, рекламу и остатки за дату отчёта.",
+    "Если данные по продавцу или SKU неполные, товар может требовать дополнительной ручной проверки.",
+)
+
 def tooltip_text(text):
     return escape(str(text), quote=True).replace("\n", "&#10;")
 
@@ -56,7 +103,7 @@ def help_icon(help_text):
 
 
 def main_reason_help(reason):
-    return MAIN_REASON_HELP
+    return MAIN_REASON_TOOLTIP + "\n\n" + MAIN_REASON_HELP
 
 
 def reason_loss_help(reason_summary):
@@ -66,6 +113,7 @@ def reason_loss_help(reason_summary):
         else f"{format_number(round(reason_summary['lost_orders']))} заказов"
     )
     return (
+        REASON_LOSS_TOOLTIP + "\n\n"
         f"{reason_summary['reason'].capitalize()} — {loss_value} "
         f"({format_number(round(reason_summary['share']))}%).\n\n"
         "Расчёт:\n"
@@ -315,11 +363,11 @@ elif top_reason:
     reason_loss_value = format_money(top_reason["lost_revenue"])
 
 card_1, card_2, card_3, card_4, card_5 = st.columns(5)
-card_1.metric("Потеря выручки за день", format_money(total_day_lost_revenue))
-card_2.metric("Потеря заказов за день", format_number(round(total_day_lost_orders)))
+card_1.metric("Потеря выручки за день ⓘ", format_money(total_day_lost_revenue), help=LOST_REVENUE_HELP)
+card_2.metric("Потеря заказов за день ⓘ", format_number(round(total_day_lost_orders)), help=LOST_ORDERS_HELP)
 card_3.metric("Критичные продавцы", format_number(critical_sellers))
 card_4.metric("Критичные SKU", format_number(critical_sku))
-card_5.metric("Главная причина ?", reason, help=main_reason_help(reason))
+card_5.metric("Главная причина ⓘ", reason, help=main_reason_help(reason))
 if top_reason:
     st.caption(
         f"Причина: {reason} · {reason_loss_label}: {reason_loss_value} · "
@@ -327,7 +375,7 @@ if top_reason:
         f"Доля потерь: {format_number(round(top_reason['share']))}%"
     )
     st.caption("Описание причины: " + reason_explanation(reason), help=REASON_DESCRIPTION_HELP)
-    st.markdown("**Потери по причинам:**")
+    st.markdown(f"**Потери по причинам:** {help_icon(REASON_LOSS_TOOLTIP)}", unsafe_allow_html=True)
     for reason_summary in reason_summaries:
         loss_value = (
             format_money(reason_summary["lost_revenue"])
@@ -345,14 +393,14 @@ else:
 
 st.subheader(
     "Что смотреть первым",
-    help="SKU выбран автоматически по максимальной потере выручки среди проблемных товаров.",
+    help=FIRST_LOOK_HELP,
 )
 if problems:
     top_problem = max(problems, key=lost_revenue)
     top_seller = sellers_by_id.get(str(top_problem.get("seller_id")), top_problem.get("seller_id") or "Без seller_id")
     st.info(
         f"Начните с продавца {top_seller}, SKU {top_problem.get('nm_id') or top_problem.get('nmId')}: "
-        f"потеря {format_money(lost_revenue(top_problem))}, причина — {main_reason([top_problem])}."
+        f"потеря {format_money(lost_revenue(top_problem))} ⓘ, причина — {main_reason([top_problem])} ⓘ."
     )
 elif not report_dates:
     st.warning("Даты отчётов не найдены в problems.")
@@ -380,16 +428,28 @@ st.dataframe(
     hide_index=True,
     column_config={
         "открыть": st.column_config.LinkColumn("Карточка", display_text="Открыть"),
+        "потеря выручки": st.column_config.NumberColumn(
+            "Потеря выручки ⓘ",
+            help=LOST_REVENUE_HELP,
+        ),
+        "потеря заказов": st.column_config.NumberColumn(
+            "Потеря заказов ⓘ",
+            help=LOST_ORDERS_HELP,
+        ),
+        "главная причина": st.column_config.TextColumn(
+            "Главная причина ⓘ",
+            help=MAIN_REASON_TOOLTIP,
+        ),
         "главное подтверждение": st.column_config.TextColumn(
             "Главное подтверждение ⓘ",
-            help=CONFIRMATION_COLUMN_HELP,
+            help=CONFIRMATION_COLUMN_HELP + "\n\n" + MAIN_REASON_TOOLTIP,
         ),
         "подсказка подтверждения": st.column_config.TextColumn(
             "Подсказка по подтверждению",
             help="Поясняет, какие данные подтвердили причину проблемы по SKU.",
         ),
         "пояснение причины": st.column_config.TextColumn(
-            "Описание причины ?",
+            "Описание причины ⓘ",
             help=REASON_DESCRIPTION_HELP,
         ),
     },

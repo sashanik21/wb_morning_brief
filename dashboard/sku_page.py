@@ -38,35 +38,93 @@ def help_icon(help_text):
     return f'<span title="{tooltip_text(help_text)}">ⓘ</span>'
 
 
-SKU_DIAGNOSIS_HELP = (
-    "Проценты в диагнозе — это не реальные проценты потерь.\n"
-    "Это рейтинг вероятности причин.\n\n"
-    "Вес рассчитывается на основании проблем SKU, данных воронки, "
-    "данных рекламы и данных остатков.\n\n"
-    "Чем выше вес, тем выше вероятность влияния причины на просадку."
-)
+def metric_tooltip(title, how, sources, check, limits):
+    return (
+        f"{title}\n\n"
+        f"Как считается:\n{how}\n\n"
+        f"Откуда данные:\n{sources}\n\n"
+        f"Как проверить в Wildberries:\n{check}\n\n"
+        f"Ограничения:\n{limits}"
+    )
 
-AMBIGUOUS_REASON_HELP = (
-    "Несколько причин имеют близкий вес.\n"
-    "Система не может уверенно выделить одну основную причину.\n"
-    "Требуется дополнительная проверка."
-)
 
-LOST_REVENUE_HELP = (
-    "Показывает, сколько выручки SKU мог недополучить за выбранный период. "
-    "Рассчитывается по сохранённым проблемам SKU и данным продаж."
+LOST_REVENUE_HELP = metric_tooltip(
+    "Потеря выручки",
+    "Потерянные заказы × средний чек. Если есть база сравнения, дополнительно смотрится разница выручки между текущим и прошлым периодом.",
+    "Funnel API: воронка и продажи товара; сохранённые проблемные строки Dashboard.",
+    "WB кабинет → Продажи → выбрать nm_id → сравнить выручку и заказы за текущий и прошлый период.",
+    "Если нет прошлого периода или сохранённой проблемы, используется доступная разница периодов; при неполных данных значение может быть приблизительным.",
 )
-
-LOST_ORDERS_HELP = (
-    "Показывает, сколько заказов SKU мог недополучить за выбранный период. "
-    "Рассчитывается по сохранённым проблемам SKU и данным заказов."
+LOST_ORDERS_HELP = metric_tooltip(
+    "Потеря заказов",
+    "Разница заказов между прошлым и текущим периодом или сохранённая оценка потерь по проблеме SKU.",
+    "Funnel API: воронка и продажи товара; сохранённые проблемные строки Dashboard.",
+    "WB кабинет → Продажи → выбрать nm_id → сравнить количество заказов за два одинаковых периода.",
+    "Если нет базы сравнения, система показывает только сохранённую оценку или 0; неполная история снижает точность.",
 )
-
-MAIN_REASON_HELP = (
-    "Показывает наиболее вероятную причину просадки этого SKU. "
-    "Вывод сделан по проблемам SKU, данным продаж, воронки, рекламы и остатков."
+CONVERSION_HELP = metric_tooltip(
+    "Конверсия",
+    "Конверсия в корзину = корзины ÷ переходы × 100. Конверсия в заказ = заказы ÷ корзины × 100.",
+    "Funnel API: переходы, корзины, заказы и продажи товара.",
+    "WB/JEM → Воронка продаж по nm_id → сверить переходы, корзины, заказы и проценты конверсии.",
+    "Если переходов или корзин нет, берётся сохранённый процент из истории; при неполной воронке показатель может отличаться от кабинета.",
 )
-
+CTR_HELP = metric_tooltip(
+    "CTR рекламы",
+    "Клики ÷ показы × 100. Если кликов или показов недостаточно, берётся сохранённый CTR кампании.",
+    "Ads API: показы, клики и рекламные кампании.",
+    "WB Продвижение → кампании → статистика по nm_id → сверить показы, клики и CTR.",
+    "Если реклама не велась или данные кампаний неполные, показатель может быть 0 или усреднённым.",
+)
+CPC_HELP = metric_tooltip(
+    "CPC",
+    "Расход рекламы ÷ клики. Показывает среднюю цену клика за выбранный период.",
+    "Ads API: расход и клики.",
+    "WB Продвижение → кампании → статистика → сверить расход и клики по nm_id.",
+    "Если кликов нет, используется сохранённый CPC; при неполной рекламе показатель может быть приблизительным.",
+)
+DRR_HELP = metric_tooltip(
+    "ДРР",
+    "Расход рекламы ÷ рекламная выручка × 100. Показывает долю рекламных расходов в выручке от рекламы.",
+    "Ads API: расход, рекламные заказы и рекламная выручка.",
+    "WB Продвижение → кампании → статистика → сверить расход, заказы и выручку по nm_id.",
+    "Если рекламной выручки нет, берётся сохранённый ДРР; при неполной атрибуции рекламы показатель может отличаться.",
+)
+STOCK_HELP = metric_tooltip(
+    "Остатки",
+    "Берётся последний доступный остаток товара. Если остаток 0, система считает риск отсутствия товара подтверждённым.",
+    "Stocks API: остатки по складам; сохранённые проблемы по товару.",
+    "WB кабинет → Товары/Склады → остатки по nm_id → сверить доступный остаток и статус товара.",
+    "Остатки могут обновляться с задержкой; если история не накоплена, система просит проверить товар вручную.",
+)
+SKU_DIAGNOSIS_HELP = metric_tooltip(
+    "Диагноз SKU",
+    "Это рейтинг влияния причин, а не вероятность и не точная модель. Вес причины строится по сигналам воронки, рекламы, остатков и сохранённых проблем.",
+    "Funnel API, Ads API, Stocks API и Change Log товара.",
+    "Проверить в WB/JEM: продажи и воронку по nm_id, рекламные кампании, остатки и последние изменения карточки.",
+    "Если несколько причин близки по весу, диагноз неоднозначен. При неполных данных система показывает причину, которую нужно подтвердить вручную.",
+)
+AMBIGUOUS_REASON_HELP = metric_tooltip(
+    "Причина не определена однозначно",
+    "Несколько причин получили близкий вес, поэтому система не выбирает одну как явно главную.",
+    "Funnel API, Ads API, Stocks API и сохранённые проблемы SKU.",
+    "Сверить в WB/JEM динамику продаж, рекламы, остатков и изменений карточки за дату просадки.",
+    "Требуется ручная проверка: данных недостаточно для уверенного вывода.",
+)
+MAIN_REASON_HELP = metric_tooltip(
+    "Главная причина",
+    "Выбирается причина с самым сильным подтверждением по потерям, воронке, рекламе, остаткам и изменениям товара.",
+    "Funnel API, Ads API, Stocks API, Change Log и сохранённые проблемы Dashboard.",
+    "В WB/JEM сверить метрику, которая просела сильнее всего: продажи, конверсию, рекламные показатели или остатки.",
+    "Это управленческая подсказка, а не окончательный диагноз; при неполных данных причина требует проверки.",
+)
+REASON_LOSS_HELP = metric_tooltip(
+    "Потери по причинам",
+    "Сумма потерь по SKU, у которых эта причина определена как основная. Доля = потери причины ÷ все потери × 100.",
+    "Сохранённые проблемы SKU, Funnel API, Ads API и Stocks API.",
+    "В Dashboard открыть SKU из причины, затем в WB/JEM сверить продажи, воронку, рекламу и остатки по каждому nm_id.",
+    "Если причина у SKU неоднозначна или данные неполные, сумма по причинам может быть приблизительной.",
+)
 
 def render_diagnosis_help(diagnosis_text):
     for line in diagnosis_text.splitlines():
@@ -723,9 +781,9 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
             st.markdown(f"**Диагноз SKU:** {help_icon(SKU_DIAGNOSIS_HELP)}", unsafe_allow_html=True)
             render_diagnosis_help(diagnosis_text)
         diag_1, diag_2, diag_3 = st.columns(3)
-        diag_1.metric("Потеря выручки", format_money(lost_rev), help=LOST_REVENUE_HELP)
-        diag_2.metric("Потеря заказов", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
-        diag_3.metric("Главная причина", summary_reason, help=MAIN_REASON_HELP)
+        diag_1.metric("Потеря выручки ⓘ", format_money(lost_rev), help=LOST_REVENUE_HELP)
+        diag_2.metric("Потеря заказов ⓘ", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
+        diag_3.metric("Главная причина ⓘ", summary_reason, help=MAIN_REASON_HELP)
         st.markdown("**Подтверждение:**")
         for item in confirmation:
             st.write(f"- {item}")
@@ -734,7 +792,16 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
             st.write(f"- {item}")
 
         st.subheader("Сравнение периодов")
-        st.dataframe(_comparison_dataframe(current_metrics, previous_metrics), width="stretch", hide_index=True)
+        st.dataframe(
+            _comparison_dataframe(current_metrics, previous_metrics),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Метрика": st.column_config.TextColumn("Метрика ⓘ", help=CONVERSION_HELP),
+                "Текущий период": st.column_config.TextColumn("Текущий период ⓘ", help=CONVERSION_HELP),
+                "Изменение": st.column_config.TextColumn("Изменение ⓘ", help="Изменение считается как разница между текущим и прошлым периодом в процентах."),
+            },
+        )
 
         st.subheader("Последние изменения")
         if change_log_df.empty:
@@ -747,8 +814,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     with sales_tab:
         st.subheader("Продажи")
         sales_1, sales_2 = st.columns(2)
-        sales_1.metric("Потеря выручки", format_money(lost_rev), help=LOST_REVENUE_HELP)
-        sales_2.metric("Потеря заказов", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
+        sales_1.metric("Потеря выручки ⓘ", format_money(lost_rev), help=LOST_REVENUE_HELP)
+        sales_2.metric("Потеря заказов ⓘ", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
         if history_df.empty:
             st.info("История продаж и воронки за выбранный период не найдена.")
         else:
@@ -773,8 +840,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
             funnel_1, funnel_2, funnel_3, funnel_4 = st.columns(4)
             funnel_1.metric("Переходы", format_number(current_metrics["opens"]))
             funnel_2.metric("Корзина", format_number(current_metrics["carts"]))
-            funnel_3.metric("Конверсия в корзину", f"{current_metrics['cart_conversion'] or 0:.1f}%")
-            funnel_4.metric("Конверсия в заказ", f"{current_metrics['order_conversion'] or 0:.1f}%")
+            funnel_3.metric("Конверсия в корзину ⓘ", f"{current_metrics['cart_conversion'] or 0:.1f}%", help=CONVERSION_HELP)
+            funnel_4.metric("Конверсия в заказ ⓘ", f"{current_metrics['order_conversion'] or 0:.1f}%", help=CONVERSION_HELP)
             st.subheader("Переходы → Корзина → Заказы")
             st.line_chart(history_df[["Переходы", "Корзина", "Заказы"]])
             st.subheader("Конверсия в корзину и конверсия в заказ")
@@ -783,12 +850,12 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     with ads_tab:
         st.subheader("Реклама")
         ads_1, ads_2, ads_3, ads_4 = st.columns(4)
-        ads_1.metric("CTR рекламы", f"{current_metrics['ctr'] or 0:.1f}%")
-        ads_2.metric("CPC", format_money(current_metrics["cpc"] or 0))
-        ads_3.metric("ДРР", f"{current_metrics['drr'] or 0:.1f}%")
+        ads_1.metric("CTR рекламы ⓘ", f"{current_metrics['ctr'] or 0:.1f}%", help=CTR_HELP)
+        ads_2.metric("CPC ⓘ", format_money(current_metrics["cpc"] or 0), help=CPC_HELP)
+        ads_3.metric("ДРР ⓘ", f"{current_metrics['drr'] or 0:.1f}%", help=DRR_HELP)
         ads_4.metric("Количество кампаний", format_number(_campaign_count(ads_rows)))
         ads_diagnosis, ads_evidence = _ads_diagnosis(current_metrics, previous_metrics)
-        st.markdown(f"**Рекламный диагноз:** {ads_diagnosis}")
+        st.markdown(f"**Рекламный диагноз:** {ads_diagnosis} {help_icon(SKU_DIAGNOSIS_HELP)}", unsafe_allow_html=True)
         for item in ads_evidence:
             st.caption(item)
         if ads_df.empty:
@@ -801,8 +868,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         st.subheader("Остатки")
         stock_1, stock_2 = st.columns(2)
         stock_quantity, stock_status, _ = _stock_snapshot(stock_rows)
-        stock_1.metric("Остаток", "—" if stock_quantity is None else format_number(stock_quantity))
-        stock_2.metric("Статус остатков", stock_status)
+        stock_1.metric("Остаток ⓘ", "—" if stock_quantity is None else format_number(stock_quantity), help=STOCK_HELP)
+        stock_2.metric("Статус остатков ⓘ", stock_status, help=STOCK_HELP)
         if stock_chart_df.empty:
             st.info("История остатков пока не накоплена.")
         else:
@@ -815,7 +882,17 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         if summary_df.empty:
             st.success("Проблемы по SKU не найдены.")
         else:
-            st.dataframe(summary_df.reset_index(drop=True), width="stretch", hide_index=True)
+            st.dataframe(
+                summary_df.reset_index(drop=True),
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Потеря выручки": st.column_config.NumberColumn("Потеря выручки ⓘ", help=LOST_REVENUE_HELP),
+                    "Потеря заказов": st.column_config.NumberColumn("Потеря заказов ⓘ", help=LOST_ORDERS_HELP),
+                    "Причина": st.column_config.TextColumn("Причина ⓘ", help=REASON_LOSS_HELP),
+                    "Главное подтверждение": st.column_config.TextColumn("Главное подтверждение ⓘ", help=MAIN_REASON_HELP),
+                },
+            )
         st.markdown(
             f"**Главная причина:** {reason} {help_icon(MAIN_REASON_HELP)}  \n"
             f"**Описание причины:** {_problem_description(problem_rows, reason)}",
