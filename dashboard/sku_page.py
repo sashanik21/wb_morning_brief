@@ -1,11 +1,12 @@
 """SKU card page for the Streamlit dashboard."""
 
-from datetime import date, datetime, timedelta
+from datetime import date
 from html import escape
 
 import pandas as pd
 import streamlit as st
 
+from app.core.date_engine import get_current_period, get_previous_period, to_business_date
 from supabase_client import get_supabase_client
 from wb_dashboard_queries import (
     fetch_sku_ads_history,
@@ -152,29 +153,23 @@ CHECKLIST_BY_REASON = {
 
 
 def _date_value(row):
-    return first_present(row, ["date", "report_date", "created_at"])
+    return to_business_date(row)
 
 
 def _normalize_date(value):
-    if value in (None, ""):
-        return None
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    text = str(value).strip()
-    return text[:10] if text else None
+    if isinstance(value, dict):
+        return to_business_date(value)
+    return to_business_date({"created_at": value})
 
 
 def _period_bounds(period_label):
     today = date.today()
     days = PERIOD_OPTIONS[period_label]
-    return today - timedelta(days=days - 1), today
+    return get_current_period(today.fromordinal(today.toordinal() - days + 1), today)
 
 
 def _previous_period_bounds(start_date, end_date):
-    days = (end_date - start_date).days + 1
-    return start_date - timedelta(days=days), end_date - timedelta(days=days)
+    return get_previous_period(start_date, end_date)
 
 
 def _format_period_range(start_date, end_date):
