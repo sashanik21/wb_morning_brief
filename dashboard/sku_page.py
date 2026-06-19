@@ -5,7 +5,14 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-from wb_dashboard_queries import fetch_sku_ads_history, fetch_sku_history, fetch_sku_options, fetch_sku_problems, fetch_sku_stocks_history
+from wb_dashboard_queries import (
+    fetch_sku_ads_history,
+    fetch_sku_change_log,
+    fetch_sku_history,
+    fetch_sku_options,
+    fetch_sku_problems,
+    fetch_sku_stocks_history,
+)
 from formatters import (
     first_present,
     format_money,
@@ -150,6 +157,22 @@ def _stocks_dataframe(rows):
     if not records:
         return pd.DataFrame()
     return pd.DataFrame(records).sort_values("Дата")
+
+
+def _change_log_dataframe(rows):
+    records = []
+    for row in rows:
+        records.append(
+            {
+                "Дата": _normalize_date(row.get("change_date")) or "",
+                "Тип изменения": row.get("change_type") or "",
+                "Было": row.get("old_value") or "",
+                "Стало": row.get("new_value") or "",
+                "Кто изменил": row.get("changed_by") or "",
+                "Комментарий": row.get("comment") or "",
+            }
+        )
+    return pd.DataFrame(records)
 
 
 def _stock_chart_dataframe(stocks_df):
@@ -541,6 +564,7 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     ads_rows = fetch_sku_ads_history(selected_nm_id, selected_seller, start_date, end_date)
     previous_ads_rows = fetch_sku_ads_history(selected_nm_id, selected_seller, previous_start, previous_end)
     stock_rows = fetch_sku_stocks_history(selected_nm_id, selected_seller, start_date, end_date)
+    change_log_rows = fetch_sku_change_log(selected_nm_id, selected_seller, start_date, end_date)
     current_metrics = _period_metrics(history_rows, ads_rows)
     previous_metrics = _period_metrics(previous_history_rows, previous_ads_rows)
     latest_problem = _latest_row(problem_rows)
@@ -550,6 +574,7 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     ads_df = _ads_dataframe(ads_rows)
     stocks_df = _stocks_dataframe(stock_rows)
     stock_chart_df = _stock_chart_dataframe(stocks_df)
+    change_log_df = _change_log_dataframe(change_log_rows)
     product_seller_id = product.get("seller_id") or selected_seller
     seller_name = sellers_by_id.get(str(product_seller_id), product_seller_id)
     seller_article = product.get("vendor_code") or product.get("vendorCode") or product.get("supplier_article") or product.get("supplierArticle") or "—"
@@ -564,7 +589,7 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     info_4.metric("Продавец", seller_name)
     info_5.metric("ABC", abc)
 
-    overview_tab, sales_tab, ads_tab, stocks_tab, problems_tab = st.tabs(["Обзор", "Продажи и воронка", "Реклама", "Остатки", "Проблемы"])
+    overview_tab, sales_tab, ads_tab, stocks_tab, problems_tab, changes_tab = st.tabs(["Обзор", "Продажи и воронка", "Реклама", "Остатки", "Проблемы", "История изменений"])
 
     with overview_tab:
         st.subheader("🔴 Диагноз SKU")
@@ -583,8 +608,11 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         st.subheader("Сравнение периодов")
         st.dataframe(_comparison_dataframe(current_metrics, previous_metrics), width="stretch", hide_index=True)
 
-        st.subheader("История изменений")
-        st.info("пока не подключена")
+        st.subheader("Последние изменения")
+        if change_log_df.empty:
+            st.info("Изменения по SKU не найдены.")
+        else:
+            st.dataframe(change_log_df.head(3), width="stretch", hide_index=True)
         st.subheader("Конкуренты")
         st.info("пока не подключены")
 
@@ -658,3 +686,10 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
                 st.info("Технических строк problems нет.")
             else:
                 st.dataframe(problems_df.reset_index(drop=True), width="stretch", hide_index=True)
+
+    with changes_tab:
+        st.subheader("История изменений")
+        if change_log_df.empty:
+            st.info("История изменений пока не заполнена.")
+        else:
+            st.dataframe(change_log_df, width="stretch", hide_index=True)
