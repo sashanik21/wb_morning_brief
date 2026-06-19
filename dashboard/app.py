@@ -25,6 +25,9 @@ from formatters import (
     matches_reason_filter,
     reason_explanation,
     reason_loss_summary,
+    CONFIRMATION_COLUMN_HELP,
+    MAIN_REASON_HELP,
+    REASON_DESCRIPTION_HELP,
     REASON_FILTER_OPTIONS,
     prepare_seller_table,
     prepare_sku_table,
@@ -53,14 +56,7 @@ def help_icon(help_text):
 
 
 def main_reason_help(reason):
-    return (
-        f"{reason.capitalize()} определена как главная причина, потому что суммарная потеря "
-        "по SKU с этой причиной составила наибольшую долю потерь за выбранный период.\n\n"
-        "Используются данные:\n"
-        "- problems\n"
-        "- daily_ads_metrics, если причина связана с рекламой\n"
-        "- данные продаж, воронки и остатков, если причина связана с ними"
-    )
+    return MAIN_REASON_HELP
 
 
 def reason_loss_help(reason_summary):
@@ -323,14 +319,14 @@ card_1.metric("Потеря выручки за день", format_money(total_da
 card_2.metric("Потеря заказов за день", format_number(round(total_day_lost_orders)))
 card_3.metric("Критичные продавцы", format_number(critical_sellers))
 card_4.metric("Критичные SKU", format_number(critical_sku))
-card_5.metric("Главная причина просадок", reason, help=main_reason_help(reason))
+card_5.metric("Главная причина ?", reason, help=main_reason_help(reason))
 if top_reason:
     st.caption(
         f"Причина: {reason} · {reason_loss_label}: {reason_loss_value} · "
         f"SKU: {format_number(top_reason['sku_count'])} · "
         f"Доля потерь: {format_number(round(top_reason['share']))}%"
     )
-    st.caption("Что означает главная причина: " + reason_explanation(reason))
+    st.caption("Описание причины: " + reason_explanation(reason), help=REASON_DESCRIPTION_HELP)
     st.markdown("**Потери по причинам:**")
     for reason_summary in reason_summaries:
         loss_value = (
@@ -345,7 +341,7 @@ if top_reason:
             unsafe_allow_html=True,
         )
 else:
-    st.caption(f"Что означает главная причина: {reason_explanation(reason)}")
+    st.caption(f"Описание причины: {reason_explanation(reason)}", help=REASON_DESCRIPTION_HELP)
 
 st.subheader(
     "Что смотреть первым",
@@ -369,7 +365,7 @@ st.subheader("Продавцы")
 seller_table = dataframe_for_display(prepare_seller_table(problems, sellers_by_id))
 st.dataframe(seller_table, width="stretch", hide_index=True)
 
-st.subheader("TOP SKU")
+st.subheader("Сводка проблем по SKU")
 sku_table = dataframe_for_display(prepare_sku_table(problems, sellers_by_id).head(100))
 if not sku_table.empty:
     sku_table = sku_table.copy()
@@ -382,7 +378,21 @@ st.dataframe(
     sku_table,
     width="stretch",
     hide_index=True,
-    column_config={"открыть": st.column_config.LinkColumn("Карточка", display_text="Открыть")},
+    column_config={
+        "открыть": st.column_config.LinkColumn("Карточка", display_text="Открыть"),
+        "главное подтверждение": st.column_config.TextColumn(
+            "Главное подтверждение ⓘ",
+            help=CONFIRMATION_COLUMN_HELP,
+        ),
+        "подсказка подтверждения": st.column_config.TextColumn(
+            "Подсказка по подтверждению",
+            help="Поясняет, какие данные подтвердили причину проблемы по SKU.",
+        ),
+        "пояснение причины": st.column_config.TextColumn(
+            "Описание причины ?",
+            help=REASON_DESCRIPTION_HELP,
+        ),
+    },
 )
 
 st.subheader("Качество данных")
