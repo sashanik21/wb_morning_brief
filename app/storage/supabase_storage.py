@@ -5,6 +5,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from supabase import create_client
 
+from app.seller_config import SELLER_NAME
+
 _STORAGE_STATUS = {"mode": "supabase", "configured": True}
 _CLIENT = None
 _DATA_QUALITY_COUNTERS = {
@@ -594,11 +596,23 @@ def save_funnel_snapshot(rows):
 
 
 def _normalize_ads_metric_row(row):
+    seller_name = _first_present(row, ["seller_name", "sellerName"]) or SELLER_NAME
+    raw_json = row.copy()
+    if seller_name not in (None, ""):
+        raw_json.setdefault("sellerName", seller_name)
+        raw_json.setdefault("seller_name", seller_name)
+    if row.get("adsDistributionWarning") or row.get("ads_distribution_warning"):
+        raw_json["adsDistributionWarning"] = True
+        raw_json.setdefault(
+            "adsDistributionWarningReason",
+            "campaign metrics duplicated across multiple SKU",
+        )
+
     return {
         "date": _report_date(row),
         "report_date": _report_date(row),
-        "seller_id": _string_or_none(row.get("seller_id")),
-        "seller_name": _first_present(row, ["seller_name", "sellerName"]),
+        "seller_id": _string_or_none(_first_present(row, ["seller_id", "sellerId"])),
+        "seller_name": seller_name,
         "campaign_id": _to_int(_first_present(row, ["campaign_id", "campaignId"])),
         "campaign_name": _first_present(row, ["campaign_name", "campaignName"]),
         "campaign_status": _first_present(row, ["campaign_status", "campaignStatus"]),
