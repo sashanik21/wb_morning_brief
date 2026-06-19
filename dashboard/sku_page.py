@@ -6,7 +6,7 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
-from app.core.date_engine import get_current_period, get_previous_period, to_business_date
+from core.date_engine import get_current_period, get_previous_period, to_business_date
 from supabase_client import get_supabase_client
 from wb_dashboard_queries import (
     fetch_sku_ads_history,
