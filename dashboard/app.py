@@ -137,7 +137,8 @@ try:
     report_dates = [
         row["business_date"]
         for row in align_time_series(
-            [{problem_date_field: value} for value in report_dates], problem_date_field
+            [{problem_date_field: value} for value in report_dates],
+            date_column=problem_date_field,
         )
         if row.get("business_date")
     ]
