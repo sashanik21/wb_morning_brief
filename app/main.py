@@ -1,5 +1,5 @@
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
@@ -42,7 +42,10 @@ from app.reports.api_coverage import (
     save_api_coverage_report,
 )
 from app.reports.evidence import EVIDENCE_LIMIT_TELEGRAM, build_evidence_rows
-from app.reports.telegram_report import send_telegram_morning_brief
+from app.reports.telegram_report import (
+    send_seller_3d_analytics,
+    send_telegram_morning_brief,
+)
 from app.storage.storage_factory import get_storage
 
 
@@ -710,6 +713,7 @@ def _process_seller(storage, seller, report_date):
             "all_problems": [],
             "root_cause_insights": [],
             "tasks": [],
+            "seller_3d_analytics": {},
         }
 
     products = storage.get_products()
@@ -732,6 +736,7 @@ def _process_seller(storage, seller, report_date):
             "all_problems": [],
             "root_cause_insights": [],
             "tasks": [],
+            "seller_3d_analytics": {},
         }
 
     wb_cards = _extract_funnel_products(data)
@@ -750,6 +755,7 @@ def _process_seller(storage, seller, report_date):
             "all_problems": [],
             "root_cause_insights": [],
             "tasks": [],
+            "seller_3d_analytics": {},
         }
 
     storage.sync_products_from_wb_cards(seller_id, wb_cards)
@@ -1059,6 +1065,14 @@ def _process_seller(storage, seller, report_date):
     tasks = build_tasks_from_problems(all_problems)
     _attach_seller_context(tasks, seller, seller_id)
 
+    seller_3d_analytics = _build_seller_3d_analytics(
+        storage,
+        seller_result,
+        funnel_rows,
+        all_problems,
+        report_date,
+    )
+
     _summary_log(
         f"SELLER FINISH: {seller_name} status={seller_result.get('processing_status')} "
         f"sku={total_sku_from_api} problems={len(all_problems)} tasks={len(tasks)}"
@@ -1076,6 +1090,7 @@ def _process_seller(storage, seller, report_date):
         "all_problems": all_problems,
         "root_cause_insights": root_cause_insights,
         "tasks": tasks,
+        "seller_3d_analytics": seller_3d_analytics,
     }
 
 
@@ -1116,6 +1131,189 @@ def _filter_by_seller_name(records, seller_name):
         if isinstance(record, dict)
         and (record.get("sellerName") or record.get("seller_name")) == seller_name
     ]
+
+
+def _parse_report_day(value):
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_metric(row, *keys):
+    for key in keys:
+        if isinstance(row, dict) and row.get(key) not in (None, ""):
+            return _to_float(row.get(key))
+    return 0
+
+
+def _seller_period_totals(rows, period_days):
+    period_days = set(period_days or [])
+    totals = {
+        "orders": 0,
+        "revenue": 0,
+        "opens": 0,
+        "carts": 0,
+        "days": set(),
+    }
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        row_day = _parse_report_day(
+            row.get("date") or row.get("report_date") or row.get("reportDate")
+        )
+        if row_day not in period_days:
+            continue
+
+        totals["days"].add(row_day)
+        totals["orders"] += _row_metric(row, "orderCount", "order_count")
+        totals["revenue"] += _row_metric(row, "orderSum", "order_sum")
+        totals["opens"] += _row_metric(row, "openCount", "open_count")
+        totals["carts"] += _row_metric(row, "cartCount", "cart_count")
+
+    totals["conversion"] = (
+        totals["orders"] / totals["carts"] * 100 if totals["carts"] else 0
+    )
+    totals["days_count"] = len(totals["days"])
+    totals.pop("days", None)
+    return totals
+
+
+def _seller_critical_sku_count(problems):
+    return len(
+        {
+            problem.get("nmId") or problem.get("nm_id")
+            for problem in problems or []
+            if isinstance(problem, dict)
+            and (problem.get("nmId") or problem.get("nm_id")) not in (None, "")
+            and (
+                str(problem.get("severity") or "").lower() == "critical"
+                or _to_float(problem.get("severityScore")) >= 70
+            )
+        }
+    )
+
+
+def _problem_reason(problem):
+    text = " ".join(
+        str(problem.get(key) or "")
+        for key in ("problemCategory", "problemType", "metric", "rootCause", "diagnosis", "recommendation")
+        if isinstance(problem, dict)
+    ).lower()
+    if "stock" in text or "остат" in text or "oos" in text:
+        return "остатки"
+    if "ads" in text or "реклам" in text or any(item in text for item in ("ctr", "cpc", "drr")):
+        return "реклама"
+    if "price" in text or "цен" in text:
+        return "цена"
+    if "conversion" in text or "конверс" in text or "carttoorder" in text or "addtocart" in text:
+        return "конверсия"
+    return "неизвестно"
+
+
+def _seller_main_reason(problems):
+    counts = {}
+    for problem in problems or []:
+        reason = _problem_reason(problem)
+        counts[reason] = counts.get(reason, 0) + 1
+
+    known_counts = {key: value for key, value in counts.items() if key != "неизвестно"}
+    if not known_counts:
+        return "требует проверки"
+
+    best_reason = max(known_counts, key=known_counts.get)
+    if list(known_counts.values()).count(known_counts[best_reason]) > 1:
+        return "требует проверки"
+    return best_reason
+
+
+def _build_seller_3d_analytics(storage, seller_result, funnel_rows, problems, report_date):
+    seller_id = seller_result.get("seller_id")
+    report_day = _parse_report_day(report_date)
+    if not report_day:
+        return {}
+
+    current_days = [report_day - timedelta(days=offset) for offset in (2, 1, 0)]
+    previous_days = [report_day - timedelta(days=offset) for offset in (5, 4, 3)]
+
+    history_rows = []
+    if seller_id not in (None, "") and hasattr(storage, "get_funnel_history"):
+        nm_ids = {
+            row.get("nmId") or row.get("nm_id")
+            for row in funnel_rows or []
+            if isinstance(row, dict) and (row.get("nmId") or row.get("nm_id")) not in (None, "")
+        }
+        for nm_id in nm_ids:
+            history_rows.extend(
+                storage.get_funnel_history(
+                    seller_id,
+                    nm_id,
+                    8,
+                    before_date=report_day - timedelta(days=2),
+                )
+                or []
+            )
+
+    all_rows = list(funnel_rows or []) + history_rows
+    current = _seller_period_totals(all_rows, current_days)
+    previous = _seller_period_totals(all_rows, previous_days)
+    has_previous = previous["days_count"] >= 3
+
+    lost_orders = max(previous["orders"] - current["orders"], 0) if has_previous else 0
+    average_check = (
+        current["revenue"] / current["orders"]
+        if current["orders"]
+        else (previous["revenue"] / previous["orders"] if previous["orders"] else 0)
+    )
+    lost_revenue = lost_orders * average_check if lost_orders > 0 else 0
+
+    critical_sku = _seller_critical_sku_count(problems)
+    orders_dynamic = (
+        (current["orders"] - previous["orders"]) / previous["orders"] * 100
+        if has_previous and previous["orders"]
+        else None
+    )
+    revenue_dynamic = (
+        (current["revenue"] - previous["revenue"]) / previous["revenue"] * 100
+        if has_previous and previous["revenue"]
+        else None
+    )
+    conversion_dynamic = (
+        (current["conversion"] - previous["conversion"]) / previous["conversion"] * 100
+        if has_previous and previous["conversion"]
+        else None
+    )
+
+    status = "insufficient_data"
+    if has_previous:
+        if lost_revenue > 0 or lost_orders > 0 or (revenue_dynamic is not None and revenue_dynamic < 0):
+            status = "drop"
+        elif (
+            (conversion_dynamic is not None and conversion_dynamic < 0)
+            or _to_float(seller_result.get("ads_yellow_count")) > 0
+            or critical_sku >= 3
+        ):
+            status = "attention"
+        else:
+            status = "stable"
+
+    return {
+        "seller_name": seller_result.get("seller_name"),
+        "current": current,
+        "previous": previous,
+        "has_previous": has_previous,
+        "orders_dynamic": orders_dynamic,
+        "revenue_dynamic": revenue_dynamic,
+        "conversion_dynamic": conversion_dynamic,
+        "lost_orders": lost_orders,
+        "lost_revenue": lost_revenue,
+        "critical_sku": critical_sku,
+        "main_reason": _seller_main_reason(problems),
+        "status": status,
+    }
 
 
 def _send_critical_seller_details(
@@ -1189,6 +1387,7 @@ def main():
     combined_problems = []
     combined_root_cause_insights = []
     combined_tasks = []
+    seller_3d_analytics = []
     summary_stats = {}
 
     for seller in active_sellers:
@@ -1201,6 +1400,8 @@ def main():
         combined_problems.extend(processed.get("all_problems") or [])
         combined_root_cause_insights.extend(processed.get("root_cause_insights") or [])
         combined_tasks.extend(processed.get("tasks") or [])
+        if processed.get("seller_3d_analytics"):
+            seller_3d_analytics.append(processed["seller_3d_analytics"])
 
         if processed.get("summary_stats"):
             seller_summary_stats_by_name[seller_name] = processed["summary_stats"]
@@ -1234,6 +1435,10 @@ def main():
     )
 
     _summary_log("TELEGRAM SUMMARY: sent")
+
+    _summary_log("TELEGRAM SELLER 3D ANALYTICS: sending")
+    send_seller_3d_analytics(seller_3d_analytics, report_date=report_date)
+    _summary_log("TELEGRAM SELLER 3D ANALYTICS: sent")
 
     if len(active_sellers) > 1:
         _send_critical_seller_details(

@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import requests
 
@@ -5233,6 +5233,218 @@ def _build_multi_seller_brief_limited(problems, summary_stats=None, max_length=3
         if len(sanitize_telegram_text(message)) <= max_length:
             return message
     return message
+
+
+RU_MONTHS_GENITIVE = {
+    1: "января",
+    2: "февраля",
+    3: "марта",
+    4: "апреля",
+    5: "мая",
+    6: "июня",
+    7: "июля",
+    8: "августа",
+    9: "сентября",
+    10: "октября",
+    11: "ноября",
+    12: "декабря",
+}
+
+
+def _seller_3d_parse_date(value):
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _seller_3d_period_text(start_day, end_day):
+    if start_day.month == end_day.month:
+        return f"{start_day.day}–{end_day.day} {RU_MONTHS_GENITIVE[end_day.month]}"
+    return (
+        f"{start_day.day} {RU_MONTHS_GENITIVE[start_day.month]}–"
+        f"{end_day.day} {RU_MONTHS_GENITIVE[end_day.month]}"
+    )
+
+
+def _seller_3d_money(value):
+    return f"{_format_number(round(to_number(value)))} ₽"
+
+
+def _seller_3d_percent(value):
+    if value is None:
+        return "н/д"
+    return f"{_format_number(round(to_number(value)))}%"
+
+
+def _seller_3d_action(seller):
+    reason = seller.get("main_reason")
+    if reason == "конверсия":
+        return "проверить TOP SKU с падением конверсии."
+    if reason == "реклама":
+        return "проверить кампании и рекламные ставки."
+    if reason == "цена":
+        return "проверить цены и промо у TOP SKU."
+    if reason == "остатки":
+        return "проверить остатки и риск out-of-stock."
+    return "проверить TOP SKU с наибольшей потерей."
+
+
+def _seller_3d_sort_key(seller):
+    return (
+        to_number(seller.get("lost_revenue")),
+        to_number(seller.get("lost_orders")),
+        to_number(seller.get("critical_sku")),
+    )
+
+
+def _build_seller_3d_analytics_message(sellers, report_date=None):
+    report_day = _seller_3d_parse_date(report_date) or (date.today() - timedelta(days=1))
+    current_start = report_day - timedelta(days=2)
+    previous_start = report_day - timedelta(days=5)
+    previous_end = report_day - timedelta(days=3)
+
+    seller_rows = [seller for seller in sellers or [] if isinstance(seller, dict)]
+    insufficient_count = sum(1 for seller in seller_rows if not seller.get("has_previous"))
+    drop_sellers = sorted(
+        [seller for seller in seller_rows if seller.get("status") == "drop"],
+        key=_seller_3d_sort_key,
+        reverse=True,
+    )
+    attention_sellers = sorted(
+        [seller for seller in seller_rows if seller.get("status") == "attention"],
+        key=_seller_3d_sort_key,
+        reverse=True,
+    )
+    stable_count = sum(1 for seller in seller_rows if seller.get("status") == "stable")
+    hidden_count = max(len(drop_sellers) - 5, 0) + max(len(attention_sellers) - 3, 0)
+
+    lines = [
+        "📊 <b>Аналитика продавцов за 3 дня</b>",
+        "",
+        f"Период: {_seller_3d_period_text(current_start, report_day)}",
+        f"Сравнение: {_seller_3d_period_text(previous_start, previous_end)}",
+    ]
+
+    if insufficient_count and insufficient_count == len(seller_rows):
+        lines.extend(["", "Недостаточно данных для сравнения за 3 дня"])
+        return "\n".join(lines)
+
+    if drop_sellers:
+        lines.extend(["", "🔴 <b>Продавцы с просадкой</b>", ""])
+        for index, seller in enumerate(drop_sellers[:5], start=1):
+            lines.extend(
+                [
+                    f"{index}. {html.escape(str(seller.get('seller_name') or 'Продавец без названия'))}",
+                    f"Потеря выручки: {_seller_3d_money(seller.get('lost_revenue'))}",
+                    f"Потеря заказов: {_format_number(round(to_number(seller.get('lost_orders'))))}",
+                    f"Заказы: {_seller_3d_percent(seller.get('orders_dynamic'))}",
+                    f"Выручка: {_seller_3d_percent(seller.get('revenue_dynamic'))}",
+                    f"Главная причина: {html.escape(str(seller.get('main_reason') or 'требует проверки'))}",
+                    f"Критичных SKU: {_format_number(round(to_number(seller.get('critical_sku'))))}",
+                    f"Что делать: {html.escape(_seller_3d_action(seller))}",
+                    "",
+                ]
+            )
+
+    if attention_sellers:
+        lines.extend(["🟡 <b>Требуют внимания</b>", ""])
+        for index, seller in enumerate(attention_sellers[:3], start=1):
+            lines.extend(
+                [
+                    f"{index}. {html.escape(str(seller.get('seller_name') or 'Продавец без названия'))}",
+                    f"Заказы: {_seller_3d_percent(seller.get('orders_dynamic'))}",
+                    f"Выручка: {_seller_3d_percent(seller.get('revenue_dynamic'))}",
+                    f"Главная причина: {html.escape(str(seller.get('main_reason') or 'требует проверки'))}",
+                    f"Что делать: {html.escape(_seller_3d_action(seller))}",
+                    "",
+                ]
+            )
+
+    lines.extend(
+        [
+            "🟢 <b>Стабильно</b>",
+            "",
+            f"Продавцов без критичной просадки: {_format_number(stable_count)}",
+        ]
+    )
+
+    if insufficient_count:
+        lines.extend(["", f"Недостаточно данных для сравнения за 3 дня: {_format_number(insufficient_count)}"])
+    if hidden_count:
+        lines.extend(["", "Остальные продавцы доступны в XLSX / Web Dashboard позже."])
+
+    first_drop = drop_sellers[0] if drop_sellers else None
+    if first_drop:
+        conclusion = (
+            "Основная потеря за 3 дня — "
+            f"{first_drop.get('seller_name')}. Смотреть первым."
+        )
+    elif attention_sellers:
+        conclusion = (
+            "Критичной просадки нет, но внимания требует "
+            f"{attention_sellers[0].get('seller_name')}."
+        )
+    else:
+        conclusion = "Критичной просадки продавцов за 3 дня не выявлено."
+
+    lines.extend(["", "Главный вывод:", html.escape(conclusion)])
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def send_seller_3d_analytics(sellers, report_date=None):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        print("Telegram credentials not configured")
+        return False
+
+    message = _build_seller_3d_analytics_message(sellers, report_date=report_date)
+    url = TELEGRAM_API_URL.format(token=token)
+    payload = {
+        "chat_id": chat_id,
+        "text": sanitize_telegram_text(message),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+
+    try:
+        response = _post_telegram_message(url, payload)
+    except requests.RequestException as error:
+        logger.error("Telegram seller 3d analytics request failed: %s", error)
+        print(f"Telegram seller 3d analytics request failed: {error}")
+        return False
+
+    if response.status_code != 200:
+        logger.error(
+            "Telegram seller 3d analytics API error: status=%s text=%s",
+            response.status_code,
+            response.text,
+        )
+        print(
+            "Telegram seller 3d analytics API error: "
+            f"status={response.status_code} text={response.text}"
+        )
+        return False
+
+    try:
+        data = response.json()
+    except ValueError:
+        logger.error("Telegram seller 3d analytics returned invalid JSON: %s", response.text)
+        print("Telegram seller 3d analytics returned invalid JSON")
+        return False
+
+    if not data.get("ok"):
+        logger.error("Telegram seller 3d analytics returned error payload: %s", data)
+        print(f"Telegram seller 3d analytics returned error: {data}")
+        return False
+
+    logger.info("Telegram seller 3d analytics sent successfully")
+    print("Telegram seller 3d analytics sent successfully")
+    return True
 
 def _build_telegram_message(problems, summary_stats=None, root_cause_insights=None):
     records = [
