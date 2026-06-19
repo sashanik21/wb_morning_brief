@@ -613,15 +613,7 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         _set_dashboard_query_params()
         st.rerun()
 
-    seller_options = ["Все продавцы", *[str(row.get("seller_id") or row.get("id")) for row in sellers if row.get("seller_id") or row.get("id")]]
-    if selected_seller not in seller_options:
-        selected_seller = "Все продавцы"
-    selected_seller = st.selectbox(
-        "Продавец",
-        seller_options,
-        index=seller_options.index(selected_seller),
-        format_func=lambda value: sellers_by_id.get(str(value), str(value)),
-    )
+    selected_seller = "Все продавцы"
 
     sku_options = fetch_sku_options(selected_seller)
     if not sku_options:
@@ -659,19 +651,64 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     stocks_df = _stocks_dataframe(stock_rows)
     stock_chart_df = _stock_chart_dataframe(stocks_df)
     change_log_df = _change_log_dataframe(change_log_rows)
-    product_seller_id = product.get("seller_id") or selected_seller
-    seller_name = sellers_by_id.get(str(product_seller_id), product_seller_id)
     seller_article = product.get("vendor_code") or product.get("vendorCode") or product.get("supplier_article") or product.get("supplierArticle") or "—"
     abc = first_present(latest_problem, ["abc", "abc_class", "abcClass", "abc_segment", "abcSegment"]) or first_present(product, ["abc", "abc_class", "abcClass", "abc_segment", "abcSegment"], "—")
 
     st.subheader(product.get("title") or "Без названия")
     st.caption(f"История за период: {start_date.isoformat()} — {end_date.isoformat()}")
-    info_1, info_2, info_3, info_4, info_5 = st.columns(5)
-    info_1.metric("WB артикул", selected_nm_id)
-    info_2.metric("Артикул продавца", seller_article)
-    info_3.metric("Название", product.get("title") or "—")
-    info_4.metric("Продавец", seller_name)
-    info_5.metric("ABC", abc)
+    st.markdown(
+        """
+        <style>
+        .sku-info-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.5rem;
+            margin: 0.35rem 0 0.8rem;
+        }
+        .sku-info-card {
+            border: 1px solid rgba(49, 51, 63, 0.18);
+            border-radius: 0.45rem;
+            padding: 0.45rem 0.6rem;
+            min-height: 3.1rem;
+            background: rgba(250, 250, 250, 0.6);
+        }
+        .sku-info-label {
+            color: rgba(49, 51, 63, 0.65);
+            font-size: 0.68rem;
+            line-height: 1.05;
+            margin-bottom: 0.18rem;
+        }
+        .sku-info-value {
+            color: rgb(49, 51, 63);
+            font-size: 0.92rem;
+            font-weight: 600;
+            line-height: 1.2;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            white-space: normal;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    info_cards = [
+        ("WB артикул", selected_nm_id),
+        ("Артикул продавца", seller_article),
+        ("Название", product.get("title") or "—"),
+        ("ABC", abc),
+    ]
+    st.markdown(
+        '<div class="sku-info-grid">'
+        + "".join(
+            '<div class="sku-info-card">'
+            f'<div class="sku-info-label">{escape(str(label))}</div>'
+            f'<div class="sku-info-value">{escape(str(value))}</div>'
+            "</div>"
+            for label, value in info_cards
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
     overview_tab, sales_tab, ads_tab, stocks_tab, problems_tab, changes_tab = st.tabs(["Обзор", "Продажи и воронка", "Реклама", "Остатки", "Проблемы", "История изменений"])
 
@@ -715,6 +752,19 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         if history_df.empty:
             st.info("История продаж и воронки за выбранный период не найдена.")
         else:
+            st.subheader("Динамика по дням")
+            daily_df = history_df.reset_index().rename(
+                columns={
+                    "Конверсия в заказ, %": "Конверсия",
+                    "Остаток WB": "Остаток",
+                    "Средняя позиция": "Позиция",
+                }
+            )
+            st.dataframe(
+                daily_df[["Дата", "Переходы", "Корзина", "Заказы", "Выручка", "Конверсия", "Остаток", "Позиция"]],
+                width="stretch",
+                hide_index=True,
+            )
             st.subheader("Выручка по дням")
             st.line_chart(history_df[["Выручка"]])
             st.subheader("Заказы по дням")
@@ -729,7 +779,6 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
             st.line_chart(history_df[["Переходы", "Корзина", "Заказы"]])
             st.subheader("Конверсия в корзину и конверсия в заказ")
             st.line_chart(history_df[["Конверсия в корзину, %", "Конверсия в заказ, %"]])
-            st.dataframe(history_df.reset_index(), width="stretch", hide_index=True)
 
     with ads_tab:
         st.subheader("Реклама")
