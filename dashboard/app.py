@@ -18,6 +18,8 @@ from formatters import (
     lost_orders,
     lost_revenue,
     main_reason,
+    matches_reason_filter,
+    REASON_FILTER_OPTIONS,
     prepare_seller_table,
     prepare_sku_table,
 )
@@ -29,14 +31,13 @@ from dashboard_queries import (
     fetch_problems_diagnostics,
     fetch_report_dates,
     fetch_sellers,
-    unique_reasons,
 )
 from supabase_client import get_supabase_client, get_supabase_credentials_info
 
 
-st.set_page_config(page_title="Morning Brief — Executive Dashboard", layout="wide")
-st.title("Executive Dashboard")
-st.caption("Morning Brief: управленческая картина по потерям, продавцам и SKU")
+st.set_page_config(page_title="Morning Brief — Панель управления WB", layout="wide")
+st.title("Панель управления WB")
+st.caption("Ежедневная аналитика Wildberries: потери, продавцы, товары и причины просадок")
 
 try:
     credentials_info = get_supabase_credentials_info()
@@ -97,16 +98,11 @@ unfiltered_problems = fetch_problems(
     seller_id=selected_seller,
     date_field=problem_date_field,
 )
-reason_options = unique_reasons(unfiltered_problems)
 with st.sidebar:
-    selected_reason = st.selectbox("Причина проблемы", reason_options)
+    selected_reason = st.selectbox("Причина проблемы", REASON_FILTER_OPTIONS)
+    show_debug = st.checkbox("Показать debug", value=False)
 
-problems = fetch_problems(
-    report_date=report_date,
-    seller_id=selected_seller,
-    reason=selected_reason,
-    date_field=problem_date_field,
-)
+problems = [row for row in unfiltered_problems if matches_reason_filter(row, selected_reason)]
 problems_diagnostics = fetch_problems_diagnostics(
     report_date=report_date,
     date_field=problem_date_field,
@@ -125,7 +121,7 @@ reason = main_reason(problems)
 
 card_1, card_2, card_3, card_4, card_5 = st.columns(5)
 card_1.metric("Потеря выручки за день", format_money(sum(lost_revenue(row) for row in problems)))
-card_2.metric("Потеря заказов за день", format_number(sum(lost_orders(row) for row in problems)))
+card_2.metric("Потеря заказов за день", format_number(round(sum(lost_orders(row) for row in problems))))
 card_3.metric("Критичные продавцы", format_number(critical_sellers))
 card_4.metric("Критичные SKU", format_number(critical_sku))
 card_5.metric("Главная причина просадок", reason)
@@ -161,25 +157,28 @@ quality_3.metric("SKU без рекламы", format_number(quality["sku_without
 quality_4.metric("SKU без поставок", format_number(quality["sku_without_supplies"]))
 
 
-with st.sidebar:
-    st.divider()
-    st.subheader("Dashboard debug")
-    supabase_status = "OK" if problems_diagnostics["supabase_connected"] else "ERROR"
-    problems_status = "OK" if problems_diagnostics["problems_readable"] else "ERROR"
-    last_error = problems_diagnostics["last_query_error"] or "—"
-    st.caption("Dashboard connection:")
-    st.caption(f"Supabase: {supabase_status}")
-    st.caption(f"problems readable: {problems_status}")
-    st.caption(f"problems total count: {problems_diagnostics['problems_total_count']}")
-    st.caption(f"date field used: {problems_diagnostics['date_field_used']}")
-    st.caption(f"available dates count: {problems_diagnostics['available_dates_count']}")
-    st.caption(f"selected date: {problems_diagnostics['selected_date'] or '—'}")
-    st.caption(f"last error: {last_error}")
-    st.caption(f"Supabase URL: {credentials_info['supabase_url'] or '—'}")
-    st.caption(f"KEY TYPE: {credentials_info['key_type']}")
-    st.caption("Problems table access test")
-    if problems_access_error:
-        st.caption(f"Problems access: {problems_access_status} — {problems_access_error}")
-    else:
-        st.caption(f"Problems access: {problems_access_status}")
-    st.caption(f"credentials source: {credentials_info['credentials_source']}")
+if show_debug:
+    with st.sidebar:
+        st.divider()
+        st.subheader("Dashboard debug")
+        supabase_status = "OK" if problems_diagnostics["supabase_connected"] else "ERROR"
+        problems_status = "OK" if problems_diagnostics["problems_readable"] else "ERROR"
+        last_error = problems_diagnostics["last_query_error"] or "—"
+        st.caption("Dashboard connection:")
+        st.caption(f"Supabase: {supabase_status}")
+        st.caption(f"problems readable: {problems_status}")
+        st.caption(f"problems total count: {problems_diagnostics['problems_total_count']}")
+        st.caption(f"date field used: {problems_diagnostics['date_field_used']}")
+        st.caption(f"available dates count: {problems_diagnostics['available_dates_count']}")
+        st.caption(f"selected date: {problems_diagnostics['selected_date'] or '—'}")
+        if problem_date_field == "report_date":
+            st.caption("report_date берётся из сохранённых problems.")
+        st.caption(f"last error: {last_error}")
+        st.caption(f"Supabase URL: {credentials_info['supabase_url'] or '—'}")
+        st.caption(f"KEY TYPE: {credentials_info['key_type']}")
+        st.caption("Problems table access test")
+        if problems_access_error:
+            st.caption(f"Problems access: {problems_access_status} — {problems_access_error}")
+        else:
+            st.caption(f"Problems access: {problems_access_status}")
+        st.caption(f"credentials source: {credentials_info['credentials_source']}")
