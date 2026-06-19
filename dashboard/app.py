@@ -1,6 +1,7 @@
 """Streamlit Executive Dashboard for Morning Brief."""
 
 import sys
+from datetime import date
 from html import escape
 from pathlib import Path
 
