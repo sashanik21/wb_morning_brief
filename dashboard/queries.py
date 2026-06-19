@@ -113,6 +113,21 @@ def fetch_problems(report_date=None, seller_id=None, reason=None, limit=ROW_LIMI
 
 
 @st.cache_data(ttl=300)
+def fetch_problems_diagnostics(report_date=None, date_field="report_date", available_dates=None, loaded_rows=None):
+    """Return safe debug counters for problems loading."""
+    total_rows = len(fetch_problems(date_field=date_field, limit=ROW_LIMIT))
+    if loaded_rows is None:
+        loaded_rows = len(fetch_problems(report_date=report_date, date_field=date_field, limit=ROW_LIMIT))
+    return {
+        "total_rows_before_date_filter": total_rows,
+        "rows_loaded_after_date_filter": loaded_rows,
+        "date_field_used": date_field,
+        "selected_date": _normalize_date(report_date),
+        "available_dates_count": len(available_dates or []),
+    }
+
+
+@st.cache_data(ttl=300)
 def fetch_data_quality(report_date=None):
     client = get_supabase_client()
     quality = {
