@@ -338,7 +338,7 @@ def _normalize_funnel_row(row):
     }
 
 
-def get_funnel_history(seller_id, nm_id, days):
+def get_funnel_history(seller_id, nm_id, days, before_date=None):
     normalized_seller_id = _to_int(seller_id)
     normalized_nm_id = _to_int(nm_id)
     normalized_days = _to_int(days) or 0
@@ -346,16 +346,19 @@ def get_funnel_history(seller_id, nm_id, days):
     if normalized_seller_id is None or normalized_nm_id is None or normalized_days <= 0:
         return []
 
-    return _execute_read(
+    query = (
         _get_client()
         .table("daily_funnel")
         .select("*")
         .eq("seller_id", normalized_seller_id)
         .eq("nm_id", normalized_nm_id)
         .order("report_date", desc=True)
-        .limit(normalized_days),
-        "daily_funnel",
+        .limit(normalized_days)
     )
+    if before_date not in (None, ""):
+        query = query.lt("report_date", str(before_date)[:10])
+
+    return _execute_read(query, "daily_funnel")
 
 
 def _normalize_problem(problem):

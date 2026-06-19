@@ -214,9 +214,9 @@ def create_tasks(tasks):
         print(task)
 
 
-def get_funnel_history(seller_id, nm_id, days):
+def get_funnel_history(seller_id, nm_id, days, before_date=None):
     print(
-        f"STUB FUNNEL HISTORY: seller_id={seller_id}, nm_id={nm_id}, days={days}, rows=0"
+        f"STUB FUNNEL HISTORY: seller_id={seller_id}, nm_id={nm_id}, days={days}, before_date={before_date}, rows=0"
     )
     return []
 
