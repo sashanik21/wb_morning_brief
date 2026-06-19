@@ -758,7 +758,6 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     start_date, end_date = _period_bounds(period_label)
     previous_start, previous_end = _previous_period_bounds(start_date, end_date)
 
-    product = sku_by_id[selected_nm_id]
     history_rows = _fetch_daily_funnel_rows_by_date(selected_nm_id, selected_seller, start_date, end_date)
     previous_history_rows = _fetch_daily_funnel_rows_by_date(selected_nm_id, selected_seller, previous_start, previous_end)
     problem_rows = fetch_sku_problems(selected_nm_id, selected_seller, start_date, end_date)
@@ -768,7 +767,6 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     change_log_rows = fetch_sku_change_log(selected_nm_id, selected_seller, start_date, end_date)
     current_metrics = _period_metrics(history_rows, ads_rows)
     previous_metrics = _period_metrics(previous_history_rows, previous_ads_rows)
-    latest_problem = _latest_row(problem_rows)
     status, summary_reason, confirmation, lost_rev, lost_ord, actions = _build_sku_summary(current_metrics, previous_metrics, problem_rows, stock_rows)
     reason = summary_reason
     history_df = _history_dataframe(history_rows)
@@ -776,65 +774,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     stocks_df = _stocks_dataframe(stock_rows)
     stock_chart_df = _stock_chart_dataframe(stocks_df)
     change_log_df = _change_log_dataframe(change_log_rows)
-    seller_article = product.get("vendor_code") or product.get("vendorCode") or product.get("supplier_article") or product.get("supplierArticle") or "—"
-    abc = first_present(latest_problem, ["abc", "abc_class", "abcClass", "abc_segment", "abcSegment"]) or first_present(product, ["abc", "abc_class", "abcClass", "abc_segment", "abcSegment"], "—")
-
-    st.subheader(product.get("title") or "Без названия")
     st.caption(f"История за период: {_format_period_range(start_date, end_date)}")
     st.caption(f"Прошлый период: {_format_period_range(previous_start, previous_end)}")
-    st.markdown(
-        """
-        <style>
-        .sku-info-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 0.5rem;
-            margin: 0.35rem 0 0.8rem;
-        }
-        .sku-info-card {
-            border: 1px solid rgba(49, 51, 63, 0.18);
-            border-radius: 0.45rem;
-            padding: 0.45rem 0.6rem;
-            min-height: 3.1rem;
-            background: rgba(250, 250, 250, 0.6);
-        }
-        .sku-info-label {
-            color: rgba(49, 51, 63, 0.65);
-            font-size: 0.68rem;
-            line-height: 1.05;
-            margin-bottom: 0.18rem;
-        }
-        .sku-info-value {
-            color: rgb(49, 51, 63);
-            font-size: 0.92rem;
-            font-weight: 600;
-            line-height: 1.2;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-            white-space: normal;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    info_cards = [
-        ("WB артикул", selected_nm_id),
-        ("Артикул продавца", seller_article),
-        ("Название", product.get("title") or "—"),
-        ("ABC", abc),
-    ]
-    st.markdown(
-        '<div class="sku-info-grid">'
-        + "".join(
-            '<div class="sku-info-card">'
-            f'<div class="sku-info-label">{escape(str(label))}</div>'
-            f'<div class="sku-info-value">{escape(str(value))}</div>'
-            "</div>"
-            for label, value in info_cards
-        )
-        + "</div>",
-        unsafe_allow_html=True,
-    )
 
     overview_tab, sales_tab, ads_tab, stocks_tab, problems_tab, changes_tab = st.tabs(["Обзор", "Продажи и воронка", "Реклама", "Остатки", "Проблемы", "История изменений"])
 
