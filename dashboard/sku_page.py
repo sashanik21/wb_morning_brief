@@ -23,6 +23,8 @@ from formatters import (
     reason_group,
     reason_explanation,
     reason_table_hint,
+    sku_diagnosis,
+    sku_main_reason,
     to_number,
 )
 
@@ -312,6 +314,31 @@ def _format_transition(name, current, previous):
     return f"{name}: {format_number(previous)} → {format_number(current)} ({_metric_delta(current, previous)})"
 
 
+def _problem_priority(row):
+    return (
+        lost_revenue(row),
+        lost_orders(row),
+        to_number(first_present(row, ["businessImpactScore", "business_impact_score"])),
+        to_number(first_present(row, ["severityScore", "severity_score"])),
+        to_number(first_present(row, ["dynamicPercent", "dynamic_percent"])),
+    )
+
+
+def _top_sku_problem_row(problem_rows):
+    if not problem_rows:
+        return {}
+    return max(problem_rows, key=_problem_priority)
+
+
+def _top_sku_loss(problem_rows):
+    top_problem = _top_sku_problem_row(problem_rows)
+    return lost_revenue(top_problem), lost_orders(top_problem)
+
+
+def _has_comparison_base(previous):
+    return any(to_number(previous.get(key)) > 0 for key in ("orders", "revenue", "opens", "carts"))
+
+
 def _build_sku_summary(current, previous, problem_rows, stock_rows):
     orders_delta = _change_percent(current["orders"], previous["orders"])
     revenue_delta = _change_percent(current["revenue"], previous["revenue"])
@@ -338,14 +365,24 @@ def _build_sku_summary(current, previous, problem_rows, stock_rows):
         reason = "реклама"
     else:
         reason = "требует проверки" if status == "товар просел" else "конверсия"
-    lost_rev = max(previous["revenue"] - current["revenue"], 0)
-    lost_ord = max(previous["orders"] - current["orders"], 0)
+    top_lost_rev, top_lost_ord = _top_sku_loss(problem_rows)
+    calculated_lost_rev = max(previous["revenue"] - current["revenue"], 0)
+    calculated_lost_ord = max(previous["orders"] - current["orders"], 0)
+    lost_rev = top_lost_rev if top_lost_rev else calculated_lost_rev
+    lost_ord = top_lost_ord if top_lost_ord else calculated_lost_ord
+    if problem_rows and status == "товар стабилен":
+        status = "sku теряет" if (lost_rev > 0 or lost_ord > 0) else "требует внимания"
+    if problem_rows:
+        reason = sku_main_reason(problem_rows)
     _, stock_status, stock_confirmation = _stock_snapshot(stock_rows)
-    confirmation = [
-        _format_transition("Переходы", current.get("opens"), previous.get("opens")),
-        _format_transition("Корзина", current.get("carts"), previous.get("carts")),
-        _format_transition("Заказы", current.get("orders"), previous.get("orders")),
-    ]
+    if _has_comparison_base(previous):
+        confirmation = [
+            _format_transition("Переходы", current.get("opens"), previous.get("opens")),
+            _format_transition("Корзина", current.get("carts"), previous.get("carts")),
+            _format_transition("Заказы", current.get("orders"), previous.get("orders")),
+        ]
+    else:
+        confirmation = ["Нет базы для сравнения за прошлый период."]
     if ads_incomplete:
         confirmation.append("Реклама требует проверки: данных недостаточно.")
     elif reason == "реклама":
@@ -593,7 +630,14 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
 
     with overview_tab:
         st.subheader("🔴 Диагноз SKU")
-        st.markdown(f"**{status.capitalize()}.**")
+        diagnosis_text = sku_diagnosis(problem_rows) if problem_rows else ""
+        if lost_rev > 0 or lost_ord > 0:
+            st.markdown(f"**🔴 SKU теряет {format_money(lost_rev)}**")
+        else:
+            st.markdown(f"**{status.capitalize()}.**")
+        if diagnosis_text:
+            st.markdown("**Диагноз SKU:**")
+            st.text(diagnosis_text)
         diag_1, diag_2, diag_3 = st.columns(3)
         diag_1.metric("Потеря выручки", format_money(lost_rev))
         diag_2.metric("Потеря заказов", format_number(round(lost_ord)))
@@ -619,8 +663,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     with sales_tab:
         st.subheader("Продажи")
         sales_1, sales_2 = st.columns(2)
-        sales_1.metric("Потеря выручки", format_money(sum(lost_revenue(row) for row in problem_rows)))
-        sales_2.metric("Потеря заказов", format_number(round(sum(lost_orders(row) for row in problem_rows))))
+        sales_1.metric("Потеря выручки", format_money(lost_rev))
+        sales_2.metric("Потеря заказов", format_number(round(lost_ord)))
         if history_df.empty:
             st.info("История продаж и воронки за выбранный период не найдена.")
         else:
