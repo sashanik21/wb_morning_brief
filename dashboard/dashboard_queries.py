@@ -11,7 +11,7 @@ if str(CURRENT_DIR) not in sys.path:
 import pandas as pd
 import streamlit as st
 
-from supabase_client import get_supabase_client
+from supabase_client import get_supabase_client, get_supabase_credentials_info
 
 
 ROW_LIMIT = 10000
@@ -23,16 +23,37 @@ def _execute(query):
     return response.data or []
 
 
+def _sanitize_error(error):
+    text = str(error or "").replace("\n", " ").strip()
+    if not text:
+        return ""
+    for marker in ("eyJ", "sb_secret_", "sb_publishable_"):
+        if marker in text:
+            text = text.split(marker, 1)[0] + "[redacted]"
+    return text[:300]
+
+
 def _try_execute(query):
     try:
-        return _execute(query), True
-    except Exception:
-        return [], False
+        return _execute(query), True, ""
+    except Exception as error:
+        return [], False, _sanitize_error(error)
 
 
 def _safe_execute(query):
-    rows, _ = _try_execute(query)
+    rows, _, _ = _try_execute(query)
     return rows
+
+
+def _count_table_rows(client, table_name):
+    try:
+        response = client.table(table_name).select("*", count="exact", head=True).execute()
+        return response.count or 0, True, ""
+    except Exception as error:
+        rows, succeeded, row_error = _try_execute(client.table(table_name).select("*").limit(1))
+        if succeeded:
+            return len(rows), True, ""
+        return 0, False, _sanitize_error(error) or row_error
 
 
 def _normalize_date(value):
@@ -68,7 +89,7 @@ def _execute_with_optional_report_date(query_factory, report_date=None):
     if not report_date:
         return _safe_execute(query_factory())
 
-    rows, succeeded = _try_execute(query_factory().eq("report_date", str(report_date)))
+    rows, succeeded, _ = _try_execute(query_factory().eq("report_date", str(report_date)))
     if succeeded:
         return rows
     return _safe_execute(query_factory())
@@ -91,7 +112,7 @@ def fetch_sellers():
 def fetch_report_dates():
     client = get_supabase_client()
     for field in PROBLEM_DATE_FIELDS:
-        rows, succeeded = _try_execute(
+        rows, succeeded, _ = _try_execute(
             client.table("problems")
             .select(field)
             .order(field, desc=True)
@@ -102,7 +123,7 @@ def fetch_report_dates():
         dates = sorted({_normalize_date(row.get(field)) for row in rows if _normalize_date(row.get(field))}, reverse=True)
         if dates:
             return dates, field
-    return [date.today().isoformat()], "report_date"
+    return [], "report_date"
 
 
 @st.cache_data(ttl=300)
@@ -119,17 +140,66 @@ def fetch_problems(report_date=None, seller_id=None, reason=None, limit=ROW_LIMI
 
 
 @st.cache_data(ttl=300)
+def check_dashboard_connection():
+    """Check dashboard Supabase access and return safe diagnostics."""
+    credentials = get_supabase_credentials_info()
+    diagnostics = {
+        "supabase_connected": False,
+        "sellers_readable": False,
+        "problems_readable": False,
+        "api_coverage_daily_readable": False,
+        "api_coverage_daily_available": False,
+        "problems_total_count": 0,
+        "last_query_error": "",
+        "credentials_source": credentials["credentials_source"],
+        "key_type": credentials["key_type"],
+    }
+
+    if not credentials["url_configured"] or not credentials["key_configured"]:
+        diagnostics["last_query_error"] = "Supabase credentials are not configured"
+        return diagnostics
+
+    try:
+        client = get_supabase_client()
+        diagnostics["supabase_connected"] = True
+    except Exception as error:
+        diagnostics["last_query_error"] = _sanitize_error(error)
+        return diagnostics
+
+    checks = (
+        ("sellers", "sellers_readable"),
+        ("problems", "problems_readable"),
+        ("api_coverage_daily", "api_coverage_daily_readable"),
+    )
+    for table_name, key in checks:
+        _, succeeded, error = _try_execute(client.table(table_name).select("*").limit(1))
+        diagnostics[key] = succeeded
+        if table_name == "api_coverage_daily":
+            diagnostics["api_coverage_daily_available"] = succeeded
+        if error:
+            diagnostics["last_query_error"] = error
+
+    count, count_succeeded, count_error = _count_table_rows(client, "problems")
+    diagnostics["problems_total_count"] = count
+    diagnostics["problems_readable"] = diagnostics["problems_readable"] and count_succeeded
+    if count_error:
+        diagnostics["last_query_error"] = count_error
+    return diagnostics
+
+
+@st.cache_data(ttl=300)
 def fetch_problems_diagnostics(report_date=None, date_field="report_date", available_dates=None, loaded_rows=None):
     """Return safe debug counters for problems loading."""
-    total_rows = len(fetch_problems(date_field=date_field, limit=ROW_LIMIT))
+    connection = check_dashboard_connection()
     if loaded_rows is None:
         loaded_rows = len(fetch_problems(report_date=report_date, date_field=date_field, limit=ROW_LIMIT))
     return {
-        "total_rows_before_date_filter": total_rows,
+        "total_rows_before_date_filter": connection["problems_total_count"],
         "rows_loaded_after_date_filter": loaded_rows,
         "date_field_used": date_field,
         "selected_date": _normalize_date(report_date),
         "available_dates_count": len(available_dates or []),
+        **connection,
     }
 
 
