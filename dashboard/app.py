@@ -2,7 +2,6 @@
 
 import sys
 from pathlib import Path
-from urllib.parse import quote
 
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
@@ -10,6 +9,8 @@ PROJECT_ROOT = CURRENT_DIR.parent
 for path in (str(CURRENT_DIR), str(PROJECT_ROOT)):
     if path not in sys.path:
         sys.path.insert(0, path)
+
+from urllib.parse import quote
 
 import streamlit as st
 
