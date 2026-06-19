@@ -117,7 +117,7 @@ def _normalize_reason(value):
     return str(value or "").strip().lower()
 
 
-REASON_PRIORITY = ("stocks", "ads", "conversion", "price", "unknown")
+REASON_PRIORITY = ("stocks", "ads", "conversion", "orders", "revenue", "price", "unknown")
 
 
 def reason_group(row):
