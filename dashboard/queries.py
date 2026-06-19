@@ -3,6 +3,7 @@
 from datetime import date
 
 import pandas as pd
+import streamlit as st
 
 from supabase_client import get_supabase_client
 
@@ -37,6 +38,7 @@ def _execute_with_optional_report_date(query_factory, report_date=None):
     return _safe_execute(query_factory())
 
 
+@st.cache_data(ttl=300)
 def fetch_sellers():
     client = get_supabase_client()
     rows = _safe_execute(client.table("sellers").select("*").limit(ROW_LIMIT))
@@ -49,6 +51,7 @@ def fetch_sellers():
     return rows, sellers_by_id
 
 
+@st.cache_data(ttl=300)
 def fetch_report_dates():
     client = get_supabase_client()
     rows = _safe_execute(
@@ -61,19 +64,21 @@ def fetch_report_dates():
     return dates or [date.today().isoformat()]
 
 
-def fetch_problems(report_date=None, seller_id=None, reason=None):
+@st.cache_data(ttl=300)
+def fetch_problems(report_date=None, seller_id=None, reason=None, limit=ROW_LIMIT):
     client = get_supabase_client()
-    query = client.table("problems").select("*").limit(ROW_LIMIT)
+    query = client.table("problems").select("*")
     if report_date:
         query = query.eq("report_date", str(report_date))
     if seller_id and seller_id != "Все продавцы":
         query = query.eq("seller_id", seller_id)
-    rows = _safe_execute(query)
+    rows = _safe_execute(query.limit(limit))
     if reason and reason != "Все причины":
         rows = [row for row in rows if reason in {row.get("root_cause"), row.get("problem_label"), row.get("problem_type"), row.get("decline_source"), row.get("metric")}]
     return rows
 
 
+@st.cache_data(ttl=300)
 def fetch_data_quality(report_date=None):
     client = get_supabase_client()
     quality = {

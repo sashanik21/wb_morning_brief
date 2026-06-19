@@ -45,6 +45,7 @@ with st.sidebar:
         format_func=lambda value: seller_labels.get(value, value),
     )
 
+date_problems = fetch_problems(report_date=report_date, limit=1)
 unfiltered_problems = fetch_problems(report_date=report_date, seller_id=selected_seller)
 reason_options = unique_reasons(unfiltered_problems)
 with st.sidebar:
@@ -76,16 +77,18 @@ if problems:
         f"Начните с продавца {top_seller}, SKU {top_problem.get('nm_id') or top_problem.get('nmId')}: "
         f"потеря {format_money(lost_revenue(top_problem))}, причина — {main_reason([top_problem])}."
     )
+elif not date_problems:
+    st.warning("По выбранной дате данные не найдены. Выберите другую дату отчёта.")
 else:
     st.success("По выбранным фильтрам критичных проблем не найдено.")
 
 st.subheader("Продавцы")
 seller_table = dataframe_for_display(prepare_seller_table(problems, sellers_by_id))
-st.dataframe(seller_table, use_container_width=True, hide_index=True)
+st.dataframe(seller_table, width="stretch", hide_index=True)
 
 st.subheader("TOP SKU")
 sku_table = dataframe_for_display(prepare_sku_table(problems, sellers_by_id).head(100))
-st.dataframe(sku_table, use_container_width=True, hide_index=True)
+st.dataframe(sku_table, width="stretch", hide_index=True)
 
 st.subheader("Качество данных")
 quality_1, quality_2, quality_3, quality_4 = st.columns(4)
