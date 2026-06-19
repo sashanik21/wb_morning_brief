@@ -2,6 +2,7 @@
 
 import sys
 from datetime import date
+from html import escape
 from pathlib import Path
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -41,6 +42,42 @@ from wb_dashboard_queries import (
 )
 from supabase_client import get_supabase_client, get_supabase_credentials_info
 from sku_page import render_sku_page
+
+
+def tooltip_text(text):
+    return escape(str(text), quote=True).replace("\n", "&#10;")
+
+
+def help_icon(help_text):
+    return f'<span title="{tooltip_text(help_text)}">ⓘ</span>'
+
+
+def main_reason_help(reason):
+    return (
+        f"{reason.capitalize()} определена как главная причина, потому что суммарная потеря "
+        "по SKU с этой причиной составила наибольшую долю потерь за выбранный период.\n\n"
+        "Используются данные:\n"
+        "- problems\n"
+        "- daily_ads_metrics, если причина связана с рекламой\n"
+        "- данные продаж, воронки и остатков, если причина связана с ними"
+    )
+
+
+def reason_loss_help(reason_summary):
+    loss_value = (
+        format_money(reason_summary["lost_revenue"])
+        if reason_summary["metric_key"] == "lost_revenue"
+        else f"{format_number(round(reason_summary['lost_orders']))} заказов"
+    )
+    return (
+        f"{reason_summary['reason'].capitalize()} — {loss_value} "
+        f"({format_number(round(reason_summary['share']))}%).\n\n"
+        "Расчёт:\n"
+        f"сумма потерь по всем SKU, где основной причиной определена {reason_summary['reason']}.\n\n"
+        f"{format_number(round(reason_summary['share']))}% означает долю этой причины "
+        "от общей суммы потерь.\n\n"
+        f"Количество SKU: {format_number(reason_summary['sku_count'])}"
+    )
 
 
 def has_seller_id(row):
@@ -286,7 +323,7 @@ card_1.metric("Потеря выручки за день", format_money(total_da
 card_2.metric("Потеря заказов за день", format_number(round(total_day_lost_orders)))
 card_3.metric("Критичные продавцы", format_number(critical_sellers))
 card_4.metric("Критичные SKU", format_number(critical_sku))
-card_5.metric("Главная причина просадок", reason, help=reason_explanation(reason))
+card_5.metric("Главная причина просадок", reason, help=main_reason_help(reason))
 if top_reason:
     st.caption(
         f"Причина: {reason} · {reason_loss_label}: {reason_loss_value} · "
@@ -301,14 +338,19 @@ if top_reason:
             if reason_summary["metric_key"] == "lost_revenue"
             else f"{format_number(round(reason_summary['lost_orders']))} заказов"
         )
-        st.caption(
+        st.markdown(
             f"{reason_summary['reason'].capitalize()} — "
-            f"{loss_value} ({format_number(round(reason_summary['share']))}%)"
+            f"{loss_value} ({format_number(round(reason_summary['share']))}%) "
+            f"{help_icon(reason_loss_help(reason_summary))}",
+            unsafe_allow_html=True,
         )
 else:
     st.caption(f"Что означает главная причина: {reason_explanation(reason)}")
 
-st.subheader("Что смотреть первым")
+st.subheader(
+    "Что смотреть первым",
+    help="SKU выбран автоматически по максимальной потере выручки среди проблемных товаров.",
+)
 if problems:
     top_problem = max(problems, key=lost_revenue)
     top_seller = sellers_by_id.get(str(top_problem.get("seller_id")), top_problem.get("seller_id") or "Без seller_id")

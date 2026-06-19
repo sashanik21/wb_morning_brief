@@ -1,6 +1,7 @@
 """SKU card page for the Streamlit dashboard."""
 
 from datetime import date, timedelta
+from html import escape
 
 import pandas as pd
 import streamlit as st
@@ -27,6 +28,52 @@ from formatters import (
     sku_main_reason,
     to_number,
 )
+
+
+def tooltip_text(text):
+    return escape(str(text), quote=True).replace("\n", "&#10;")
+
+
+def help_icon(help_text):
+    return f'<span title="{tooltip_text(help_text)}">ⓘ</span>'
+
+
+SKU_DIAGNOSIS_HELP = (
+    "Проценты в диагнозе — это не реальные проценты потерь.\n"
+    "Это рейтинг вероятности причин.\n\n"
+    "Вес рассчитывается на основании проблем SKU, данных воронки, "
+    "данных рекламы и данных остатков.\n\n"
+    "Чем выше вес, тем выше вероятность влияния причины на просадку."
+)
+
+AMBIGUOUS_REASON_HELP = (
+    "Несколько причин имеют близкий вес.\n"
+    "Система не может уверенно выделить одну основную причину.\n"
+    "Требуется дополнительная проверка."
+)
+
+LOST_REVENUE_HELP = (
+    "Показывает, сколько выручки SKU мог недополучить за выбранный период. "
+    "Рассчитывается по сохранённым проблемам SKU и данным продаж."
+)
+
+LOST_ORDERS_HELP = (
+    "Показывает, сколько заказов SKU мог недополучить за выбранный период. "
+    "Рассчитывается по сохранённым проблемам SKU и данным заказов."
+)
+
+MAIN_REASON_HELP = (
+    "Показывает наиболее вероятную причину просадки этого SKU. "
+    "Вывод сделан по проблемам SKU, данным продаж, воронки, рекламы и остатков."
+)
+
+
+def render_diagnosis_help(diagnosis_text):
+    for line in diagnosis_text.splitlines():
+        if line == "Причина не определена однозначно":
+            st.markdown(f"{line} {help_icon(AMBIGUOUS_REASON_HELP)}", unsafe_allow_html=True)
+        elif line.strip():
+            st.markdown(f"{line} {help_icon(SKU_DIAGNOSIS_HELP)}", unsafe_allow_html=True)
 
 
 PERIOD_OPTIONS = {
@@ -636,12 +683,12 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         else:
             st.markdown(f"**{status.capitalize()}.**")
         if diagnosis_text:
-            st.markdown("**Диагноз SKU:**")
-            st.text(diagnosis_text)
+            st.markdown(f"**Диагноз SKU:** {help_icon(SKU_DIAGNOSIS_HELP)}", unsafe_allow_html=True)
+            render_diagnosis_help(diagnosis_text)
         diag_1, diag_2, diag_3 = st.columns(3)
-        diag_1.metric("Потеря выручки", format_money(lost_rev))
-        diag_2.metric("Потеря заказов", format_number(round(lost_ord)))
-        diag_3.metric("Главная причина", summary_reason)
+        diag_1.metric("Потеря выручки", format_money(lost_rev), help=LOST_REVENUE_HELP)
+        diag_2.metric("Потеря заказов", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
+        diag_3.metric("Главная причина", summary_reason, help=MAIN_REASON_HELP)
         st.markdown("**Подтверждение:**")
         for item in confirmation:
             st.write(f"- {item}")
@@ -663,8 +710,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     with sales_tab:
         st.subheader("Продажи")
         sales_1, sales_2 = st.columns(2)
-        sales_1.metric("Потеря выручки", format_money(lost_rev))
-        sales_2.metric("Потеря заказов", format_number(round(lost_ord)))
+        sales_1.metric("Потеря выручки", format_money(lost_rev), help=LOST_REVENUE_HELP)
+        sales_2.metric("Потеря заказов", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
         if history_df.empty:
             st.info("История продаж и воронки за выбранный период не найдена.")
         else:
@@ -721,8 +768,9 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         else:
             st.dataframe(summary_df.reset_index(drop=True), width="stretch", hide_index=True)
         st.markdown(
-            f"**Главная причина:** {reason}  \n"
-            f"**Описание причины:** {_problem_description(problem_rows, reason)}"
+            f"**Главная причина:** {reason} {help_icon(MAIN_REASON_HELP)}  \n"
+            f"**Описание причины:** {_problem_description(problem_rows, reason)}",
+            unsafe_allow_html=True,
         )
         with st.expander("Показать технические строки problems", expanded=False):
             problems_df = _problem_table(problem_rows)
