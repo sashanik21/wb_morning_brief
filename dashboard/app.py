@@ -27,7 +27,7 @@ from formatters import (
     prepare_seller_table,
     prepare_sku_table,
 )
-from dashboard_queries import (
+from wb_dashboard_queries import (
     check_dashboard_connection,
     dataframe_for_display,
     fetch_data_quality,
