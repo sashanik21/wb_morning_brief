@@ -22,6 +22,7 @@ from formatters import (
     prepare_sku_table,
 )
 from dashboard_queries import (
+    check_dashboard_connection,
     dataframe_for_display,
     fetch_data_quality,
     fetch_problems,
@@ -37,6 +38,7 @@ st.title("Executive Dashboard")
 st.caption("Morning Brief: управленческая картина по потерям, продавцам и SKU")
 
 try:
+    connection_diagnostics = check_dashboard_connection()
     sellers, sellers_by_id = fetch_sellers()
     report_dates, problem_date_field = fetch_report_dates()
 except Exception as error:
@@ -45,7 +47,11 @@ except Exception as error:
 
 with st.sidebar:
     st.header("Фильтры")
-    report_date = st.selectbox("Дата отчёта", report_dates, index=0)
+    if report_dates:
+        report_date = st.selectbox("Дата отчёта", report_dates, index=0)
+    else:
+        report_date = None
+        st.warning("Даты отчётов не найдены в problems.")
 
     seller_options = ["Все продавцы", *[str(row.get("seller_id") or row.get("id")) for row in sellers if row.get("seller_id") or row.get("id")]]
     seller_labels = {"Все продавцы": "Все продавцы"}
@@ -56,12 +62,14 @@ with st.sidebar:
         format_func=lambda value: seller_labels.get(value, value),
     )
 
-date_problems = fetch_problems(
-    report_date=report_date,
-    limit=1,
-    date_field=problem_date_field,
-)
-if not date_problems and report_dates:
+date_problems = []
+if report_date:
+    date_problems = fetch_problems(
+        report_date=report_date,
+        limit=1,
+        date_field=problem_date_field,
+    )
+if report_date and not date_problems and report_dates:
     for fallback_report_date in report_dates:
         fallback_problems = fetch_problems(
             report_date=fallback_report_date,
@@ -96,6 +104,11 @@ problems_diagnostics = fetch_problems_diagnostics(
 )
 quality = fetch_data_quality(report_date=report_date)
 
+if not connection_diagnostics["problems_readable"] or (
+    connection_diagnostics["problems_total_count"] == 0 and not date_problems
+):
+    st.warning("Dashboard не видит данные problems. Проверьте Supabase key и RLS policies.")
+
 critical_sellers = len({row.get("seller_id") for row in problems if row.get("seller_id")})
 critical_sku = len({row.get("nm_id") or row.get("nmId") for row in problems if row.get("nm_id") or row.get("nmId")})
 reason = main_reason(problems)
@@ -115,6 +128,8 @@ if problems:
         f"Начните с продавца {top_seller}, SKU {top_problem.get('nm_id') or top_problem.get('nmId')}: "
         f"потеря {format_money(lost_revenue(top_problem))}, причина — {main_reason([top_problem])}."
     )
+elif not report_dates:
+    st.warning("Даты отчётов не найдены в problems.")
 elif not date_problems:
     st.warning("По выбранной дате данные не найдены. Доступные даты в problems не содержат строк для выбранного фильтра даты.")
 else:
@@ -139,8 +154,16 @@ quality_4.metric("SKU без поставок", format_number(quality["sku_witho
 with st.sidebar:
     st.divider()
     st.subheader("Dashboard debug")
-    st.caption(f"problems total rows found before date filter: {problems_diagnostics['total_rows_before_date_filter']}")
-    st.caption(f"problems rows loaded after date filter: {problems_diagnostics['rows_loaded_after_date_filter']}")
+    supabase_status = "OK" if problems_diagnostics["supabase_connected"] else "ERROR"
+    problems_status = "OK" if problems_diagnostics["problems_readable"] else "ERROR"
+    last_error = problems_diagnostics["last_query_error"] or "—"
+    st.caption("Dashboard connection:")
+    st.caption(f"Supabase: {supabase_status}")
+    st.caption(f"problems readable: {problems_status}")
+    st.caption(f"problems total count: {problems_diagnostics['problems_total_count']}")
     st.caption(f"date field used: {problems_diagnostics['date_field_used']}")
-    st.caption(f"selected date: {problems_diagnostics['selected_date']}")
     st.caption(f"available dates count: {problems_diagnostics['available_dates_count']}")
+    st.caption(f"selected date: {problems_diagnostics['selected_date'] or '—'}")
+    st.caption(f"last error: {last_error}")
+    st.caption(f"credentials source: {problems_diagnostics['credentials_source']}")
+    st.caption(f"key type: {problems_diagnostics['key_type']}")
