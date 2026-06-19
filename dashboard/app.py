@@ -80,19 +80,6 @@ if report_date:
         limit=1,
         date_field=problem_date_field,
     )
-if report_date and not date_problems and report_dates:
-    for fallback_report_date in report_dates:
-        fallback_problems = fetch_problems(
-            report_date=fallback_report_date,
-            limit=1,
-            date_field=problem_date_field,
-        )
-        if fallback_problems:
-            st.warning("По выбранной дате данных нет, показаны последние доступные данные")
-            report_date = fallback_report_date
-            date_problems = fallback_problems
-            break
-
 unfiltered_problems = fetch_problems(
     report_date=report_date,
     seller_id=selected_seller,
@@ -137,7 +124,7 @@ if problems:
 elif not report_dates:
     st.warning("Даты отчётов не найдены в problems.")
 elif not date_problems:
-    st.warning("По выбранной дате данные не найдены. Доступные даты в problems не содержат строк для выбранного фильтра даты.")
+    st.warning("По выбранной дате данные не найдены.")
 else:
     st.success("По выбранным фильтрам критичных проблем не найдено.")
 
@@ -170,6 +157,7 @@ if show_debug:
         st.caption(f"problems total count: {problems_diagnostics['problems_total_count']}")
         st.caption(f"date field used: {problems_diagnostics['date_field_used']}")
         st.caption(f"available dates count: {problems_diagnostics['available_dates_count']}")
+        st.caption(f"available dates list: {problems_diagnostics['available_dates_sample']}")
         st.caption(f"selected date: {problems_diagnostics['selected_date'] or '—'}")
         if problem_date_field == "report_date":
             st.caption("report_date берётся из сохранённых problems.")

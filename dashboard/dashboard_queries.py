@@ -15,7 +15,8 @@ from supabase_client import get_supabase_client, get_supabase_credentials_info
 
 
 ROW_LIMIT = 10000
-PROBLEM_DATE_FIELDS = ("report_date", "date", "created_at", "selected_date", "period_date")
+REPORT_DATES_PAGE_SIZE = 1000
+REPORT_DATE_WITH_CREATED_AT_FALLBACK = "report_date,created_at"
 
 
 def _execute(query):
@@ -82,7 +83,13 @@ def _apply_problem_date_filter(query, report_date=None, date_field=None):
         return query
     if date_field == "created_at":
         return query.gte(date_field, report_day).lt(date_field, _next_date(report_day))
+    if date_field == REPORT_DATE_WITH_CREATED_AT_FALLBACK:
+        return query.eq("report_date", report_day)
     return query.eq(date_field, report_day)
+
+
+def _row_matches_report_day(row, report_day):
+    return (_normalize_date(row.get("report_date")) or _normalize_date(row.get("created_at"))) == report_day
 
 
 def _execute_with_optional_report_date(query_factory, report_date=None):
@@ -111,29 +118,76 @@ def fetch_sellers():
 @st.cache_data(ttl=300)
 def fetch_report_dates():
     client = get_supabase_client()
-    for field in PROBLEM_DATE_FIELDS:
+    dates = set()
+    offset = 0
+
+    while True:
         rows, succeeded, _ = _try_execute(
             client.table("problems")
-            .select(field)
-            .order(field, desc=True)
-            .limit(ROW_LIMIT)
+            .select(REPORT_DATE_WITH_CREATED_AT_FALLBACK)
+            .order("report_date", desc=True)
+            .order("created_at", desc=True)
+            .range(offset, offset + REPORT_DATES_PAGE_SIZE - 1)
         )
         if not succeeded:
-            continue
-        dates = sorted({_normalize_date(row.get(field)) for row in rows if _normalize_date(row.get(field))}, reverse=True)
-        if dates:
-            return dates, field
-    return [], "report_date"
+            break
+
+        for row in rows:
+            report_day = _normalize_date(row.get("report_date")) or _normalize_date(row.get("created_at"))
+            if report_day:
+                dates.add(report_day)
+
+        if len(rows) < REPORT_DATES_PAGE_SIZE:
+            return sorted(dates, reverse=True), REPORT_DATE_WITH_CREATED_AT_FALLBACK
+        offset += REPORT_DATES_PAGE_SIZE
+
+    dates = set()
+    offset = 0
+    while True:
+        rows, succeeded, _ = _try_execute(
+            client.table("problems")
+            .select("created_at")
+            .range(offset, offset + REPORT_DATES_PAGE_SIZE - 1)
+        )
+        if not succeeded:
+            return [], "report_date"
+
+        for row in rows:
+            report_day = _normalize_date(row.get("created_at"))
+            if report_day:
+                dates.add(report_day)
+
+        if len(rows) < REPORT_DATES_PAGE_SIZE:
+            return sorted(dates, reverse=True), "created_at"
+        offset += REPORT_DATES_PAGE_SIZE
 
 
 @st.cache_data(ttl=300)
 def fetch_problems(report_date=None, seller_id=None, reason=None, limit=ROW_LIMIT, date_field="report_date"):
     client = get_supabase_client()
+    report_day = _normalize_date(report_date)
     query = client.table("problems").select("*")
-    query = _apply_problem_date_filter(query, report_date=report_date, date_field=date_field)
+    query = _apply_problem_date_filter(query, report_date=report_day, date_field=date_field)
     if seller_id and seller_id != "Все продавцы":
         query = query.eq("seller_id", seller_id)
     rows = _safe_execute(query.limit(limit))
+
+    if report_day and date_field == REPORT_DATE_WITH_CREATED_AT_FALLBACK:
+        created_at_query = (
+            client.table("problems")
+            .select("*")
+            .gte("created_at", report_day)
+            .lt("created_at", _next_date(report_day))
+        )
+        if seller_id and seller_id != "Все продавцы":
+            created_at_query = created_at_query.eq("seller_id", seller_id)
+        rows_by_key = {}
+        for row in [*rows, *_safe_execute(created_at_query.limit(limit))]:
+            if _row_matches_report_day(row, report_day):
+                key = row.get("id") or repr(sorted(row.items()))
+                rows_by_key[key] = row
+        rows = list(rows_by_key.values())[:limit]
+
     if reason and reason != "Все причины":
         rows = [row for row in rows if reason in {row.get("root_cause"), row.get("problem_label"), row.get("problem_type"), row.get("decline_source"), row.get("metric")}]
     return rows
@@ -199,6 +253,7 @@ def fetch_problems_diagnostics(report_date=None, date_field="report_date", avail
         "date_field_used": date_field,
         "selected_date": _normalize_date(report_date),
         "available_dates_count": len(available_dates or []),
+        "available_dates_sample": (available_dates or [])[:10],
         **connection,
     }
 
