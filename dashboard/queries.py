@@ -4,7 +4,7 @@ from datetime import date
 
 import pandas as pd
 
-from dashboard.supabase_client import get_supabase_client
+from supabase_client import get_supabase_client
 
 
 ROW_LIMIT = 10000
