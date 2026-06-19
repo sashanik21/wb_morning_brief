@@ -18,6 +18,7 @@ from app.analyzers.stock_states import (
 )
 from app.collectors.cards import get_cards_list
 from app.config import ABC_RULES, HEADERS
+from app.core.date_engine import get_current_period, get_previous_period, to_business_date
 from app.constants.problem_labels import get_problem_label
 from app.seller_config import SELLER_NAME
 from app.storage.stub_storage import get_change_log, get_products
@@ -188,11 +189,12 @@ def _format_period(start_date, end_date):
 
 def _build_sales_funnel_payload(nm_ids):
     selected_day = datetime.now().date() - timedelta(days=1)
-    past_day = selected_day - timedelta(days=1)
+    current_start, current_end = get_current_period(selected_day, selected_day)
+    previous_start, previous_end = get_previous_period(current_start, current_end)
 
     return {
-        "selectedPeriod": _format_period(selected_day, selected_day),
-        "pastPeriod": _format_period(past_day, past_day),
+        "selectedPeriod": _format_period(current_start, current_end),
+        "pastPeriod": _format_period(previous_start, previous_end),
         "nmIds": nm_ids[:MAX_FUNNEL_NM_IDS],
         "skipDeletedNm": False,
         "limit": min(len(nm_ids), MAX_FUNNEL_NM_IDS),
@@ -1593,10 +1595,10 @@ def flatten_sales_funnel_data(funnel_data):
             ],
             default=selected_period_start,
         )
-        report_date = selected_period_start
+        report_date = to_business_date({"created_at": selected_period_start})
 
         if selected_period_end and selected_period_end != selected_period_start:
-            report_date = f"{selected_period_start} — {selected_period_end}"
+            report_date = to_business_date({"created_at": selected_period_end}) or report_date
 
         rows.append(
             {

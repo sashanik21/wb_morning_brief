@@ -7,6 +7,7 @@ from pathlib import Path
 import requests
 
 import app.config as wb_config
+from app.core.date_engine import get_current_period, get_previous_period, to_business_date
 
 ADS_PROMOTION_COUNT_URL = "https://advert-api.wildberries.ru/adv/v1/promotion/count"
 ADS_FULLSTATS_URL = "https://advert-api.wildberries.ru/adv/v3/fullstats"
@@ -807,7 +808,7 @@ def _merge_previous_period(current_rows, previous_rows):
             "spend",
             "drr",
         ):
-            row[f"previous{metric[0].upper()}{metric[1:]}"] = previous.get(metric, 0)
+            row[f"previous{metric[0].upper()}{metric[1:]}"] = previous.get(metric) if previous else None
 
     return current_rows
 
@@ -922,8 +923,10 @@ def _collect_ads_period_batches(token, campaign_ids, begin_date, end_date, repor
 
 
 def _collect_ads_stats_from_api(token, campaign_ids, report_date, seller_id=None):
-    current_date = report_date.strftime("%Y-%m-%d")
-    previous_date = (report_date - timedelta(days=1)).strftime("%Y-%m-%d")
+    current_start, current_end = get_current_period(report_date, report_date)
+    previous_start, previous_end = get_previous_period(current_start, current_end)
+    current_date = current_end.strftime("%Y-%m-%d")
+    previous_date = previous_end.strftime("%Y-%m-%d")
     current_rows = []
     previous_rows = []
 
@@ -987,8 +990,10 @@ def _collect_ads_stats_from_api(token, campaign_ids, report_date, seller_id=None
     _ADS_RATE_LIMIT_STATS["partial_rows_saved"] = len(current_rows)
 
     for row in current_rows:
-        row["date"] = current_date
-        row["selectedPeriod"] = current_date
+        row["business_date"] = to_business_date({"campaign_date": current_date})
+        row["campaign_date"] = row["business_date"]
+        row["date"] = row["business_date"]
+        row["selectedPeriod"] = row["business_date"]
         row["pastPeriod"] = previous_date
 
     return _merge_previous_period(current_rows, previous_rows)
@@ -1162,7 +1167,7 @@ def _extract_ads_bid_history_rows(
             "seller_id": seller_id,
             "seller_name": seller_name or os.getenv("SELLER_NAME"),
             "campaign_id": campaign_id,
-            "report_date": report_date,
+            "report_date": to_business_date({"campaign_date": report_date}),
             "bid_type": raw_json.get("bid_type") or raw_json.get("bidType"),
             "payment_type": settings.get("payment_type")
             or settings.get("paymentType")

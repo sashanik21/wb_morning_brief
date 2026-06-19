@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from app.core.date_engine import to_business_date
+
 
 def _first_present(row, keys, default=None):
     for key in keys:
@@ -148,7 +150,9 @@ def build_stocks_daily_rows(
 
         rows.append(
             {
-                "report_date": report_date,
+                "report_date": to_business_date({"snapshot_date": report_date}),
+                "business_date": to_business_date({"snapshot_date": report_date}),
+                "snapshot_date": to_business_date({"snapshot_date": report_date}),
                 "seller_id": seller_id,
                 "seller_name": (seller or {}).get("name")
                 or (seller or {}).get("seller_name"),

@@ -1,7 +1,6 @@
 """Streamlit Executive Dashboard for Morning Brief."""
 
 import sys
-from datetime import date
 from html import escape
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from urllib.parse import quote
 
 import streamlit as st
 
+from app.core.date_engine import align_time_series, to_business_date
 from formatters import (
     format_money,
     format_number,
@@ -134,6 +134,14 @@ try:
     connection_diagnostics = check_dashboard_connection()
     sellers, sellers_by_id = fetch_sellers()
     report_dates, problem_date_field = fetch_report_dates()
+    report_dates = [
+        row["business_date"]
+        for row in align_time_series(
+            [{problem_date_field: value} for value in report_dates], problem_date_field
+        )
+        if row.get("business_date")
+    ]
+    report_dates = sorted(set(report_dates), reverse=True)
 except Exception as error:
     st.error(f"Не удалось подключиться к Supabase: {error}")
     st.stop()
@@ -179,7 +187,7 @@ st.caption("Ежедневная аналитика Wildberries: потери, �
 with st.sidebar:
     st.header("Фильтры")
     if report_dates:
-        report_date = st.selectbox("Дата отчёта", report_dates, index=0)
+        report_date = to_business_date({problem_date_field: st.selectbox("Дата отчёта", report_dates, index=0)})
     else:
         report_date = None
         st.warning("Даты отчётов не найдены в problems.")
