@@ -676,6 +676,18 @@ def _without_missing_columns(rows, error_message):
     ], missing
 
 
+def _stocks_daily_log_value(rows, key):
+    values = [row.get(key) for row in rows or [] if row.get(key) not in (None, "")]
+    return values[0] if values else None
+
+
+def _stocks_daily_log_nm_ids(rows):
+    nm_ids = [row.get("nm_id") for row in rows or [] if row.get("nm_id") not in (None, "")]
+    if len(nm_ids) <= 20:
+        return nm_ids
+    return f"{nm_ids[:20]}... total={len(nm_ids)}"
+
+
 def save_stocks_daily(rows):
     normalized_rows = _drop_empty_required(
         [_normalize_stocks_daily_row(row) for row in rows or []],
@@ -692,29 +704,42 @@ def save_stocks_daily(rows):
             {key: value for key, value in row.items() if key in columns}
             for row in normalized_rows
         ]
-    print(f"SUPABASE SAVE STOCKS DAILY: {len(normalized_rows)} rows")
+    report_date = _stocks_daily_log_value(normalized_rows, "report_date")
+    seller_id = _stocks_daily_log_value(normalized_rows, "seller_id")
+    print("STOCKS DAILY SAVE:")
+    print(f"rows={len(normalized_rows)}")
+    print(f"seller_id={seller_id}")
+    print(f"nmIds={_stocks_daily_log_nm_ids(normalized_rows)}")
     if not normalized_rows:
+        print("STOCKS HISTORY:")
+        print("saved rows=0")
+        print(f"report_date={report_date}")
         return 0
     success, error_message = _execute_write(
-        _get_client()
-        .table("stocks_daily")
-        .upsert(normalized_rows, on_conflict="report_date,seller_id,nm_id"),
+        _get_client().table("stocks_daily").insert(normalized_rows),
         "stocks_daily",
     )
     if success:
+        print("STOCKS HISTORY:")
+        print(f"saved rows={len(normalized_rows)}")
+        print(f"report_date={report_date}")
         return len(normalized_rows)
     retry_rows, retry_missing = _without_missing_columns(normalized_rows, error_message)
     if retry_missing and retry_rows != normalized_rows:
         print("STOCKS DAILY WARNING:")
         print(f"missing columns skipped: {', '.join(sorted(retry_missing))}")
         success, _ = _execute_write(
-            _get_client()
-            .table("stocks_daily")
-            .upsert(retry_rows, on_conflict="report_date,seller_id,nm_id"),
+            _get_client().table("stocks_daily").insert(retry_rows),
             "stocks_daily",
         )
         if success:
+            print("STOCKS HISTORY:")
+            print(f"saved rows={len(retry_rows)}")
+            print(f"report_date={report_date}")
             return len(retry_rows)
+    print("STOCKS HISTORY:")
+    print("saved rows=0")
+    print(f"report_date={report_date}")
     return 0
 
 
