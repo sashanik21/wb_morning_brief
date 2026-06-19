@@ -1,5 +1,12 @@
 """Streamlit Executive Dashboard for Morning Brief."""
 
+import sys
+from pathlib import Path
+
+CURRENT_DIR = Path(__file__).resolve().parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
+
 import streamlit as st
 
 from formatters import (
@@ -15,6 +22,7 @@ from queries import (
     dataframe_for_display,
     fetch_data_quality,
     fetch_problems,
+    fetch_problems_diagnostics,
     fetch_report_dates,
     fetch_sellers,
     unique_reasons,
@@ -51,16 +59,17 @@ date_problems = fetch_problems(
     date_field=problem_date_field,
 )
 if not date_problems and report_dates:
-    fallback_report_date = report_dates[0]
-    fallback_problems = fetch_problems(
-        report_date=fallback_report_date,
-        limit=1,
-        date_field=problem_date_field,
-    )
-    if fallback_problems:
-        st.warning("По выбранной дате данных нет, показаны последние доступные данные")
-        report_date = fallback_report_date
-        date_problems = fallback_problems
+    for fallback_report_date in report_dates:
+        fallback_problems = fetch_problems(
+            report_date=fallback_report_date,
+            limit=1,
+            date_field=problem_date_field,
+        )
+        if fallback_problems:
+            st.warning("По выбранной дате данных нет, показаны последние доступные данные")
+            report_date = fallback_report_date
+            date_problems = fallback_problems
+            break
 
 unfiltered_problems = fetch_problems(
     report_date=report_date,
@@ -76,6 +85,11 @@ problems = fetch_problems(
     seller_id=selected_seller,
     reason=selected_reason,
     date_field=problem_date_field,
+)
+problems_diagnostics = fetch_problems_diagnostics(
+    report_date=report_date,
+    date_field=problem_date_field,
+    available_dates=report_dates,
 )
 quality = fetch_data_quality(report_date=report_date)
 
@@ -99,7 +113,7 @@ if problems:
         f"потеря {format_money(lost_revenue(top_problem))}, причина — {main_reason([top_problem])}."
     )
 elif not date_problems:
-    st.warning("По выбранной дате данные не найдены. Выберите другую дату отчёта.")
+    st.warning("По выбранной дате данные не найдены. Доступные даты в problems не содержат строк для выбранного фильтра даты.")
 else:
     st.success("По выбранным фильтрам критичных проблем не найдено.")
 
@@ -122,7 +136,8 @@ quality_4.metric("SKU без поставок", format_number(quality["sku_witho
 with st.sidebar:
     st.divider()
     st.subheader("Dashboard debug")
-    st.caption(f"problems rows loaded: {len(problems)}")
-    st.caption(f"date field used: {problem_date_field}")
-    st.caption(f"selected date: {report_date}")
-    st.caption(f"available dates: {len(report_dates)}")
+    st.caption(f"problems total rows found before date filter: {problems_diagnostics['total_rows_before_date_filter']}")
+    st.caption(f"problems rows loaded after date filter: {problems_diagnostics['rows_loaded_after_date_filter']}")
+    st.caption(f"date field used: {problems_diagnostics['date_field_used']}")
+    st.caption(f"selected date: {problems_diagnostics['selected_date']}")
+    st.caption(f"available dates count: {problems_diagnostics['available_dates_count']}")
