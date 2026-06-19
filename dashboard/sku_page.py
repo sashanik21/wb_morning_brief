@@ -13,7 +13,7 @@ from formatters import (
     lost_orders,
     lost_revenue,
     management_reason,
-    main_reason,
+    reason_group,
     reason_explanation,
     reason_table_hint,
     to_number,
@@ -130,7 +130,7 @@ def _ads_dataframe(rows):
         )
     if not records:
         return pd.DataFrame()
-    return pd.DataFrame(records).sort_values("Дата").set_index("Дата")
+    return pd.DataFrame(records).sort_values(["Дата", "Расход"], ascending=[False, False]).set_index("Дата")
 
 
 def _stocks_dataframe(rows):
@@ -252,7 +252,44 @@ def _has_confirmed_oos(rows):
     return False
 
 
-def _build_sku_summary(current, previous, problem_rows):
+def _stock_snapshot(rows):
+    latest = _latest_row(rows)
+    if not latest:
+        return None, "нет данных", "Остатки требуют проверки: история остатков пока не накоплена"
+    quantity = to_number(
+        first_present(
+            latest,
+            [
+                "real_sellable_stock",
+                "realSellableStock",
+                "quantity",
+                "qty",
+                "stock",
+                "stocks",
+                "wb_stocks",
+                "wbStocks",
+            ],
+        )
+    )
+    if quantity <= 0:
+        return quantity, "подтверждённый OOS", "realSellableStock / quantity = 0"
+    return quantity, "есть остаток", f"доступный остаток: {format_number(quantity)}"
+
+
+def _has_confirmed_stock_cause(stock_rows, problem_rows):
+    quantity, stock_status, _ = _stock_snapshot(stock_rows)
+    if stock_status == "подтверждённый OOS":
+        return True
+    if stock_status == "нет данных":
+        return False
+    return _has_confirmed_oos(problem_rows) and quantity == 0
+
+
+def _format_transition(name, current, previous):
+    return f"{name}: {format_number(previous)} → {format_number(current)} ({_metric_delta(current, previous)})"
+
+
+def _build_sku_summary(current, previous, problem_rows, stock_rows):
     orders_delta = _change_percent(current["orders"], previous["orders"])
     revenue_delta = _change_percent(current["revenue"], previous["revenue"])
     status = "товар стабилен"
@@ -270,7 +307,7 @@ def _build_sku_summary(current, previous, problem_rows):
     order_conv_drop = _change_percent(current.get("order_conversion"), previous.get("order_conversion"))
     if not problem_rows and not current["orders"] and not previous["orders"]:
         reason = "требует проверки"
-    elif _has_confirmed_oos(problem_rows):
+    elif _has_confirmed_stock_cause(stock_rows, problem_rows):
         reason = "остатки"
     elif status == "товар просел" and order_conv_drop is not None and order_conv_drop < -5:
         reason = "конверсия"
@@ -280,7 +317,12 @@ def _build_sku_summary(current, previous, problem_rows):
         reason = "требует проверки" if status == "товар просел" else "конверсия"
     lost_rev = max(previous["revenue"] - current["revenue"], 0)
     lost_ord = max(previous["orders"] - current["orders"], 0)
-    confirmation = [f"Заказы: {format_number(current['orders'])} против {format_number(previous['orders'])} ({_metric_delta(current['orders'], previous['orders'])}); выручка: {format_money(current['revenue'])} против {format_money(previous['revenue'])} ({_metric_delta(current['revenue'], previous['revenue'])})."]
+    _, stock_status, stock_confirmation = _stock_snapshot(stock_rows)
+    confirmation = [
+        _format_transition("Переходы", current.get("opens"), previous.get("opens")),
+        _format_transition("Корзина", current.get("carts"), previous.get("carts")),
+        _format_transition("Заказы", current.get("orders"), previous.get("orders")),
+    ]
     if ads_incomplete:
         confirmation.append("Реклама требует проверки: данных недостаточно.")
     elif reason == "реклама":
@@ -288,14 +330,16 @@ def _build_sku_summary(current, previous, problem_rows):
     elif reason == "конверсия":
         confirmation.append(f"Конверсия в заказ изменилась на {_metric_delta(current.get('order_conversion'), previous.get('order_conversion'))}.")
     elif reason == "остатки":
-        confirmation.append("Есть подтверждение OOS или real_sellable_stock = 0.")
+        confirmation.append(stock_confirmation)
     actions = {
         "конверсия": ["Проверить цену, фото, отзывы и карточку против конкурентов.", "Найти дату просадки конверсии и сопоставить с изменениями карточки.", "Запустить точечные улучшения карточки и контролировать конверсию ежедневно."],
         "реклама": ["Проверить кампании с падением CTR или ростом CPC/ДРР.", "Снизить ставки или отключить неэффективные группы.", "Перераспределить бюджет на кампании с заказами и приемлемым ДРР."],
         "остатки": ["Проверить доступный остаток и статус товара на WB.", "Запланировать поставку или перераспределение со складов.", "Не усиливать рекламу до восстановления sellable stock."],
         "требует проверки": ["Проверить полноту данных по воронке, рекламе и остаткам.", "Сопоставить просадку с ценой, конкурентами и изменениями карточки."],
     }[reason]
-    return status, reason, confirmation[:2], lost_rev, lost_ord, actions
+    if stock_status == "нет данных" and reason != "остатки":
+        confirmation.append(stock_confirmation)
+    return status, reason, confirmation[:3], lost_rev, lost_ord, actions
 
 def _problem_table(rows):
     records = []
@@ -370,6 +414,70 @@ def _stock_status(rows):
     return "в наличии"
 
 
+
+def _ads_diagnosis(current, previous):
+    if not current.get("has_ads"):
+        return "🟡 Данных недостаточно", ["для рекламного диагноза нет данных за текущий период."]
+    if not previous.get("has_ads"):
+        return "🟡 Данных недостаточно", ["для сравнения рекламной истории недостаточно."]
+
+    ctr_change = _change_percent(current.get("ctr"), previous.get("ctr"))
+    cpc_change = _change_percent(current.get("cpc"), previous.get("cpc"))
+    drr_change = _change_percent(current.get("drr"), previous.get("drr"))
+    evidence = [
+        f"CTR: {previous.get('ctr') or 0:.1f}% → {current.get('ctr') or 0:.1f}%",
+        f"CPC: {format_money(previous.get('cpc') or 0)} → {format_money(current.get('cpc') or 0)}",
+        f"ДРР: {previous.get('drr') or 0:.1f}% → {current.get('drr') or 0:.1f}%",
+    ]
+    if any(change is not None and change > 5 for change in (cpc_change, drr_change)) or (ctr_change is not None and ctr_change < -5):
+        return "🔴 Реклама ухудшилась", evidence
+    if ctr_change is not None and ctr_change > 5 and drr_change is not None and drr_change < -5:
+        return "🟢 Реклама помогает", evidence
+    return "⚪ Реклама не является основной причиной", evidence
+
+
+def _problem_confirmation(row, reason):
+    if reason == "остатки":
+        value = first_present(row, ["real_sellable_stock", "realSellableStock", "stock_state", "stockState", "problem_type", "problemType"])
+        return f"realSellableStock / остаток: {value}" if value not in (None, "") else "есть stock-сигнал в problems"
+    metric = first_present(row, ["metric", "decline_source", "problem_type", "problemLabel", "problem_label"], "метрика просела")
+    change = first_present(row, ["change_percent", "changePercent", "delta", "decline_percent", "declinePercent"], "")
+    return f"{metric}: {change}" if change not in (None, "") else str(metric)
+
+
+def _problem_summary_table(rows, stock_rows):
+    grouped = {}
+    stock_status = _stock_snapshot(stock_rows)[1]
+    for row in rows:
+        key = reason_group(row)
+        reason = management_reason(row)
+        if key == "stocks" and stock_status != "подтверждённый OOS":
+            reason = "требует проверки"
+        summary = grouped.setdefault(
+            reason,
+            {
+                "Причина": reason,
+                "Потеря выручки": 0,
+                "Потеря заказов": 0,
+                "Количество сигналов": 0,
+                "Главное подтверждение": "",
+                "Действие": reason_table_hint(reason),
+            },
+        )
+        summary["Потеря выручки"] += lost_revenue(row)
+        summary["Потеря заказов"] += lost_orders(row)
+        summary["Количество сигналов"] += 1
+        if not summary["Главное подтверждение"] or lost_revenue(row) > summary.get("_top_loss", -1):
+            summary["Главное подтверждение"] = _problem_confirmation(row, reason)
+            summary["_top_loss"] = lost_revenue(row)
+            summary["Действие"] = first_present(row, ["root_recommendation", "recommendation", "forecast_message"], "") or reason_table_hint(reason)
+    records = []
+    for summary in grouped.values():
+        summary.pop("_top_loss", None)
+        summary["Потеря заказов"] = round(summary["Потеря заказов"])
+        records.append(summary)
+    return pd.DataFrame(records).sort_values(["Потеря выручки", "Потеря заказов"], ascending=[False, False]) if records else pd.DataFrame()
+
 def _problem_description(problem_rows, reason):
     latest_problem = _latest_row(problem_rows)
     if not latest_problem:
@@ -436,8 +544,8 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     current_metrics = _period_metrics(history_rows, ads_rows)
     previous_metrics = _period_metrics(previous_history_rows, previous_ads_rows)
     latest_problem = _latest_row(problem_rows)
-    reason = main_reason(problem_rows) if problem_rows else "требует проверки"
-    status, summary_reason, confirmation, lost_rev, lost_ord, actions = _build_sku_summary(current_metrics, previous_metrics, problem_rows)
+    status, summary_reason, confirmation, lost_rev, lost_ord, actions = _build_sku_summary(current_metrics, previous_metrics, problem_rows, stock_rows)
+    reason = summary_reason
     history_df = _history_dataframe(history_rows)
     ads_df = _ads_dataframe(ads_rows)
     stocks_df = _stocks_dataframe(stock_rows)
@@ -459,17 +567,26 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     overview_tab, sales_tab, ads_tab, stocks_tab, problems_tab = st.tabs(["Обзор", "Продажи и воронка", "Реклама", "Остатки", "Проблемы"])
 
     with overview_tab:
-        st.subheader("Короткий вывод")
-        st.markdown(
-            f"**Динамика:** {status}.  \n"
-            f"**Главная причина:** {summary_reason}.  \n"
-            f"**Потеря выручки:** {format_money(lost_rev)}.  \n"
-            f"**Потеря заказов:** {format_number(round(lost_ord))}.  \n"
-            f"**Что делать:** {actions[0]}"
-        )
+        st.subheader("🔴 Диагноз SKU")
+        st.markdown(f"**{status.capitalize()}.**")
+        diag_1, diag_2, diag_3 = st.columns(3)
+        diag_1.metric("Потеря выручки", format_money(lost_rev))
+        diag_2.metric("Потеря заказов", format_number(round(lost_ord)))
+        diag_3.metric("Главная причина", summary_reason)
+        st.markdown("**Подтверждение:**")
         for item in confirmation:
-            st.caption(item)
+            st.write(f"- {item}")
+        st.markdown("**Что делать:**")
+        for item in actions[:3]:
+            st.write(f"- {item}")
+
+        st.subheader("Сравнение периодов")
         st.dataframe(_comparison_dataframe(current_metrics, previous_metrics), width="stretch", hide_index=True)
+
+        st.subheader("История изменений")
+        st.info("пока не подключена")
+        st.subheader("Конкуренты")
+        st.info("пока не подключены")
 
     with sales_tab:
         st.subheader("Продажи")
@@ -479,14 +596,20 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         if history_df.empty:
             st.info("История продаж и воронки за выбранный период не найдена.")
         else:
-            st.line_chart(history_df[["Заказы", "Выручка"]])
+            st.subheader("Выручка по дням")
+            st.line_chart(history_df[["Выручка"]])
+            st.subheader("Заказы по дням")
+            st.line_chart(history_df[["Заказы"]])
             st.subheader("Воронка")
             funnel_1, funnel_2, funnel_3, funnel_4 = st.columns(4)
             funnel_1.metric("Переходы", format_number(current_metrics["opens"]))
             funnel_2.metric("Корзина", format_number(current_metrics["carts"]))
             funnel_3.metric("Конверсия в корзину", f"{current_metrics['cart_conversion'] or 0:.1f}%")
             funnel_4.metric("Конверсия в заказ", f"{current_metrics['order_conversion'] or 0:.1f}%")
-            st.line_chart(history_df[["Переходы", "Корзина", "Конверсия в корзину, %", "Конверсия в заказ, %"]])
+            st.subheader("Переходы → Корзина → Заказы")
+            st.line_chart(history_df[["Переходы", "Корзина", "Заказы"]])
+            st.subheader("Конверсия в корзину и конверсия в заказ")
+            st.line_chart(history_df[["Конверсия в корзину, %", "Конверсия в заказ, %"]])
             st.dataframe(history_df.reset_index(), width="stretch", hide_index=True)
 
     with ads_tab:
@@ -496,17 +619,22 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         ads_2.metric("CPC", format_money(current_metrics["cpc"] or 0))
         ads_3.metric("ДРР", f"{current_metrics['drr'] or 0:.1f}%")
         ads_4.metric("Количество кампаний", format_number(_campaign_count(ads_rows)))
+        ads_diagnosis, ads_evidence = _ads_diagnosis(current_metrics, previous_metrics)
+        st.markdown(f"**Рекламный диагноз:** {ads_diagnosis}")
+        for item in ads_evidence:
+            st.caption(item)
         if ads_df.empty:
             st.info("История рекламы за выбранный период не найдена.")
         else:
             st.line_chart(ads_df[["Показы", "Клики", "CTR", "CPC", "ДРР", "Расход"]])
-            st.dataframe(ads_df.reset_index(), width="stretch", hide_index=True)
+            st.dataframe(ads_df.reset_index()[["Дата", "Кампания", "Показы", "Клики", "CTR", "CPC", "Расход", "Заказы рекламы", "Выручка рекламы", "ДРР"]], width="stretch", hide_index=True)
 
     with stocks_tab:
         st.subheader("Остатки")
         stock_1, stock_2 = st.columns(2)
-        stock_1.metric("Остаток", format_number(_stock_total(stock_rows)))
-        stock_2.metric("Статус остатков", _stock_status(stock_rows))
+        stock_quantity, stock_status, _ = _stock_snapshot(stock_rows)
+        stock_1.metric("Остаток", "—" if stock_quantity is None else format_number(stock_quantity))
+        stock_2.metric("Статус остатков", stock_status)
         if stock_chart_df.empty:
             st.info("История остатков пока не накоплена.")
         else:
@@ -514,14 +642,19 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
             st.dataframe(stocks_df, width="stretch", hide_index=True)
 
     with problems_tab:
-        st.subheader("Диагноз")
+        st.subheader("Сводка проблем по SKU")
+        summary_df = _problem_summary_table(problem_rows, stock_rows)
+        if summary_df.empty:
+            st.success("Проблемы по SKU не найдены.")
+        else:
+            st.dataframe(summary_df.reset_index(drop=True), width="stretch", hide_index=True)
         st.markdown(
             f"**Главная причина:** {reason}  \n"
             f"**Описание причины:** {_problem_description(problem_rows, reason)}"
         )
-        st.subheader("История проблем")
-        problems_df = _problem_table(problem_rows)
-        if problems_df.empty:
-            st.success("Проблемы по SKU не найдены.")
-        else:
-            st.dataframe(problems_df.reset_index(drop=True), width="stretch", hide_index=True)
+        with st.expander("Показать технические строки problems", expanded=False):
+            problems_df = _problem_table(problem_rows)
+            if problems_df.empty:
+                st.info("Технических строк problems нет.")
+            else:
+                st.dataframe(problems_df.reset_index(drop=True), width="stretch", hide_index=True)
