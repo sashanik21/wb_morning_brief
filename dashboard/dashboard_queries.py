@@ -352,13 +352,17 @@ def fetch_sku_options(seller_id=None):
 
 
 @st.cache_data(ttl=300)
-def fetch_sku_history(nm_id, seller_id=None):
+def fetch_sku_history(nm_id, seller_id=None, start_date=None, end_date=None):
     """Return daily_funnel rows for one SKU without assuming exact column names."""
     client = get_supabase_client()
     rows = []
     for nm_field in ("nm_id", "nmId", "nmID"):
         query = client.table("daily_funnel").select("*").eq(nm_field, nm_id)
-        candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
+        if start_date:
+            query = query.gte("report_date", str(start_date))
+        if end_date:
+            query = query.lte("report_date", str(end_date))
+        candidate_rows, succeeded, _ = _try_execute(query.order("report_date").limit(ROW_LIMIT))
         if succeeded:
             rows = candidate_rows
             break
@@ -368,15 +372,22 @@ def fetch_sku_history(nm_id, seller_id=None):
 
 
 @st.cache_data(ttl=300)
-def fetch_sku_ads_history(nm_id, seller_id=None):
+def fetch_sku_ads_history(nm_id, seller_id=None, start_date=None, end_date=None):
     """Return daily_ads_metrics rows for one SKU without assuming exact column names."""
     client = get_supabase_client()
     rows = []
     for nm_field in ("nm_id", "nmId", "nmID"):
-        query = client.table("daily_ads_metrics").select("*").eq(nm_field, nm_id)
-        candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
-        if succeeded:
-            rows = candidate_rows
+        for date_field in ("report_date", "date"):
+            query = client.table("daily_ads_metrics").select("*").eq(nm_field, nm_id)
+            if start_date:
+                query = query.gte(date_field, str(start_date))
+            if end_date:
+                query = query.lte(date_field, str(end_date))
+            candidate_rows, succeeded, _ = _try_execute(query.order(date_field).limit(ROW_LIMIT))
+            if succeeded:
+                rows = candidate_rows
+                break
+        if rows:
             break
     if seller_id and seller_id != "Все продавцы":
         rows = [row for row in rows if str(_row_seller_id(row)) in ("None", str(seller_id)) or _row_seller_id(row) in (None, "")]
@@ -384,13 +395,17 @@ def fetch_sku_ads_history(nm_id, seller_id=None):
 
 
 @st.cache_data(ttl=300)
-def fetch_sku_stocks_history(nm_id, seller_id=None):
+def fetch_sku_stocks_history(nm_id, seller_id=None, start_date=None, end_date=None):
     """Return stocks_daily rows for one SKU without assuming exact column names."""
     client = get_supabase_client()
     rows = []
     for nm_field in ("nm_id", "nmId", "nmID"):
         query = client.table("stocks_daily").select("*").eq(nm_field, nm_id)
-        candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
+        if start_date:
+            query = query.gte("report_date", str(start_date))
+        if end_date:
+            query = query.lte("report_date", str(end_date))
+        candidate_rows, succeeded, _ = _try_execute(query.order("report_date").limit(ROW_LIMIT))
         if succeeded:
             rows = candidate_rows
             break
@@ -400,13 +415,17 @@ def fetch_sku_stocks_history(nm_id, seller_id=None):
 
 
 @st.cache_data(ttl=300)
-def fetch_sku_problems(nm_id, seller_id=None):
+def fetch_sku_problems(nm_id, seller_id=None, start_date=None, end_date=None):
     """Return problems rows for one SKU without assuming exact column names."""
     client = get_supabase_client()
     rows = []
     for nm_field in ("nm_id", "nmId", "nmID"):
         query = client.table("problems").select("*").eq(nm_field, nm_id)
-        candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
+        if start_date:
+            query = query.gte("report_date", str(start_date))
+        if end_date:
+            query = query.lte("report_date", str(end_date))
+        candidate_rows, succeeded, _ = _try_execute(query.order("report_date", desc=True).limit(ROW_LIMIT))
         if succeeded:
             rows = candidate_rows
             break
