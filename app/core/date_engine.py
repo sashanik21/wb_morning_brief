@@ -3,8 +3,6 @@
 from datetime import date, datetime, timedelta
 
 BUSINESS_DATE_FIELDS = (
-    "created_at",
-    "createdAt",
     "business_date",
     "businessDate",
     "report_date",
@@ -14,6 +12,8 @@ BUSINESS_DATE_FIELDS = (
     "snapshot_date",
     "snapshotDate",
     "date",
+    "created_at",
+    "createdAt",
 )
 
 
@@ -57,8 +57,8 @@ def _parse_date(value):
 def to_business_date(row):
     """Return normalized YYYY-MM-DD business date for a row.
 
-    Primary rule: business_date is DATE(created_at). If created_at is absent,
-    fall back to report_date, campaign_date, snapshot_date, then date.
+    Analytics date fields are preferred over technical timestamps. created_at is
+    accepted only as a last-resort compatibility field for legacy rows.
     """
     parsed = _parse_date(_first_present(row or {}, BUSINESS_DATE_FIELDS))
     return parsed.isoformat() if parsed else None
@@ -85,16 +85,75 @@ def get_previous_period(start, end, shift_days=None):
     return start_date - timedelta(days=shift), end_date - timedelta(days=shift)
 
 
-def align_time_series(data, date_field):
-    """Copy rows and normalize their date field into business_date."""
-    aligned = []
-    for row in data or []:
+def build_date_range(start, end):
+    """Return an inclusive list of dates from start to end."""
+    start_date, end_date = get_current_period(start, end)
+    days = (end_date - start_date).days + 1
+    return [start_date + timedelta(days=offset) for offset in range(days)]
+
+
+def _align_records(records, date_column):
+    rows = []
+    row_dates = []
+    for row in records or []:
         normalized = dict(row)
-        normalized["business_date"] = to_business_date(
-            {"created_at": row.get(date_field), **row}
+        row_date = _parse_date(normalized.get(date_column))
+        if row_date is None:
+            row_date = _parse_date(to_business_date(normalized))
+        if row_date is None:
+            continue
+        normalized[date_column] = row_date.isoformat()
+        normalized["business_date"] = row_date.isoformat()
+        rows.append(normalized)
+        row_dates.append(row_date)
+
+    if not row_dates:
+        return rows
+
+    known_fields = []
+    for row in rows:
+        for field in row:
+            if field not in known_fields:
+                known_fields.append(field)
+
+    rows_by_date = {row[date_column]: row for row in rows}
+    aligned = []
+    for current_date in build_date_range(min(row_dates), max(row_dates)):
+        key = current_date.isoformat()
+        row = rows_by_date.get(key)
+        if row is None:
+            row = {field: None for field in known_fields}
+            row[date_column] = key
+            row["business_date"] = key
+        aligned.append(row)
+    return aligned
+
+
+def align_time_series(df, date_column="report_date"):
+    """Align data to a continuous daily calendar without zero-filling gaps.
+
+    The date column is normalized to DATE, a full min..max calendar is built,
+    and source data is left-joined onto that calendar. Missing values stay NULL
+    (``None``/``NaN`` depending on the input container), never zero.
+    """
+    if hasattr(df, "copy") and hasattr(df, "columns") and hasattr(df, "merge"):
+        import pandas as pd
+
+        if date_column not in df.columns:
+            raise KeyError(f"{date_column} is required to align time series")
+
+        data = df.copy()
+        data[date_column] = pd.to_datetime(data[date_column], errors="coerce").dt.date
+        data = data.dropna(subset=[date_column])
+        if data.empty:
+            return data
+
+        calendar = pd.DataFrame(
+            {date_column: build_date_range(data[date_column].min(), data[date_column].max())}
         )
-        aligned.append(normalized)
-    return sorted(aligned, key=lambda item: item.get("business_date") or "")
+        return calendar.merge(data, on=date_column, how="left")
+
+    return _align_records(df, date_column)
 
 
 def fill_missing_dates(data, start, end):
