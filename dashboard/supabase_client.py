@@ -32,19 +32,12 @@ def _first_present_with_source(*candidates):
 
 
 def _key_type(key_name, key_value):
-    name = (key_name or "").upper()
     key = (key_value or "").strip()
-    if "SERVICE_ROLE" in name:
-        return "service_role"
-    if "ANON" in name:
-        return "anon"
-    if key.startswith("sb_secret_"):
-        return "service_role"
     if key.startswith("sb_publishable_"):
-        return "publishable"
-    if key.count(".") == 2:
-        return "unknown"
-    return "unknown"
+        return "PUBLISHABLE"
+    if key.startswith("sb_secret_"):
+        return "SERVICE_ROLE"
+    return "UNKNOWN"
 
 
 def get_supabase_credentials_info():
