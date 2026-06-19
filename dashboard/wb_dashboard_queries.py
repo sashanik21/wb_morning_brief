@@ -309,6 +309,92 @@ def _row_seller_id(row):
     return row.get("seller_id") or row.get("sellerId")
 
 
+def _row_seller_name(row):
+    return row.get("seller_name") or row.get("sellerName") or row.get("seller") or row.get("seller_title") or ""
+
+
+def _row_title(row):
+    return row.get("title") or row.get("productName") or row.get("product_name") or row.get("name") or ""
+
+
+def _row_vendor_code(row):
+    return row.get("vendor_code") or row.get("vendorCode") or row.get("supplier_article") or row.get("supplierArticle") or ""
+
+
+def find_product_by_nm_id(nm_id, seller_id=None):
+    """Find one product by WB article, preferring the selected seller when provided."""
+    nm_id_text = str(nm_id or "").strip()
+    if not nm_id_text:
+        return None, True
+
+    client = get_supabase_client()
+    matched_rows = []
+    table_available = True
+    for nm_field in ("nm_id", "nmId", "nmID"):
+        rows, succeeded, _ = _try_execute(client.table("products").select("*").eq(nm_field, nm_id_text).limit(20))
+        if not succeeded:
+            table_available = False
+            continue
+        if rows:
+            matched_rows = rows
+            table_available = True
+            break
+
+    if not matched_rows:
+        return None, table_available
+
+    selected_row = matched_rows[0]
+    if seller_id and seller_id != "Все продавцы":
+        for row in matched_rows:
+            if str(_row_seller_id(row)) == str(seller_id):
+                selected_row = row
+                break
+
+    return {
+        "nm_id": str(_row_nm_id(selected_row) or nm_id_text),
+        "title": _row_title(selected_row),
+        "seller_id": _row_seller_id(selected_row),
+        "seller_name": _row_seller_name(selected_row),
+        "vendor_code": _row_vendor_code(selected_row),
+    }, True
+
+
+def is_change_log_available():
+    """Return whether change_log can be queried without exposing technical details."""
+    _, succeeded, _ = _try_execute(get_supabase_client().table("change_log").select("*").limit(1))
+    return succeeded
+
+
+def insert_change_log_entry(
+    change_date,
+    nm_id,
+    change_type,
+    seller_id=None,
+    seller_name=None,
+    vendor_code=None,
+    old_value=None,
+    new_value=None,
+    changed_by=None,
+    comment=None,
+):
+    """Insert a manual dashboard change_log entry."""
+    payload = {
+        "change_date": str(change_date),
+        "seller_id": seller_id or None,
+        "seller_name": seller_name or None,
+        "nm_id": str(nm_id).strip(),
+        "vendor_code": vendor_code or None,
+        "change_type": change_type,
+        "old_value": old_value or None,
+        "new_value": new_value or None,
+        "change_source": "dashboard",
+        "changed_by": changed_by or None,
+        "comment": comment or None,
+    }
+    _, succeeded, error = _try_execute(get_supabase_client().table("change_log").insert(payload))
+    return succeeded, error
+
+
 @st.cache_data(ttl=300)
 def fetch_sku_options(seller_id=None):
     """Return SKU options from products, falling back to problems when products is empty."""
@@ -324,9 +410,9 @@ def fetch_sku_options(seller_id=None):
             continue
         options_by_nm_id[str(nm_id)] = {
             "nm_id": str(nm_id),
-            "title": row.get("title") or row.get("productName") or row.get("product_name") or "",
+            "title": _row_title(row),
             "seller_id": _row_seller_id(row),
-            "vendor_code": row.get("vendor_code") or row.get("vendorCode") or row.get("supplier_article") or row.get("supplierArticle") or "",
+            "vendor_code": _row_vendor_code(row),
         }
 
     if options_by_nm_id:
@@ -343,9 +429,9 @@ def fetch_sku_options(seller_id=None):
             str(nm_id),
             {
                 "nm_id": str(nm_id),
-                "title": row.get("title") or row.get("productName") or row.get("product_name") or "",
+                "title": _row_title(row),
                 "seller_id": _row_seller_id(row),
-                "vendor_code": row.get("vendor_code") or row.get("vendorCode") or row.get("supplier_article") or row.get("supplierArticle") or "",
+                "vendor_code": _row_vendor_code(row),
             },
         )
     return sorted(options_by_nm_id.values(), key=lambda row: (row.get("title") or "", row["nm_id"]))
