@@ -17,13 +17,59 @@ from urllib.parse import quote
 
 import streamlit as st
 
-from core.date_engine import (
-    align_time_series,
-    closest_available_date,
-    debug_date_filter,
-    normalize_report_date,
-    to_business_date,
-)
+from core import date_engine
+
+align_time_series = date_engine.align_time_series
+normalize_report_date = date_engine.normalize_report_date
+to_business_date = date_engine.to_business_date
+
+
+def closest_available_date(available_dates, selected_date, max_shift_days=3):
+    """Return closest available date, with a local fallback for older date_engine builds."""
+    helper = getattr(date_engine, "closest_available_date", None)
+    if helper is not None:
+        return helper(available_dates, selected_date, max_shift_days=max_shift_days)
+
+    selected = normalize_report_date(selected_date)
+    if selected is None:
+        return None
+
+    candidates = []
+    for value in available_dates or []:
+        normalized = normalize_report_date(value)
+        if normalized is None:
+            continue
+        shift = abs((normalized - selected).days)
+        if shift <= max_shift_days:
+            candidates.append((shift, normalized))
+
+    if not candidates:
+        return None
+    return min(candidates)[1].isoformat()
+
+
+def debug_date_filter(rows, selected_date, date_field="report_date", filtered_count=None):
+    """Return date-filter diagnostics, with a no-op fallback for older date_engine builds."""
+    helper = getattr(date_engine, "debug_date_filter", None)
+    if helper is not None:
+        return helper(
+            rows,
+            selected_date,
+            date_field=date_field,
+            filtered_count=filtered_count,
+        )
+
+    return {
+        "reason": None,
+        "selected_date": selected_date,
+        "min_report_date": None,
+        "max_report_date": None,
+        "rows_before_filter": len(rows or []),
+        "rows_after_filter": filtered_count,
+        "report_date_dtype": "unknown",
+        "rows_in_plus_minus_3_days": 0,
+        "date_field": date_field,
+    }
 from formatters import (
     format_money,
     format_number,
