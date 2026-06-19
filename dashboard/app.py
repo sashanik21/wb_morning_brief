@@ -37,7 +37,6 @@ from wb_dashboard_queries import (
     fetch_report_dates,
     fetch_sellers,
     find_product_by_nm_id,
-    insert_change_log_entry,
     is_change_log_available,
 )
 from supabase_client import get_supabase_client, get_supabase_credentials_info
@@ -207,23 +206,39 @@ with st.sidebar:
                 product = product or {}
                 product_seller_id = product.get("seller_id")
                 product_seller_name = product.get("seller_name") or sellers_by_id.get(str(product_seller_id), "")
-                succeeded, _ = insert_change_log_entry(
-                    change_date=change_date,
-                    seller_id=product_seller_id,
-                    seller_name=product_seller_name,
-                    nm_id=change_nm_id,
-                    vendor_code=product.get("vendor_code"),
-                    change_type=change_type,
-                    old_value=old_value,
-                    new_value=new_value,
-                    changed_by=changed_by,
-                    comment=comment,
-                )
-                if succeeded:
-                    st.cache_data.clear()
-                    st.success("Изменение сохранено.")
+                try:
+                    change_nm_id_for_insert = int(str(change_nm_id).strip())
+                except ValueError as error:
+                    st.error(
+                        "Не удалось сохранить изменение в change_log.\n"
+                        "Ошибка Supabase:\n"
+                        f"Артикул WB должен быть числом: {error}"
+                    )
                 else:
-                    st.error("Не удалось сохранить изменение. Проверьте доступ к change_log.")
+                    change_log_payload = {
+                        "change_date": str(change_date),
+                        "seller_id": product_seller_id or None,
+                        "seller_name": product_seller_name or None,
+                        "nm_id": change_nm_id_for_insert,
+                        "vendor_code": product.get("vendor_code") or None,
+                        "change_type": change_type,
+                        "old_value": old_value or "",
+                        "new_value": new_value or "",
+                        "change_source": "manual_dashboard",
+                        "changed_by": changed_by or "",
+                        "comment": comment or "",
+                    }
+                    try:
+                        get_supabase_client().table("change_log").insert(change_log_payload).execute()
+                    except Exception as error:
+                        st.error(
+                            "Не удалось сохранить изменение в change_log.\n"
+                            "Ошибка Supabase:\n"
+                            f"{error}"
+                        )
+                    else:
+                        st.cache_data.clear()
+                        st.success("Изменение сохранено в change_log.")
 
     show_rows_without_seller_id = st.checkbox("Показывать строки без seller_id", value=False)
     show_debug = st.checkbox("Показать debug", value=False)
