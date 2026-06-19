@@ -156,6 +156,98 @@ def align_time_series(df, date_column="report_date"):
     return _align_records(df, date_column)
 
 
+def normalize_report_date_series(values):
+    """Normalize report_date-like values to Python DATE values using pandas semantics."""
+    import pandas as pd
+
+    return pd.to_datetime(values, errors="coerce").dt.date
+
+
+def normalize_selected_date(value):
+    """Normalize a selected date to a Python DATE value using pandas semantics."""
+    if value in (None, ""):
+        return None
+
+    import pandas as pd
+
+    parsed = pd.to_datetime(value, errors="coerce")
+    if parsed is None or getattr(parsed, "isna", lambda: False)():
+        return None
+    try:
+        if pd.isna(parsed):
+            return None
+    except TypeError:
+        pass
+    return parsed.date()
+
+
+def date_debug_diagnostics(rows, selected_date, date_field="report_date", filtered_count=None):
+    """Return structured diagnostics for DATE == DATE filters.
+
+    The helper intentionally avoids changing business metrics. It only reports
+    why a selected-date filter produced no rows or why fallback was needed.
+    """
+    import pandas as pd
+
+    selected = normalize_selected_date(selected_date)
+    date_fields = [field.strip() for field in str(date_field).split(",") if field.strip()]
+    raw_values = [
+        _first_present(row, date_fields) if isinstance(row, dict) else None
+        for row in rows or []
+    ]
+    raw_series = pd.Series(raw_values, dtype="object")
+    normalized = normalize_report_date_series(raw_series) if len(raw_series) else pd.Series([], dtype="object")
+    valid_dates = [value for value in normalized.tolist() if pd.notna(value)]
+    before_count = len(rows or [])
+    if filtered_count is None:
+        filtered_count = sum(1 for value in valid_dates if selected is not None and value == selected)
+
+    range_count = 0
+    if selected is not None:
+        start = selected - timedelta(days=3)
+        end = selected + timedelta(days=3)
+        range_count = sum(1 for value in valid_dates if start <= value <= end)
+
+    min_date = min(valid_dates).isoformat() if valid_dates else None
+    max_date = max(valid_dates).isoformat() if valid_dates else None
+    reason = None
+    if filtered_count == 0:
+        if before_count == 0:
+            reason = "NO_DATA_IN_RANGE"
+        elif not valid_dates and raw_values:
+            reason = "DATATYPE_MISMATCH"
+        elif selected is not None and range_count > 0:
+            reason = "TIMEZONE_SHIFT"
+        elif selected is not None and valid_dates and (selected < min(valid_dates) or selected > max(valid_dates)):
+            reason = "NO_DATA_IN_RANGE"
+        else:
+            reason = "NO_DATA_FOR_SELECTED_DATE"
+
+    return {
+        "reason": reason,
+        "selected_date": selected.isoformat() if selected else None,
+        "min_report_date": min_date,
+        "max_report_date": max_date,
+        "rows_before_filter": before_count,
+        "rows_after_filter": filtered_count,
+        "report_date_dtype": str(raw_series.dtype),
+        "rows_in_plus_minus_3_days": range_count,
+        "date_field": date_field,
+    }
+
+
+def closest_available_date(available_dates, selected_date, max_shift_days=3):
+    """Return closest available date within ±max_shift_days, or None."""
+    selected = normalize_selected_date(selected_date)
+    if selected is None:
+        return None
+    normalized = [normalize_selected_date(value) for value in available_dates or []]
+    candidates = [value for value in normalized if value is not None and abs((value - selected).days) <= max_shift_days]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda value: (abs((value - selected).days), value)).isoformat()
+
+
 def fill_missing_dates(data, start, end):
     """Return rows aligned to every date in [start, end], using None for gaps."""
     start_date, end_date = get_current_period(start, end)

@@ -1,6 +1,6 @@
 """SKU card page for the Streamlit dashboard."""
 
-from datetime import date
+from datetime import date, timedelta
 from html import escape
 
 import pandas as pd
@@ -158,8 +158,11 @@ def _date_value(row):
 
 def _normalize_date(value):
     if isinstance(value, dict):
-        return to_business_date(value)
-    return to_business_date({"created_at": value})
+        value = to_business_date(value)
+    normalized = pd.to_datetime(pd.Series([value]), errors="coerce").dt.date.iloc[0]
+    if pd.isna(normalized):
+        return None
+    return normalized
 
 
 def _period_bounds(period_label):
@@ -227,6 +230,42 @@ def _fetch_daily_funnel_rows_by_date(selected_nm_id, selected_seller, start_date
             if str(first_present(row, ["seller_id", "sellerId"], "")) in ("", "None", str(selected_seller))
         ]
     return _dedupe_rows(_filter_rows_by_period([*rows, *fallback_rows], start_date, end_date))
+
+
+def _row_date_debug(rows, start_date, end_date, date_field="report_date"):
+    raw_values = [_date_value(row) for row in rows or []]
+    raw_series = pd.Series(raw_values, dtype="object")
+    normalized = pd.to_datetime(raw_series, errors="coerce").dt.date if len(raw_series) else pd.Series([], dtype="object")
+    valid_dates = [value for value in normalized.tolist() if pd.notna(value)]
+    start = pd.to_datetime(start_date).date()
+    end = pd.to_datetime(end_date).date()
+    in_period = [value for value in valid_dates if start <= value <= end]
+    plus_minus_start = start - timedelta(days=3)
+    plus_minus_end = end + timedelta(days=3)
+    in_near_range = [value for value in valid_dates if plus_minus_start <= value <= plus_minus_end]
+    reason = None
+    if not in_period:
+        if not rows:
+            reason = "NO_DATA_IN_RANGE"
+        elif not valid_dates and raw_values:
+            reason = "DATATYPE_MISMATCH"
+        elif in_near_range:
+            reason = "TIMEZONE_SHIFT"
+        elif valid_dates and (end < min(valid_dates) or start > max(valid_dates)):
+            reason = "NO_DATA_IN_RANGE"
+        else:
+            reason = "NO_DATA_FOR_SELECTED_DATE"
+    return {
+        "reason": reason,
+        "selected_date": f"{start.isoformat()} — {end.isoformat()}",
+        "min_report_date": min(valid_dates).isoformat() if valid_dates else None,
+        "max_report_date": max(valid_dates).isoformat() if valid_dates else None,
+        "rows_before_filter": len(rows or []),
+        "rows_after_filter": len(in_period),
+        "report_date_dtype": str(raw_series.dtype),
+        "rows_in_plus_minus_3_days": len(in_near_range),
+        "date_field": date_field,
+    }
 
 
 def _history_dataframe(rows):
@@ -593,7 +632,8 @@ def _problem_table(rows):
 
 
 def _latest_row(rows):
-    dated_rows = [(_normalize_date(_date_value(row)) or "", row) for row in rows]
+    dated_rows = [(_normalize_date(_date_value(row)), row) for row in rows]
+    dated_rows = [(row_date, row) for row_date, row in dated_rows if row_date]
     if not dated_rows:
         return {}
     return sorted(dated_rows, key=lambda item: item[0], reverse=True)[0][1]
@@ -826,7 +866,10 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         sales_1.metric("Потеря выручки ⓘ", format_money(lost_rev), help=LOST_REVENUE_HELP)
         sales_2.metric("Потеря заказов ⓘ", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
         if history_df.empty:
-            st.info("История продаж и воронки за выбранный период не найдена.")
+            history_debug = _row_date_debug(history_rows, start_date, end_date, date_field="daily_funnel date")
+            st.info(f"История продаж и воронки за выбранный период не найдена. Причина: {history_debug.get('reason') or 'NO_DATA_FOR_SELECTED_DATE'}")
+            with st.expander("Техническое объяснение", expanded=False):
+                st.json(history_debug)
         else:
             st.subheader("Динамика по дням")
             daily_df = history_df.reset_index().rename(
@@ -868,7 +911,10 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         for item in ads_evidence:
             st.caption(item)
         if ads_df.empty:
-            st.info("История рекламы за выбранный период не найдена.")
+            ads_debug = _row_date_debug(ads_rows, start_date, end_date, date_field="ads date")
+            st.info(f"История рекламы за выбранный период не найдена. Причина: {ads_debug.get('reason') or 'NO_DATA_FOR_SELECTED_DATE'}")
+            with st.expander("Техническое объяснение", expanded=False):
+                st.json(ads_debug)
         else:
             st.line_chart(ads_df[["Показы", "Клики", "CTR", "CPC", "ДРР", "Расход"]])
             st.dataframe(ads_df.reset_index()[["Дата", "Кампания", "Показы", "Клики", "CTR", "CPC", "Расход", "Заказы рекламы", "Выручка рекламы", "ДРР"]], width="stretch", hide_index=True)
