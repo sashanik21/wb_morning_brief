@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-from dashboard.formatters import (
+from formatters import (
     format_money,
     format_number,
     lost_orders,
@@ -11,7 +11,7 @@ from dashboard.formatters import (
     prepare_seller_table,
     prepare_sku_table,
 )
-from dashboard.queries import (
+from queries import (
     dataframe_for_display,
     fetch_data_quality,
     fetch_problems,
