@@ -595,6 +595,166 @@ def save_funnel_snapshot(rows):
         )
 
 
+
+def _normalize_stocks_daily_row(row):
+    return {
+        "report_date": _report_date(row),
+        "seller_id": _to_int(_first_present(row, ["seller_id", "sellerId"])),
+        "seller_name": _first_present(row, ["seller_name", "sellerName"]),
+        "nm_id": _to_int(_first_present(row, ["nm_id", "nmId", "nmID"])),
+        "vendor_code": _first_present(row, ["vendor_code", "vendorCode"]),
+        "title": row.get("title"),
+        "real_sellable_stock": _to_int(
+            _first_present(row, ["real_sellable_stock", "realSellableStock"])
+        ),
+        "incoming_stock": _to_int(
+            _first_present(row, ["incoming_stock", "incomingStock"])
+        ),
+        "returning_stock": _to_int(
+            _first_present(row, ["returning_stock", "returningStock"])
+        ),
+        "ready_for_sale_stock": _to_int(
+            _first_present(row, ["ready_for_sale_stock", "readyForSaleStock"])
+        ),
+        "acceptance_stock": _to_int(
+            _first_present(row, ["acceptance_stock", "acceptanceStock"])
+        ),
+        "transit_stock": _to_int(
+            _first_present(row, ["transit_stock", "transitStock"])
+        ),
+        "stock_state": _first_present(row, ["stock_state", "stockState"]),
+        "days_until_oos": _to_number(
+            _first_present(row, ["days_until_oos", "daysUntilOOS"])
+        ),
+        "forecast_type": _first_present(row, ["forecast_type", "forecastType"]),
+        "forecast_message": _first_present(
+            row, ["forecast_message", "forecastMessage"]
+        ),
+        "created_at": _first_present(row, ["created_at", "createdAt"]),
+    }
+
+
+def _stocks_daily_columns():
+    rows = _execute_read(
+        _get_client().table("stocks_daily").select("*").limit(1),
+        "stocks_daily",
+    )
+    if rows:
+        return set(rows[0].keys())
+    return {
+        "report_date",
+        "seller_id",
+        "seller_name",
+        "nm_id",
+        "vendor_code",
+        "title",
+        "real_sellable_stock",
+        "incoming_stock",
+        "returning_stock",
+        "ready_for_sale_stock",
+        "acceptance_stock",
+        "transit_stock",
+        "stock_state",
+        "days_until_oos",
+        "forecast_type",
+        "forecast_message",
+        "created_at",
+    }
+
+
+def _without_missing_columns(rows, error_message):
+    missing = []
+    lowered = (error_message or "").lower()
+    for column in list((rows or [{}])[0].keys()):
+        if column.lower() in lowered and "schema cache" in lowered:
+            missing.append(column)
+    if not missing:
+        return rows, []
+    return [
+        {key: value for key, value in row.items() if key not in missing}
+        for row in rows
+    ], missing
+
+
+def save_stocks_daily(rows):
+    normalized_rows = _drop_empty_required(
+        [_normalize_stocks_daily_row(row) for row in rows or []],
+        ["report_date", "seller_id", "nm_id"],
+    )
+    columns = _stocks_daily_columns()
+    missing_columns = sorted(
+        set(normalized_rows[0].keys()) - columns if normalized_rows else []
+    )
+    if missing_columns:
+        print("STOCKS DAILY WARNING:")
+        print(f"missing columns skipped: {', '.join(missing_columns)}")
+        normalized_rows = [
+            {key: value for key, value in row.items() if key in columns}
+            for row in normalized_rows
+        ]
+    print(f"SUPABASE SAVE STOCKS DAILY: {len(normalized_rows)} rows")
+    if not normalized_rows:
+        return 0
+    success, error_message = _execute_write(
+        _get_client()
+        .table("stocks_daily")
+        .upsert(normalized_rows, on_conflict="report_date,seller_id,nm_id"),
+        "stocks_daily",
+    )
+    if success:
+        return len(normalized_rows)
+    retry_rows, retry_missing = _without_missing_columns(normalized_rows, error_message)
+    if retry_missing and retry_rows != normalized_rows:
+        print("STOCKS DAILY WARNING:")
+        print(f"missing columns skipped: {', '.join(sorted(retry_missing))}")
+        success, _ = _execute_write(
+            _get_client()
+            .table("stocks_daily")
+            .upsert(retry_rows, on_conflict="report_date,seller_id,nm_id"),
+            "stocks_daily",
+        )
+        if success:
+            return len(retry_rows)
+    return 0
+
+
+def _is_saved_stock_problem(problem):
+    if not isinstance(problem, dict):
+        return True
+    problem_type = _first_present(problem, ["problem_type", "problemType", "metric"])
+    if problem_type not in {"sellableOutOfStock", "realSellableStock", "wbStocks"}:
+        return True
+    has_data = _to_bool(_first_present(problem, ["has_supply_data", "hasSupplyData"]))
+    real_stock = _to_int(
+        _first_present(problem, ["real_sellable_stock", "realSellableStock"])
+    )
+    days_until_oos = _to_number(
+        _first_present(problem, ["days_until_oos", "daysUntilOOS"])
+    )
+    incoming_stock = _to_int(
+        _first_present(problem, ["incoming_stock", "incomingStock"], default=0)
+    )
+    acceptance_stock = _to_int(
+        _first_present(problem, ["acceptance_stock", "acceptanceStock"], default=0)
+    )
+    transit_stock = _to_int(
+        _first_present(problem, ["transit_stock", "transitStock"], default=0)
+    )
+    has_oos_risk = (
+        real_stock is not None
+        and real_stock > 0
+        and days_until_oos is not None
+        and days_until_oos <= 3
+    )
+    has_confirmed_oos = (
+        has_data
+        and real_stock == 0
+        and incoming_stock <= 0
+        and acceptance_stock <= 0
+        and transit_stock <= 0
+    )
+    return has_confirmed_oos or has_oos_risk
+
 def _normalize_ads_metric_row(row):
     seller_name = _first_present(row, ["seller_name", "sellerName"]) or SELLER_NAME
     raw_json = row.copy()
@@ -859,6 +1019,7 @@ def _log_problems_save(problems):
 
 def save_problems(problems):
     _log_problems_save(problems)
+    problems = [problem for problem in problems if _is_saved_stock_problem(problem)]
     normalized_problems = [_normalize_problem(problem) for problem in problems]
     normalized_problems = _apply_seller_id_quality_gate(
         normalized_problems, "problems"

@@ -21,6 +21,7 @@ from app.analyzers.perfume_intelligence import (
 from app.analyzers.products_enrichment import enrich_funnel_data_with_products
 from app.analyzers.qbiki_metrics import build_qbiki_problems, enrich_qbiki_metrics
 from app.analyzers.root_cause_analyzer import analyze_root_causes
+from app.analyzers.stocks_analyzer import build_stocks_daily_rows
 from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import ads_api_had_429, ads_rate_limit_stats, collect_ads_stats
 from app.collectors.funnel import (
@@ -922,6 +923,30 @@ def _process_seller(storage, seller, report_date):
     _debug_log(f"XLSX ads: {ads_report_path}")
     _debug_log(f"XLSX problems: {problems_report_path}")
     _debug_log(f"PREDICTIVE FORECASTS: {len(predictive_forecasts)}")
+
+    if hasattr(storage, "save_stocks_daily"):
+        stocks_daily_rows, stocks_quality = build_stocks_daily_rows(
+            funnel_rows,
+            supply_stock_metrics_by_nm_id,
+            predictive_forecasts=predictive_forecasts,
+            seller=seller,
+            seller_id=seller_id,
+            report_date=report_date,
+        )
+        saved_count = storage.save_stocks_daily(stocks_daily_rows)
+        stocks_quality["saved_to_stocks_daily"] = saved_count
+        print("STOCKS DATA QUALITY:")
+        print(f"seller: {seller_name}")
+        print(f"sku total: {stocks_quality['sku_total']}")
+        print(f"stock metrics loaded: {stocks_quality['stock_metrics_loaded']}")
+        print(f"saved to stocks_daily: {stocks_quality['saved_to_stocks_daily']}")
+        print(f"confirmed oos: {stocks_quality['confirmed_oos']}")
+        print(f"oos risk: {stocks_quality['oos_risk']}")
+        print(f"no stock data: {stocks_quality['no_stock_data']}")
+        print(f"incoming/transit: {stocks_quality['incoming_transit']}")
+        if stocks_quality["stock_metrics_loaded"] < stocks_quality["sku_total"]:
+            print("STOCKS DATA QUALITY WARNING:")
+            print("partial stock coverage")
 
     funnel_problems_df = pd.read_excel(
         problems_report_path, sheet_name="problems"
