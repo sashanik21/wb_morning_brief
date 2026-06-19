@@ -299,3 +299,85 @@ def dataframe_for_display(dataframe):
     if dataframe.empty:
         return dataframe
     return dataframe.reset_index(drop=True)
+
+
+def _row_nm_id(row):
+    return row.get("nm_id") or row.get("nmId") or row.get("nmID")
+
+
+def _row_seller_id(row):
+    return row.get("seller_id") or row.get("sellerId")
+
+
+@st.cache_data(ttl=300)
+def fetch_sku_options(seller_id=None):
+    """Return SKU options from products, falling back to problems when products is empty."""
+    client = get_supabase_client()
+    product_rows = _safe_execute(client.table("products").select("*").limit(ROW_LIMIT))
+    if seller_id and seller_id != "Все продавцы":
+        product_rows = [row for row in product_rows if str(_row_seller_id(row)) == str(seller_id)]
+
+    options_by_nm_id = {}
+    for row in product_rows:
+        nm_id = _row_nm_id(row)
+        if nm_id in (None, ""):
+            continue
+        options_by_nm_id[str(nm_id)] = {
+            "nm_id": str(nm_id),
+            "title": row.get("title") or row.get("productName") or row.get("product_name") or "",
+            "seller_id": _row_seller_id(row),
+            "vendor_code": row.get("vendor_code") or row.get("vendorCode") or row.get("supplier_article") or row.get("supplierArticle") or "",
+        }
+
+    if options_by_nm_id:
+        return sorted(options_by_nm_id.values(), key=lambda row: (row.get("title") or "", row["nm_id"]))
+
+    problem_rows = _safe_execute(client.table("problems").select("*").limit(ROW_LIMIT))
+    if seller_id and seller_id != "Все продавцы":
+        problem_rows = [row for row in problem_rows if str(_row_seller_id(row)) == str(seller_id)]
+    for row in problem_rows:
+        nm_id = _row_nm_id(row)
+        if nm_id in (None, ""):
+            continue
+        options_by_nm_id.setdefault(
+            str(nm_id),
+            {
+                "nm_id": str(nm_id),
+                "title": row.get("title") or row.get("productName") or row.get("product_name") or "",
+                "seller_id": _row_seller_id(row),
+                "vendor_code": row.get("vendor_code") or row.get("vendorCode") or row.get("supplier_article") or row.get("supplierArticle") or "",
+            },
+        )
+    return sorted(options_by_nm_id.values(), key=lambda row: (row.get("title") or "", row["nm_id"]))
+
+
+@st.cache_data(ttl=300)
+def fetch_sku_history(nm_id, seller_id=None):
+    """Return daily_funnel rows for one SKU without assuming exact column names."""
+    client = get_supabase_client()
+    rows = []
+    for nm_field in ("nm_id", "nmId", "nmID"):
+        query = client.table("daily_funnel").select("*").eq(nm_field, nm_id)
+        candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
+        if succeeded:
+            rows = candidate_rows
+            break
+    if seller_id and seller_id != "Все продавцы":
+        rows = [row for row in rows if str(_row_seller_id(row)) in ("None", str(seller_id)) or _row_seller_id(row) in (None, "")]
+    return rows
+
+
+@st.cache_data(ttl=300)
+def fetch_sku_problems(nm_id, seller_id=None):
+    """Return problems rows for one SKU without assuming exact column names."""
+    client = get_supabase_client()
+    rows = []
+    for nm_field in ("nm_id", "nmId", "nmID"):
+        query = client.table("problems").select("*").eq(nm_field, nm_id)
+        candidate_rows, succeeded, _ = _try_execute(query.limit(ROW_LIMIT))
+        if succeeded:
+            rows = candidate_rows
+            break
+    if seller_id and seller_id != "Все продавцы":
+        rows = [row for row in rows if str(_row_seller_id(row)) in ("None", str(seller_id)) or _row_seller_id(row) in (None, "")]
+    return rows
