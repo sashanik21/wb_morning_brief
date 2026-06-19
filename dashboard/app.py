@@ -27,7 +27,7 @@ st.caption("Morning Brief: управленческая картина по по
 
 try:
     sellers, sellers_by_id = fetch_sellers()
-    report_dates = fetch_report_dates()
+    report_dates, problem_date_field = fetch_report_dates()
 except Exception as error:
     st.error(f"Не удалось подключиться к Supabase: {error}")
     st.stop()
@@ -45,8 +45,28 @@ with st.sidebar:
         format_func=lambda value: seller_labels.get(value, value),
     )
 
-date_problems = fetch_problems(report_date=report_date, limit=1)
-unfiltered_problems = fetch_problems(report_date=report_date, seller_id=selected_seller)
+date_problems = fetch_problems(
+    report_date=report_date,
+    limit=1,
+    date_field=problem_date_field,
+)
+if not date_problems and report_dates:
+    fallback_report_date = report_dates[0]
+    fallback_problems = fetch_problems(
+        report_date=fallback_report_date,
+        limit=1,
+        date_field=problem_date_field,
+    )
+    if fallback_problems:
+        st.warning("По выбранной дате данных нет, показаны последние доступные данные")
+        report_date = fallback_report_date
+        date_problems = fallback_problems
+
+unfiltered_problems = fetch_problems(
+    report_date=report_date,
+    seller_id=selected_seller,
+    date_field=problem_date_field,
+)
 reason_options = unique_reasons(unfiltered_problems)
 with st.sidebar:
     selected_reason = st.selectbox("Причина проблемы", reason_options)
@@ -55,6 +75,7 @@ problems = fetch_problems(
     report_date=report_date,
     seller_id=selected_seller,
     reason=selected_reason,
+    date_field=problem_date_field,
 )
 quality = fetch_data_quality(report_date=report_date)
 
@@ -96,3 +117,12 @@ quality_1.metric("problems без seller_id", format_number(quality["problems_wi
 quality_2.metric("ads_bid_history без seller_id", format_number(quality["ads_bid_history_without_seller_id"]))
 quality_3.metric("SKU без рекламы", format_number(quality["sku_without_ads"]))
 quality_4.metric("SKU без поставок", format_number(quality["sku_without_supplies"]))
+
+
+with st.sidebar:
+    st.divider()
+    st.subheader("Dashboard debug")
+    st.caption(f"problems rows loaded: {len(problems)}")
+    st.caption(f"date field used: {problem_date_field}")
+    st.caption(f"selected date: {report_date}")
+    st.caption(f"available dates: {len(report_dates)}")
