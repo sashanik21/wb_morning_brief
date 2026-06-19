@@ -15,9 +15,31 @@ def _execute(query):
     return response.data or []
 
 
+def _try_execute(query):
+    try:
+        return _execute(query), True
+    except Exception:
+        return [], False
+
+
+def _safe_execute(query):
+    rows, _ = _try_execute(query)
+    return rows
+
+
+def _execute_with_optional_report_date(query_factory, report_date=None):
+    if not report_date:
+        return _safe_execute(query_factory())
+
+    rows, succeeded = _try_execute(query_factory().eq("report_date", str(report_date)))
+    if succeeded:
+        return rows
+    return _safe_execute(query_factory())
+
+
 def fetch_sellers():
     client = get_supabase_client()
-    rows = _execute(client.table("sellers").select("*").limit(ROW_LIMIT))
+    rows = _safe_execute(client.table("sellers").select("*").limit(ROW_LIMIT))
     sellers_by_id = {}
     for row in rows:
         seller_id = row.get("seller_id") or row.get("id")
@@ -29,7 +51,7 @@ def fetch_sellers():
 
 def fetch_report_dates():
     client = get_supabase_client()
-    rows = _execute(
+    rows = _safe_execute(
         client.table("problems")
         .select("report_date")
         .order("report_date", desc=True)
@@ -46,7 +68,7 @@ def fetch_problems(report_date=None, seller_id=None, reason=None):
         query = query.eq("report_date", str(report_date))
     if seller_id and seller_id != "Все продавцы":
         query = query.eq("seller_id", seller_id)
-    rows = _execute(query)
+    rows = _safe_execute(query)
     if reason and reason != "Все причины":
         rows = [row for row in rows if reason in {row.get("root_cause"), row.get("problem_label"), row.get("problem_type"), row.get("decline_source"), row.get("metric")}]
     return rows
@@ -61,25 +83,16 @@ def fetch_data_quality(report_date=None):
         "sku_without_supplies": 0,
     }
 
-    problems_query = client.table("problems").select("seller_id,report_date").limit(ROW_LIMIT)
-    if report_date:
-        problems_query = problems_query.eq("report_date", str(report_date))
-    problems = _execute(problems_query)
+    problems_query = lambda: client.table("problems").select("seller_id,report_date").limit(ROW_LIMIT)
+    problems = _execute_with_optional_report_date(problems_query, report_date)
     quality["problems_without_seller_id"] = sum(1 for row in problems if not row.get("seller_id"))
 
-    ads_query = client.table("ads_bid_history").select("seller_id,report_date").limit(ROW_LIMIT)
-    if report_date:
-        ads_query = ads_query.eq("report_date", str(report_date))
-    ads_rows = _execute(ads_query)
+    ads_query = lambda: client.table("ads_bid_history").select("seller_id,report_date").limit(ROW_LIMIT)
+    ads_rows = _execute_with_optional_report_date(ads_query, report_date)
     quality["ads_bid_history_without_seller_id"] = sum(1 for row in ads_rows if not row.get("seller_id"))
 
-    coverage_query = client.table("api_coverage_daily").select("*").limit(ROW_LIMIT)
-    if report_date:
-        coverage_query = coverage_query.eq("report_date", str(report_date))
-    try:
-        coverage = _execute(coverage_query)
-    except Exception:
-        coverage = []
+    coverage_query = lambda: client.table("api_coverage_daily").select("*").limit(ROW_LIMIT)
+    coverage = _execute_with_optional_report_date(coverage_query, report_date)
 
     if coverage:
         quality["sku_without_ads"] = sum(1 for row in coverage if not row.get("in_ads_api"))
