@@ -2656,7 +2656,7 @@ def _build_executive_header(summary_stats):
     seller_name = html.escape(str(summary_stats.get("sellerName") or SELLER_NAME))
 
     return (
-        "📊 <b>WB Morning Brief — Executive Summary</b>"
+        "🔥 <b>Executive Fire Brief</b>"
         f"\nПродавец: <b>{seller_name}</b>"
         "\nПериод: вчера 00:00–24:00 МСК"
         f"\n{_baseline_context(summary_stats)}"
@@ -3247,6 +3247,86 @@ def _reason_requires_manual_check(reason_text):
     return "требует проверки" in lowered or "недостаточно данных" in lowered
 
 
+
+def _compact_ads_risk_label(records, summary_stats):
+    ads_summary = (summary_stats or {}).get("adsSummary") or {}
+    if _ads_coverage_is_low(summary_stats) or _has_partial_ads_data(summary_stats, ads_summary):
+        return "недостаточно данных"
+
+    ads_records = [
+        record
+        for record in records or []
+        if isinstance(record, dict)
+        and _is_ads_problem(record)
+        and not _is_insufficient_history_problem(record)
+    ]
+    if not ads_records and not ads_summary:
+        return "недостаточно данных"
+
+    if any(_metric_decreased(record, "previousCtr", "ctr", "dynamicPercent") for record in ads_records):
+        return "CTR"
+    if any(_metric_increased(record, "previousCpc", "cpc", "cpcDynamic") for record in ads_records):
+        return "CPC"
+    if any(_metric_increased(record, "previousDrr", "drr", "drrDynamic") for record in ads_records):
+        return "ДРР"
+    return "недостаточно данных" if _ads_has_incomplete_metric_history(ads_summary) else "недостаточно данных"
+
+
+def _build_compact_executive_ads_block(records, summary_stats):
+    ads_summary = (summary_stats or {}).get("adsSummary") or {}
+    advertised_sku = ads_summary.get("advertisedSku") or (summary_stats or {}).get("advertisedSkuCount")
+    total_sku = ads_summary.get("totalSku") or (summary_stats or {}).get("totalSkuFromApi")
+    ads_records = [
+        record
+        for record in records or []
+        if isinstance(record, dict)
+        and _is_ads_problem(record)
+        and not _is_insufficient_history_problem(record)
+    ]
+    product_totals = _aggregate_ads_rows_by_product(summary_stats)
+    worsened = 0
+    needs_check = 0
+    if _ads_coverage_is_low(summary_stats) or _has_partial_ads_data(summary_stats, ads_summary):
+        needs_check = int(to_number(advertised_sku) or len(product_totals) or len(ads_records))
+    else:
+        for totals in product_totals:
+            diagnosis = _ads_product_diagnosis(totals)
+            if diagnosis.get("status") == "red":
+                worsened += 1
+            elif diagnosis.get("status") == "yellow":
+                needs_check += 1
+        if not product_totals:
+            worsened = len({_problem_group_key(record) for record in ads_records})
+    coverage = (
+        f"{_format_number(advertised_sku)}/{_format_number(total_sku)} SKU"
+        if advertised_sku is not None and total_sku is not None
+        else "н/д"
+    )
+    return "\n".join([
+        "📊 <b>Реклама</b>",
+        f"Покрытие рекламы: {coverage}",
+        f"SKU с ухудшением рекламы: {_format_number(worsened)}",
+        f"SKU требуют проверки: {_format_number(needs_check)}",
+        f"Главный рекламный риск: {_compact_ads_risk_label(ads_records, summary_stats)}",
+    ])
+
+
+def _product_ads_diagnosis_short(product, summary_stats=None):
+    if _ads_coverage_is_low(summary_stats):
+        return "требует проверки из-за низкого покрытия данных"
+    totals = _product_ads_totals(product, summary_stats)
+    if not totals:
+        return "недостаточно данных"
+    diagnosis = _ads_product_diagnosis(totals)
+    status = diagnosis.get("status")
+    if status == "red":
+        return "ухудшилась"
+    if status == "yellow":
+        return "требует проверки"
+    if status == "green":
+        return "не причина"
+    return "недостаточно данных"
+
 def _compact_product_reason_info(product, summary_stats=None):
     totals = _product_ads_totals(product, summary_stats)
     has_ads_history = totals and totals.get("ads_history_status") in {
@@ -3334,8 +3414,8 @@ def _compact_product_action(product, summary_stats=None):
     reason = _compact_product_reason_info(product, summary_stats)
     action_by_kind = {
         "conversion": "Проверить фото, цену, отзывы и конкурентов.",
-        "ads": "Проверить CTR, CPC и рекламные ставки.",
-        "price": "Проверить позиционирование и цены конкурентов.",
+        "ads": "Проверить CTR, CPC, ДРР и ставки.",
+        "price": "Сравнить цену с конкурентами.",
         "unknown": "Требуется ручная проверка.",
     }
     action = action_by_kind.get(reason.get("kind"), action_by_kind["unknown"])
@@ -3570,6 +3650,10 @@ def _build_product_movement_block(problem_products, direction, summary_stats=Non
             confirmation_line = _compact_product_confirmation(product, summary_stats)
             if confirmation_line:
                 detail_lines.append(f"   {confirmation_line}")
+            detail_lines.append(
+                "   Реклама: "
+                + html.escape(_product_ads_diagnosis_short(product, summary_stats))
+            )
             detail_lines.append(f"   {_compact_product_action(product, summary_stats)}")
             product_lines.extend(line for line in detail_lines if line)
         lines.append("\n".join(product_lines))
@@ -5084,6 +5168,8 @@ def _multi_loss_text(value, suffix=""):
 def _multi_problem_cause(record):
     source = _decline_source(record)
     if source == "ADS_DECLINE" or _is_ads_problem(record):
+        if record.get("adsConfidence") == "LOW" or record.get("impactConfidence") == "LOW":
+            return "реклама требует проверки"
         return "реклама"
     metric = str(record.get("metric") or "").lower()
     problem_type = str(record.get("problemType") or "").lower()
@@ -5096,9 +5182,13 @@ def _multi_problem_cause(record):
     if "цен" in texts or "price" in metric or "price" in problem_type:
         return "цена"
     if "реклам" in texts or "ctr" in metric or "cpc" in metric or "drr" in metric:
+        if record.get("adsConfidence") == "LOW" or record.get("impactConfidence") == "LOW":
+            return "реклама требует проверки"
         return "реклама"
     if "конверс" in texts:
         return "конверсия"
+    if (source == "STOCK_DECLINE" or "stock" in texts or "остат" in texts or "oos" in texts) and not _is_oos_blocked_problem(record):
+        return "требует проверки"
     return "неизвестно"
 
 
@@ -5128,12 +5218,14 @@ def _multi_confirmation(record):
 
 
 def _multi_action(record):
-    action = str(
-        record.get("rootRecommendation")
-        or record.get("recommendation")
-        or "Проверить причину просадки и скорректировать действие сегодня."
-    ).strip()
-    return action or "Проверить причину просадки и скорректировать действие сегодня."
+    cause = _multi_problem_cause(record)
+    if cause == "конверсия":
+        return "проверить фото, цену, отзывы и конкурентов."
+    if cause in {"реклама", "реклама требует проверки"}:
+        return "проверить CTR, CPC, ДРР и ставки."
+    if cause == "цена":
+        return "сравнить цену с конкурентами."
+    return "Проверить причину просадки и скорректировать действие сегодня."
 
 
 def _multi_first_sentence(text, max_length=140):
@@ -5158,6 +5250,7 @@ def _multi_product_line(index, record):
             f"   Потеря заказов: {_multi_loss_text(orders)}",
             f"   Причина: {html.escape(_multi_problem_cause(record))}",
             f"   Подтверждение: {html.escape(_multi_first_sentence(_multi_confirmation(record)))}",
+            f"   Реклама: {html.escape('требует проверки' if _multi_problem_cause(record) == 'реклама требует проверки' else 'ухудшилась' if _multi_problem_cause(record) == 'реклама' else 'недостаточно данных')}",
             f"   Действие: {html.escape(_multi_first_sentence(_multi_action(record)))}",
         ]
     )
@@ -5186,7 +5279,7 @@ def _build_multi_seller_brief(problems, summary_stats=None, top_limit=5, include
     top_records = sorted(telegram_records, key=_multi_problem_score, reverse=True)[:top_limit]
 
     lines = [
-        "🌅 <b>WB Morning Brief — Executive Brief</b>",
+        "🔥 <b>Executive Fire Brief</b>",
         f"Потеря выручки за день: {_multi_loss_text(total_lost_revenue if lost_revenue_known else None, ' ₽')}",
         f"Потеря заказов за день: {_multi_loss_text(total_lost_orders if lost_orders_known else None)}",
         f"Критичных продавцов: {_format_number(critical_sellers)}",
@@ -5282,13 +5375,13 @@ def _seller_3d_percent(value):
 def _seller_3d_action(seller):
     reason = seller.get("main_reason")
     if reason == "конверсия":
-        return "проверить TOP SKU с падением конверсии."
-    if reason == "реклама":
-        return "проверить кампании и рекламные ставки."
+        return "проверить фото, цену, отзывы и конкурентов."
+    if reason in {"реклама", "реклама требует проверки"}:
+        return "проверить CTR, CPC, ДРР и ставки."
     if reason == "цена":
-        return "проверить цены и промо у TOP SKU."
+        return "сравнить цену с конкурентами."
     if reason == "остатки":
-        return "проверить остатки и риск out-of-stock."
+        return "проверить подтверждённый OOS и поставку."
     return "проверить TOP SKU с наибольшей потерей."
 
 
@@ -5498,6 +5591,7 @@ def _build_telegram_message(problems, summary_stats=None, root_cause_insights=No
     message_parts = [
         _build_executive_header(summary_stats),
         _build_executive_store_dynamics(summary_stats),
+        _build_compact_executive_ads_block(records, summary_stats),
         below_fact_line,
         _build_low_priority_signals_block(records),
         top_drops_block,
@@ -5657,4 +5751,4 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
 
     logger.info("Telegram Morning Brief sent successfully")
     print("Telegram Morning Brief sent successfully")
-    return True
+    return total_parts

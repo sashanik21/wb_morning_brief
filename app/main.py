@@ -915,6 +915,7 @@ def _process_seller(storage, seller, report_date):
         supply_stock_metrics_by_nm_id=supply_stock_metrics_by_nm_id,
         ads_rows=ads_data,
         predictive_forecasts=predictive_forecasts,
+        report_date=report_date,
     )
 
     _debug_log(f"XLSX funnel: {report_path}")
@@ -1203,15 +1204,30 @@ def _problem_reason(problem):
         for key in ("problemCategory", "problemType", "metric", "rootCause", "diagnosis", "recommendation")
         if isinstance(problem, dict)
     ).lower()
-    if "stock" in text or "остат" in text or "oos" in text:
-        return "остатки"
     if "ads" in text or "реклам" in text or any(item in text for item in ("ctr", "cpc", "drr")):
+        if problem.get("adsConfidence") == "LOW" or problem.get("impactConfidence") == "LOW":
+            return "реклама требует проверки"
         return "реклама"
     if "price" in text or "цен" in text:
         return "цена"
     if "conversion" in text or "конверс" in text or "carttoorder" in text or "addtocart" in text:
         return "конверсия"
+    if "stock" in text or "остат" in text or "oos" in text:
+        if _is_confirmed_oos_problem(problem):
+            return "остатки"
+        return "требует проверки"
     return "неизвестно"
+
+
+def _is_confirmed_oos_problem(problem):
+    if not isinstance(problem, dict):
+        return False
+    stock_state = str(problem.get("stockState") or "").upper()
+    stock_value = problem.get("realSellableStock")
+    if stock_value in (None, ""):
+        stock_value = problem.get("selectedValue")
+    has_stock_data = any(problem.get(field) not in (None, "") for field in FACTUAL_STOCK_FIELDS)
+    return has_stock_data and _to_float(stock_value) == 0 and stock_state == "BLOCKED"
 
 
 def _seller_main_reason(problems):
@@ -1426,27 +1442,27 @@ def main():
         _print_summary_stats(summary_stats)
 
     _summary_log(f"TOTAL PROBLEMS: {len(combined_problems)}")
+    telegram_messages_sent = 0
     _summary_log("TELEGRAM SUMMARY: sending")
 
-    send_telegram_morning_brief(
+    sent_summary_messages = send_telegram_morning_brief(
         combined_problems,
         summary_stats=summary_stats,
         root_cause_insights=combined_root_cause_insights,
     )
+    telegram_messages_sent += int(sent_summary_messages or 0)
 
     _summary_log("TELEGRAM SUMMARY: sent")
 
     _summary_log("TELEGRAM SELLER 3D ANALYTICS: sending")
-    send_seller_3d_analytics(seller_3d_analytics, report_date=report_date)
+    if send_seller_3d_analytics(seller_3d_analytics, report_date=report_date):
+        telegram_messages_sent += 1
     _summary_log("TELEGRAM SELLER 3D ANALYTICS: sent")
 
     if len(active_sellers) > 1:
-        _send_critical_seller_details(
-            seller_results=seller_results,
-            seller_summary_stats_by_name=seller_summary_stats_by_name,
-            combined_problems=combined_problems,
-            combined_root_cause_insights=combined_root_cause_insights,
-        )
+        _summary_log("TELEGRAM DETAILS: skipped for morning brief")
+
+    _summary_log(f"TELEGRAM MESSAGES SENT: {telegram_messages_sent}")
 
     storage.create_tasks(combined_tasks)
 
