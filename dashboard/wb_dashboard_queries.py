@@ -415,6 +415,20 @@ def fetch_sku_stocks_history(nm_id, seller_id=None, start_date=None, end_date=No
 
 
 @st.cache_data(ttl=300)
+def fetch_sku_change_log(nm_id, seller_id=None, start_date=None, end_date=None):
+    """Return change_log rows for one SKU, or an empty list when the MVP table is absent."""
+    client = get_supabase_client()
+    query = client.table("change_log").select("*").eq("nm_id", nm_id)
+    if seller_id and seller_id != "Все продавцы":
+        query = query.eq("seller_id", seller_id)
+    if start_date:
+        query = query.gte("change_date", str(start_date))
+    if end_date:
+        query = query.lte("change_date", str(end_date))
+    return _safe_execute(query.order("change_date", desc=True).order("created_at", desc=True).limit(ROW_LIMIT))
+
+
+@st.cache_data(ttl=300)
 def fetch_sku_problems(nm_id, seller_id=None, start_date=None, end_date=None):
     """Return problems rows for one SKU without assuming exact column names."""
     client = get_supabase_client()
