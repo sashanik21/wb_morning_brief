@@ -1,7 +1,5 @@
 """Formatting and normalization helpers for dashboard data."""
 
-from collections import Counter
-
 import pandas as pd
 
 
@@ -203,9 +201,55 @@ def severity_status(rows):
     return "стабильно"
 
 
+def reason_loss_summary(rows):
+    grouped = {}
+    for row in rows:
+        reason = management_reason(row)
+        summary = grouped.setdefault(
+            reason,
+            {
+                "reason": reason,
+                "lost_revenue": 0,
+                "lost_orders": 0,
+                "sku_ids": set(),
+            },
+        )
+        summary["lost_revenue"] += lost_revenue(row)
+        summary["lost_orders"] += lost_orders(row)
+        nm_id = first_present(row, ["nm_id", "nmId", "nmID"])
+        if nm_id not in (None, ""):
+            summary["sku_ids"].add(str(nm_id))
+
+    total_revenue = sum(summary["lost_revenue"] for summary in grouped.values())
+    total_orders = sum(summary["lost_orders"] for summary in grouped.values())
+    metric_key = "lost_revenue" if total_revenue > 0 else "lost_orders"
+    total_loss = total_revenue if total_revenue > 0 else total_orders
+
+    records = []
+    for summary in grouped.values():
+        metric_loss = summary[metric_key]
+        if len(grouped) == 1:
+            share = 100
+        else:
+            share = (metric_loss / total_loss * 100) if total_loss else 0
+        records.append(
+            {
+                "reason": summary["reason"],
+                "lost_revenue": summary["lost_revenue"],
+                "lost_orders": summary["lost_orders"],
+                "sku_count": len(summary["sku_ids"]),
+                "share": share,
+                "metric_key": metric_key,
+                "metric_loss": metric_loss,
+            }
+        )
+
+    return sorted(records, key=lambda record: record["metric_loss"], reverse=True)
+
+
 def main_reason(rows):
-    reasons = [management_reason(row) for row in rows]
-    return Counter(reasons).most_common(1)[0][0] if reasons else "требует проверки"
+    summary = reason_loss_summary(rows)
+    return summary[0]["reason"] if summary else "требует проверки"
 
 
 def format_money(value):

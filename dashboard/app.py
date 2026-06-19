@@ -20,6 +20,7 @@ from dashboard.formatters import (
     main_reason,
     matches_reason_filter,
     reason_explanation,
+    reason_loss_summary,
     REASON_FILTER_OPTIONS,
     prepare_seller_table,
     prepare_sku_table,
@@ -114,7 +115,16 @@ if not connection_diagnostics["problems_readable"] or (
 
 critical_sellers = len({row.get("seller_id") for row in problems if row.get("seller_id")})
 critical_sku = len({row.get("nm_id") or row.get("nmId") for row in problems if row.get("nm_id") or row.get("nmId")})
-reason = main_reason(problems)
+reason_summaries = reason_loss_summary(problems)
+top_reason = reason_summaries[0] if reason_summaries else None
+reason = top_reason["reason"] if top_reason else main_reason(problems)
+reason_loss_label = "Потеря"
+reason_loss_value = "0 ₽"
+if top_reason and top_reason["metric_key"] == "lost_orders":
+    reason_loss_label = "Потеря заказов"
+    reason_loss_value = format_number(round(top_reason["lost_orders"]))
+elif top_reason:
+    reason_loss_value = format_money(top_reason["lost_revenue"])
 
 card_1, card_2, card_3, card_4, card_5 = st.columns(5)
 card_1.metric("Потеря выручки за день", format_money(sum(lost_revenue(row) for row in problems)))
@@ -122,7 +132,26 @@ card_2.metric("Потеря заказов за день", format_number(round(s
 card_3.metric("Критичные продавцы", format_number(critical_sellers))
 card_4.metric("Критичные SKU", format_number(critical_sku))
 card_5.metric("Главная причина просадок", reason, help=reason_explanation(reason))
-st.caption(f"Что означает главная причина: {reason_explanation(reason)}")
+if top_reason:
+    st.caption(
+        f"Причина: {reason} · {reason_loss_label}: {reason_loss_value} · "
+        f"SKU: {format_number(top_reason['sku_count'])} · "
+        f"Доля потерь: {format_number(round(top_reason['share']))}%"
+    )
+    st.caption("Что означает главная причина: " + reason_explanation(reason))
+    st.markdown("**Потери по причинам:**")
+    for reason_summary in reason_summaries:
+        loss_value = (
+            format_money(reason_summary["lost_revenue"])
+            if reason_summary["metric_key"] == "lost_revenue"
+            else f"{format_number(round(reason_summary['lost_orders']))} заказов"
+        )
+        st.caption(
+            f"{reason_summary['reason'].capitalize()} — "
+            f"{loss_value} ({format_number(round(reason_summary['share']))}%)"
+        )
+else:
+    st.caption(f"Что означает главная причина: {reason_explanation(reason)}")
 
 st.subheader("Что смотреть первым")
 if problems:
