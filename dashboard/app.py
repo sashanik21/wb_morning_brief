@@ -110,11 +110,50 @@ from wb_dashboard_queries import (
     is_change_log_available,
 )
 from supabase_client import get_supabase_client, get_supabase_credentials_info
-from ad_change_history_storage import save_ad_change_history_import, save_ad_change_history_rows
+import ad_change_history_storage as ad_change_history_storage_module
 from sku_page import render_sku_page
 
 
 logger = logging.getLogger(__name__)
+
+
+def _dashboard_ad_change_history_dedupe_key(row):
+    parts = [
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("seller_id")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("campaign_id")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("nm_id")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("cluster_name")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("change_type")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("old_value")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("new_value")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("changed_at")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("source")),
+    ]
+    return "|".join(parts)
+
+
+def _dashboard_normalize_ad_change_history_row(row, seller_id, import_id=None):
+    normalized = {
+        "import_id": import_id,
+        "seller_id": ad_change_history_storage_module._string_or_none(seller_id),
+        "campaign_id": ad_change_history_storage_module._to_int(row.get("campaign_id")),
+        "nm_id": ad_change_history_storage_module._to_int(row.get("nm_id")),
+        "change_type": ad_change_history_storage_module._ad_change_history_text(row.get("change_type")),
+        "cluster_name": ad_change_history_storage_module._ad_change_history_text(row.get("cluster_name")),
+        "old_value": ad_change_history_storage_module._ad_change_history_text(row.get("old_value")),
+        "new_value": ad_change_history_storage_module._ad_change_history_text(row.get("new_value")),
+        "source": ad_change_history_storage_module._ad_change_history_text(row.get("source")),
+        "changed_at": ad_change_history_storage_module._ad_change_history_text(row.get("changed_at")),
+        "raw_row": ad_change_history_storage_module._json_safe_row(row.get("raw_row") or row),
+    }
+    normalized["dedupe_key"] = _dashboard_ad_change_history_dedupe_key(normalized)
+    return ad_change_history_storage_module._json_safe_row(normalized)
+
+
+ad_change_history_storage_module._ad_change_history_dedupe_key = _dashboard_ad_change_history_dedupe_key
+ad_change_history_storage_module._normalize_ad_change_history_row = _dashboard_normalize_ad_change_history_row
+save_ad_change_history_import = ad_change_history_storage_module.save_ad_change_history_import
+save_ad_change_history_rows = ad_change_history_storage_module.save_ad_change_history_rows
 
 def metric_tooltip(title, how, sources, check, limits):
     return (
@@ -270,7 +309,7 @@ def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None):
     query = (
         get_supabase_client()
         .table("wb_ad_change_history")
-        .select("changed_at,change_type,cluster,old_value,new_value,source,nm_id,campaign_id,seller_id")
+        .select("changed_at,change_type,cluster_name,old_value,new_value,source,nm_id,campaign_id,seller_id")
         .order("changed_at", desc=True)
         .limit(10000)
     )
@@ -292,7 +331,7 @@ def build_ad_change_history_dataframe(rows, include_campaign=False, include_nm_i
         record = {
             "Дата и время": row.get("changed_at") or "",
             "Что изменилось": row.get("change_type") or "",
-            "Кластер": row.get("cluster") or "",
+            "Кластер": row.get("cluster_name") or "",
             "Было": row.get("old_value") or "",
             "Стало": row.get("new_value") or "",
             "Источник": row.get("source") or "",
