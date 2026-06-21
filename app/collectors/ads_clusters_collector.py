@@ -11,8 +11,15 @@ from app.storage.supabase_storage import _get_client
 ADS_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v0/normquery/stats"
 ADS_DAILY_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v1/normquery/stats"
 ADS_CLUSTERS_TIMEOUT_SECONDS = 60
-ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER = int(
-    os.getenv("ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER", "20")
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER = _env_int(
+    "ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER", 20
 )
 ADS_CLUSTERS_REQUEST_PAUSE_SECONDS = float(os.getenv("ADS_CLUSTERS_REQUEST_PAUSE_SECONDS", "6.5"))
 ADS_CLUSTER_FORCE_CAMPAIGN_IDS_ENV = "ADS_CLUSTER_FORCE_CAMPAIGN_IDS"
@@ -546,13 +553,14 @@ def collect_ads_clusters(
         report_date, seller_id, ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER
     )
     campaigns = _merge_campaign_metadata(active_campaigns, wb_campaigns)
-    selected_campaign_ids = [campaign.get("campaign_id") for campaign in campaigns]
     skipped_campaign_ids = [campaign.get("campaign_id") for campaign in skipped_campaigns]
 
     _summary_log(
         "ADS CLUSTERS SELECTION: "
         f"seller_id={seller_id} campaigns_available={len(active_campaigns) + len(skipped_campaigns)} "
-        f"campaigns_selected={len(campaigns)} selected_campaign_ids={selected_campaign_ids} "
+        f"campaigns_selected={len(campaigns)} "
+        f"selected_campaign_ids={[campaign.get('campaign_id') for campaign in campaigns]} "
+        f"skipped_by_limit={len(skipped_campaigns)} "
         f"skipped_campaign_ids={skipped_campaign_ids}"
     )
     for campaign_id in skipped_campaign_ids:
@@ -565,6 +573,7 @@ def collect_ads_clusters(
         report_date, seller_id, force_campaign_ids
     )
     campaigns = _merge_force_campaigns(campaigns, force_campaigns)
+    selected_campaign_ids = [campaign.get("campaign_id") for campaign in campaigns]
 
     processed = 0
     total_clusters = 0
