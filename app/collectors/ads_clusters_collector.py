@@ -181,8 +181,18 @@ def _extract_cluster_rows(payload, campaign):
 
         spend = _first_present(item, ["sum", "spend", "expense", "expenses", "cost"])
         cart_count = _first_present(item, ["atbs", "cart_count", "cartCount", "carts"])
+        # orders_count для отчёта по кластерам соответствует колонке WB
+        # "Заказанные товары, шт", поэтому используется shks, а не orders.
         orders_count_source, orders_count = _first_present_with_key(
-            item, ["orders", "orders_count", "ordersCount"]
+            item,
+            [
+                "shks",
+                "ordered_products",
+                "orderedProducts",
+                "orders_count",
+                "ordersCount",
+                "orders",
+            ],
         )
         normalized_orders_count = _to_int(orders_count)
 
@@ -225,7 +235,7 @@ def _extract_cluster_rows(payload, campaign):
                 "cart_count": _to_int(cart_count),
                 "orders_count": normalized_orders_count,
                 "cpo_cart": _safe_cpo(spend, cart_count),
-                "cpo_order": _safe_cpo(spend, orders_count),
+                "cpo_order": _safe_cpo(spend, normalized_orders_count),
                 "raw_json": item,
             }
         )
