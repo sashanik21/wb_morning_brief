@@ -504,6 +504,14 @@ def _merge_force_campaigns(campaigns, force_campaigns):
     return list(merged_by_id.values())
 
 
+def _log_force_processing(campaign_id, nm_ids_found, clusters_received, rows_saved):
+    _summary_log("ADS CLUSTERS FORCE PROCESSING:")
+    _summary_log(f"campaign_id={campaign_id}")
+    _summary_log(f"nm_ids_found={nm_ids_found}")
+    _summary_log(f"clusters_received={clusters_received}")
+    _summary_log(f"rows_saved={rows_saved}")
+
+
 def _merge_campaign_metadata(active_campaigns, campaigns):
     by_id = {
         str(campaign.get("campaign_id")): campaign
@@ -598,6 +606,9 @@ def collect_ads_clusters(
                 f"campaign_id={campaign_id} nm_ids_found=0 "
                 "clusters_received=0 rows_saved=0"
             )
+            if is_force_campaign:
+                _summary_log(f"ADS CLUSTERS FORCE NO DATA campaign_id={campaign_id}")
+                _log_force_processing(campaign_id, 0, 0, 0)
             continue
         processed += 1
         try:
@@ -627,6 +638,8 @@ def collect_ads_clusters(
                 f"campaign_id={campaign_id} nm_ids_found={nm_ids_found} "
                 "clusters_received=0 rows_saved=0"
             )
+            if is_force_campaign:
+                _log_force_processing(campaign_id, nm_ids_found, 0, 0)
             time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
             continue
 
@@ -648,6 +661,10 @@ def collect_ads_clusters(
             f"campaign_id={campaign_id} nm_ids_found={nm_ids_found} "
             f"clusters_received={len(rows)} rows_saved={campaign_saved_rows}"
         )
+        if is_force_campaign:
+            _log_force_processing(
+                campaign_id, nm_ids_found, len(rows), campaign_saved_rows
+            )
         all_rows.extend(rows)
         time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
 

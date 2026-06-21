@@ -27,6 +27,7 @@ from app.analyzers.stocks_analyzer import build_stocks_daily_rows
 from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import ads_api_had_429, ads_rate_limit_stats, collect_ads_stats
 from app.collectors.ads_clusters_collector import (
+    ADS_CLUSTER_FORCE_CAMPAIGN_IDS_ENV,
     ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER,
     collect_ads_clusters,
 )
@@ -1013,7 +1014,8 @@ def _process_seller(storage, seller, report_date):
 
     _summary_log(
         "ADS CLUSTERS CONFIG: "
-        f"seller_id={seller_id} max_campaigns_per_seller={ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER}"
+        f"seller_id={seller_id} max_campaigns_per_seller={ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER} "
+        f"force_campaign_ids={os.getenv(ADS_CLUSTER_FORCE_CAMPAIGN_IDS_ENV, '')}"
     )
     _run_timed_stage(
         "DATA COLLECTION ads clusters",
