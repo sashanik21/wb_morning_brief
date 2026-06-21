@@ -241,6 +241,9 @@ def _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date):
         "rows_loaded_from_supabase": 0,
         "rows_after_seller_filter": 0,
         "rows_after_campaign_filter": 0,
+        "exists_in_daily_ads_metrics": False,
+        "exists_in_ads_clusters_daily": False,
+        "available_cluster_campaign_ids": [],
         "rows_after_date_filter": 0,
         "rows_after_text_filter": 0,
         "rows_before_orders_filter": 0,
@@ -354,6 +357,7 @@ def find_ads_cluster_campaign(seller_id, campaign_search):
     campaign_id_for_lookup = digits_search or normalized_search
 
     rows = []
+    source = ""
     for table_name in ("ads_clusters_daily", "daily_ads_metrics"):
         try:
             rows = (
@@ -370,6 +374,7 @@ def find_ads_cluster_campaign(seller_id, campaign_search):
         except Exception:
             rows = []
         if rows:
+            source = table_name
             break
 
     for row in rows:
@@ -383,8 +388,30 @@ def find_ads_cluster_campaign(seller_id, campaign_search):
             "campaign_name": campaign_name,
             "campaign_type": campaign_type,
             "display_name": _campaign_option_display_name(campaign_name, campaign_type),
+            "data_source": source,
         }
     return None
+
+
+@st.cache_data(ttl=300)
+def campaign_exists_in_daily_ads_metrics(seller_id, campaign_id):
+    if not seller_id or not campaign_id:
+        return False
+    try:
+        rows = (
+            get_supabase_client()
+            .table("daily_ads_metrics")
+            .select("campaign_id")
+            .eq("seller_id", seller_id)
+            .eq("campaign_id", _normalize_filter_id(campaign_id))
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        rows = []
+    return bool(rows)
 
 
 @st.cache_data(ttl=300)
@@ -415,6 +442,13 @@ def fetch_ads_cluster_rows(seller_id, campaign_id, start_date, end_date):
         row for row in rows if _normalize_filter_id(row.get("seller_id")) == selected_seller_id
     ]
     debug["rows_after_seller_filter"] = len(rows_after_seller)
+    debug["available_cluster_campaign_ids"] = sorted(
+        {
+            _normalize_filter_id(row.get("campaign_id"))
+            for row in rows_after_seller
+            if row.get("campaign_id") is not None
+        }
+    )
 
     rows_after_campaign = [
         row
@@ -422,6 +456,11 @@ def fetch_ads_cluster_rows(seller_id, campaign_id, start_date, end_date):
         if _normalize_filter_id(row.get("campaign_id")) == selected_campaign_id
     ]
     debug["rows_after_campaign_filter"] = len(rows_after_campaign)
+    debug["exists_in_ads_clusters_daily"] = bool(rows_after_campaign)
+    debug["exists_in_daily_ads_metrics"] = campaign_exists_in_daily_ads_metrics(
+        selected_seller_id,
+        selected_campaign_id,
+    )
 
     rows_after_date = []
     for row in rows_after_campaign:
@@ -759,14 +798,20 @@ with st.sidebar:
             else None
         )
         if campaign_search and found_cluster_campaign:
-            st.success(
-                "Кампания найдена:\n\n"
-                f"{found_cluster_campaign['campaign_id']}\n\n"
-                f"{_campaign_type_display_name(found_cluster_campaign['campaign_type'])}\n\n"
-                f"{found_cluster_campaign.get('seller_name') or seller_report_labels.get(selected_cluster_seller, '')}"
-            )
+            if found_cluster_campaign.get("data_source") == "ads_clusters_daily":
+                st.success(
+                    "Кампания найдена:\n\n"
+                    f"{found_cluster_campaign['campaign_id']}\n\n"
+                    f"{_campaign_type_display_name(found_cluster_campaign['campaign_type'])}\n\n"
+                    f"{found_cluster_campaign.get('seller_name') or seller_report_labels.get(selected_cluster_seller, '')}"
+                )
+            else:
+                st.warning(
+                    "Кампания найдена в рекламной статистике, но кластеры по ней ещё не собраны. "
+                    "Запустите сбор кластеров или добавьте campaign_id в ADS_CLUSTER_FORCE_CAMPAIGN_IDS."
+                )
         elif campaign_search and manual_campaign_id_parsed is not None:
-            st.warning("Кампания не найдена в ads_clusters_daily или daily_ads_metrics.")
+            st.warning("Кампания не найдена в сохранённых данных.")
 
         campaign_options, campaign_list_debug = fetch_ads_cluster_campaigns(
             selected_cluster_seller,
@@ -997,6 +1042,21 @@ if ads_cluster_request:
                     "По выбранной кампании есть кластеры, но нет кластеров с заказами ≥ 10. "
                     "Отключите фильтр."
                 )
+            elif (
+                ads_cluster_debug.get("campaign_id_source") == "manual_input"
+                and ads_cluster_debug.get("rows_after_campaign_filter") == 0
+                and ads_cluster_debug.get("exists_in_daily_ads_metrics")
+            ):
+                st.info(
+                    "Кампания найдена в рекламной статистике, но кластеры по ней ещё не собраны. "
+                    "Запустите сбор кластеров или добавьте campaign_id в ADS_CLUSTER_FORCE_CAMPAIGN_IDS."
+                )
+            elif (
+                ads_cluster_debug.get("campaign_id_source") == "manual_input"
+                and ads_cluster_debug.get("rows_after_campaign_filter") == 0
+                and not ads_cluster_debug.get("exists_in_daily_ads_metrics")
+            ):
+                st.info("Кампания не найдена в сохранённых данных.")
             else:
                 st.info("По выбранной кампании и периоду кластеров не найдено.")
         else:
@@ -1024,6 +1084,9 @@ if ads_cluster_request:
         st.write(f"campaign_list_source:\n\n{ads_cluster_debug.get('campaign_list_source', '')}")
         st.write(f"campaigns_loaded:\n\n{ads_cluster_debug.get('campaigns_loaded', 0)}")
         st.write(f"campaign_ids_loaded:\n\n{ads_cluster_debug.get('campaign_ids_loaded', [])}")
+        st.write(f"exists_in_daily_ads_metrics:\n\n{ads_cluster_debug.get('exists_in_daily_ads_metrics')}")
+        st.write(f"exists_in_ads_clusters_daily:\n\n{ads_cluster_debug.get('exists_in_ads_clusters_daily')}")
+        st.write(f"available_cluster_campaign_ids:\n\n{ads_cluster_debug.get('available_cluster_campaign_ids', [])}")
         st.write(f"rows_loaded:\n\n{ads_cluster_debug['rows_loaded_from_supabase']}")
         st.write(f"rows_after_seller:\n\n{ads_cluster_debug['rows_after_seller_filter']}")
         st.write(f"rows_after_campaign:\n\n{ads_cluster_debug['rows_after_campaign_filter']}")
