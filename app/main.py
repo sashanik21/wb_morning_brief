@@ -26,7 +26,10 @@ from app.analyzers.root_cause_analyzer import analyze_root_causes
 from app.analyzers.stocks_analyzer import build_stocks_daily_rows
 from app.analyzers.tasks_builder import build_tasks_from_problems
 from app.collectors.ads import ads_api_had_429, ads_rate_limit_stats, collect_ads_stats
-from app.collectors.ads_clusters_collector import collect_ads_clusters
+from app.collectors.ads_clusters_collector import (
+    ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER,
+    collect_ads_clusters,
+)
 from app.collectors.funnel import (
     build_top_funnel_drop_signals,
     calculate_funnel_summary_dynamics,
@@ -1008,6 +1011,10 @@ def _process_seller(storage, seller, report_date):
     ads_data = enrich_ads_time_series(ads_data, storage=storage, seller_id=seller_id)
     _attach_seller_context(ads_data, seller, seller_id)
 
+    _summary_log(
+        "ADS CLUSTERS CONFIG: "
+        f"seller_id={seller_id} max_campaigns_per_seller={ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER}"
+    )
     _run_timed_stage(
         "DATA COLLECTION ads clusters",
         lambda: collect_ads_clusters(
