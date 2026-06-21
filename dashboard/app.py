@@ -15,6 +15,7 @@ for path in (str(CURRENT_DIR), str(APP_DIR), str(PROJECT_ROOT)):
 
 from urllib.parse import quote
 
+import pandas as pd
 import streamlit as st
 
 from core import date_engine
@@ -186,6 +187,192 @@ def reason_loss_help(reason_summary):
     )
 
 
+
+@st.cache_data(ttl=300)
+def fetch_ads_cluster_sellers():
+    rows = (
+        get_supabase_client()
+        .table("ads_clusters_daily")
+        .select("seller_id,seller_name")
+        .order("seller_name")
+        .limit(10000)
+        .execute()
+        .data
+        or []
+    )
+    sellers_map = {}
+    for row in rows:
+        seller_id = row.get("seller_id")
+        seller_name = str(row.get("seller_name") or "").strip()
+        if seller_id is None or not seller_name:
+            continue
+        sellers_map[str(seller_id)] = seller_name
+    return sorted(
+        [{"seller_id": key, "seller_name": value} for key, value in sellers_map.items()],
+        key=lambda row: row["seller_name"].lower(),
+    )
+
+
+@st.cache_data(ttl=300)
+def fetch_ads_cluster_campaigns(seller_id):
+    if not seller_id:
+        return []
+    rows = (
+        get_supabase_client()
+        .table("ads_clusters_daily")
+        .select("campaign_id,campaign_name,campaign_type")
+        .eq("seller_id", seller_id)
+        .order("campaign_name")
+        .limit(10000)
+        .execute()
+        .data
+        or []
+    )
+    campaigns_map = {}
+    for row in rows:
+        campaign_id = row.get("campaign_id")
+        if campaign_id is None:
+            continue
+        campaigns_map[str(campaign_id)] = {
+            "campaign_id": str(campaign_id),
+            "campaign_name": row.get("campaign_name") or f"Кампания {campaign_id}",
+            "campaign_type": row.get("campaign_type") or "",
+        }
+    return sorted(
+        campaigns_map.values(),
+        key=lambda row: (str(row["campaign_name"]).lower(), row["campaign_id"]),
+    )
+
+
+@st.cache_data(ttl=300)
+def fetch_ads_cluster_rows(seller_id, campaign_id, start_date, end_date):
+    if not seller_id or not campaign_id or not start_date or not end_date:
+        return []
+    return (
+        get_supabase_client()
+        .table("ads_clusters_daily")
+        .select(
+            "report_date,cluster,impressions,clicks,ctr,cpc,spend,cart_count,orders_count"
+        )
+        .eq("seller_id", seller_id)
+        .eq("campaign_id", campaign_id)
+        .gte("report_date", str(start_date))
+        .lte("report_date", str(end_date))
+        .limit(10000)
+        .execute()
+        .data
+        or []
+    )
+
+
+@st.cache_data(ttl=300)
+def fetch_ads_cluster_available_dates():
+    rows = (
+        get_supabase_client()
+        .table("ads_clusters_daily")
+        .select("report_date")
+        .order("report_date", desc=True)
+        .limit(10000)
+        .execute()
+        .data
+        or []
+    )
+    return sorted({str(row.get("report_date"))[:10] for row in rows if row.get("report_date")}, reverse=True)
+
+
+def _to_number(value):
+    if value in (None, ""):
+        return 0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
+    aggregated = {}
+    for row in rows:
+        cluster = str(row.get("cluster") or "").strip()
+        if not cluster:
+            continue
+        item = aggregated.setdefault(
+            cluster,
+            {
+                "Кластер": cluster,
+                "Показы": 0.0,
+                "Клики": 0.0,
+                "Затраты": 0.0,
+                "Заказы": 0.0,
+                "Корзина": 0.0,
+            },
+        )
+        item["Показы"] += _to_number(row.get("impressions"))
+        item["Клики"] += _to_number(row.get("clicks"))
+        item["Затраты"] += _to_number(row.get("spend"))
+        item["Заказы"] += _to_number(row.get("orders_count"))
+        item["Корзина"] += _to_number(row.get("cart_count"))
+
+    report_rows = []
+    text_filter = str(cluster_filter or "").strip().lower()
+    for item in aggregated.values():
+        cluster_lower = item["Кластер"].lower()
+        if text_filter and text_filter not in cluster_lower:
+            continue
+        if only_orders_10:
+            if item["Заказы"] < 10:
+                continue
+        elif not (
+            "белый шоколад" in cluster_lower
+            or "шоколад" in cluster_lower
+            or item["Заказы"] >= 10
+        ):
+            continue
+
+        impressions = item["Показы"]
+        clicks = item["Клики"]
+        spend = item["Затраты"]
+        carts = item["Корзина"]
+        orders = item["Заказы"]
+        report_rows.append(
+            {
+                "Кластер": item["Кластер"],
+                "CTR": (clicks / impressions * 100) if impressions else None,
+                "CPO Корзины": (spend / carts) if carts else None,
+                "CPO Заказов": (spend / orders) if orders else None,
+                "Показы": int(impressions),
+                "CPC": (spend / clicks) if clicks else None,
+                "Затраты": spend,
+                "Заказы": int(orders),
+                "Корзина": int(carts),
+                "_clicks": clicks,
+            }
+        )
+
+    report_rows = sorted(report_rows, key=lambda row: (row["Заказы"], row["Затраты"]), reverse=True)
+    if not report_rows:
+        return pd.DataFrame(columns=["Кластер", "CTR", "CPO Корзины", "CPO Заказов", "Показы", "CPC", "Затраты", "Заказы", "Корзина"])
+
+    total_impressions = sum(row["Показы"] for row in report_rows)
+    total_clicks = sum(row["_clicks"] for row in report_rows)
+    total_spend = sum(row["Затраты"] for row in report_rows)
+    total_orders = sum(row["Заказы"] for row in report_rows)
+    total_carts = sum(row["Корзина"] for row in report_rows)
+    report_rows.append(
+        {
+            "Кластер": "Итого",
+            "CTR": (total_clicks / total_impressions * 100) if total_impressions else None,
+            "CPO Корзины": (total_spend / total_carts) if total_carts else None,
+            "CPO Заказов": (total_spend / total_orders) if total_orders else None,
+            "Показы": int(total_impressions),
+            "CPC": (total_spend / total_clicks) if total_clicks else None,
+            "Затраты": total_spend,
+            "Заказы": int(total_orders),
+            "Корзина": int(total_carts),
+            "_clicks": total_clicks,
+        }
+    )
+    return pd.DataFrame(report_rows).drop(columns=["_clicks"])
+
 def has_seller_id(row):
     return str(row.get("seller_id") or row.get("sellerId") or "").strip() != ""
 
@@ -320,6 +507,59 @@ with st.sidebar:
     if selected_reason != "Все причины":
         st.caption(f"Пояснение: {reason_explanation(selected_reason)}")
 
+    with st.expander("Отчёт по кластерам рекламы", expanded=False):
+        cluster_sellers = fetch_ads_cluster_sellers()
+        seller_report_options = ["", *[row["seller_id"] for row in cluster_sellers]]
+        seller_report_labels = {"": "Выберите продавца"}
+        seller_report_labels.update({row["seller_id"]: row["seller_name"] for row in cluster_sellers})
+        selected_cluster_seller = st.selectbox(
+            "продавец",
+            seller_report_options,
+            format_func=lambda value: seller_report_labels.get(value, value),
+            key="ads_cluster_seller_id",
+        )
+
+        campaign_options = fetch_ads_cluster_campaigns(selected_cluster_seller)
+        campaign_ids = ["", *[row["campaign_id"] for row in campaign_options]]
+        campaign_labels = {"": "Выберите кампанию"}
+        campaign_labels.update(
+            {
+                row["campaign_id"]: (
+                    f"{row['campaign_name']} · {row['campaign_type']} · {row['campaign_id']}"
+                    if row.get("campaign_type")
+                    else f"{row['campaign_name']} · {row['campaign_id']}"
+                )
+                for row in campaign_options
+            }
+        )
+        selected_cluster_campaign = st.selectbox(
+            "рекламная кампания",
+            campaign_ids,
+            format_func=lambda value: campaign_labels.get(value, value),
+            key="ads_cluster_campaign_id",
+            disabled=not selected_cluster_seller,
+        )
+
+        cluster_start_date = st.date_input("дата начала", value=date.today(), key="ads_cluster_start_date")
+        cluster_end_date = st.date_input("дата окончания", value=date.today(), key="ads_cluster_end_date")
+        cluster_text_filter = st.text_input("текстовый фильтр по кластеру", key="ads_cluster_text_filter")
+        only_ordered_clusters = st.checkbox(
+            "Только кластеры с заказами ≥ 10",
+            value=False,
+            key="ads_cluster_only_orders_10",
+        )
+        show_cluster_report = st.button("Показать отчёт", key="ads_cluster_show_report")
+
+        if show_cluster_report:
+            st.session_state["ads_cluster_report_request"] = {
+                "seller_id": selected_cluster_seller,
+                "campaign_id": selected_cluster_campaign,
+                "start_date": cluster_start_date.isoformat(),
+                "end_date": cluster_end_date.isoformat(),
+                "cluster_filter": cluster_text_filter,
+                "only_orders_10": only_ordered_clusters,
+            }
+
     with st.expander("➕ Добавить изменение", expanded=False):
         st.caption("Быстрое ручное внесение изменения в change_log.")
         change_log_available = is_change_log_available()
@@ -426,6 +666,53 @@ with st.sidebar:
 
     show_rows_without_seller_id = st.checkbox("Показывать строки без seller_id", value=False)
     show_debug = st.checkbox("Показать debug", value=False)
+
+ads_cluster_request = st.session_state.get("ads_cluster_report_request")
+if ads_cluster_request:
+    st.subheader("Отчёт по кластерам рекламы")
+    if not ads_cluster_request.get("seller_id") or not ads_cluster_request.get("campaign_id"):
+        st.warning("Выберите продавца и рекламную кампанию для отчёта по кластерам рекламы.")
+    elif ads_cluster_request["start_date"] > ads_cluster_request["end_date"]:
+        st.warning("Дата начала не должна быть позже даты окончания.")
+    else:
+        ads_cluster_rows = fetch_ads_cluster_rows(
+            ads_cluster_request["seller_id"],
+            ads_cluster_request["campaign_id"],
+            ads_cluster_request["start_date"],
+            ads_cluster_request["end_date"],
+        )
+        ads_cluster_report = build_ads_clusters_report(
+            ads_cluster_rows,
+            cluster_filter=ads_cluster_request.get("cluster_filter", ""),
+            only_orders_10=ads_cluster_request.get("only_orders_10", False),
+        )
+        if ads_cluster_report.empty:
+            st.info("По выбранной кампании и периоду кластеров не найдено.")
+            st.write("Debug ads_clusters_daily:")
+            st.json(
+                {
+                    "seller_id": ads_cluster_request["seller_id"],
+                    "campaign_id": ads_cluster_request["campaign_id"],
+                    "start_date": ads_cluster_request["start_date"],
+                    "end_date": ads_cluster_request["end_date"],
+                    "rows_before_filter": len(ads_cluster_rows),
+                    "rows_after_filter": 0,
+                    "available_dates_in_ads_clusters_daily": fetch_ads_cluster_available_dates(),
+                }
+            )
+        else:
+            st.dataframe(
+                ads_cluster_report,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "CTR": st.column_config.NumberColumn("CTR", format="%.2f%%"),
+                    "CPO Корзины": st.column_config.NumberColumn("CPO Корзины", format="%.2f ₽"),
+                    "CPO Заказов": st.column_config.NumberColumn("CPO Заказов", format="%.2f ₽"),
+                    "CPC": st.column_config.NumberColumn("CPC", format="%.2f ₽"),
+                    "Затраты": st.column_config.NumberColumn("Затраты", format="%.2f ₽"),
+                },
+            )
 
 excluded_problems_without_seller_id = 0
 if show_rows_without_seller_id:
