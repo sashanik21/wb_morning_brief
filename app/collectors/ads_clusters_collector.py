@@ -12,7 +12,7 @@ ADS_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v0/normquery/st
 ADS_DAILY_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v1/normquery/stats"
 ADS_CLUSTERS_TIMEOUT_SECONDS = 60
 ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER = int(
-    os.getenv("ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER", "10")
+    os.getenv("ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER", "20")
 )
 ADS_CLUSTERS_REQUEST_PAUSE_SECONDS = float(os.getenv("ADS_CLUSTERS_REQUEST_PAUSE_SECONDS", "6.5"))
 ADS_CLUSTER_FORCE_CAMPAIGN_IDS_ENV = "ADS_CLUSTER_FORCE_CAMPAIGN_IDS"
@@ -569,25 +569,27 @@ def collect_ads_clusters(
     processed = 0
     total_clusters = 0
     saved_rows = 0
+    campaigns_saved = 0
     no_data_campaigns = []
     all_rows = []
 
     for campaign in campaigns:
         campaign_id = campaign.get("campaign_id")
         is_force_campaign = bool(campaign.get("force_ads_clusters"))
+        nm_ids_found = len(_campaign_nm_ids(campaign))
         if campaign_id in (None, ""):
             continue
-        if not _campaign_nm_ids(campaign):
+        if not nm_ids_found:
             _summary_log(
                 f"ADS CLUSTERS: invalid payload campaign_id={campaign_id} "
                 "reason=no nm_id from daily_ads_metrics"
             )
-            if is_force_campaign:
-                _summary_log("ADS CLUSTERS FORCE PROCESSING:")
-                _summary_log(f"campaign_id={campaign_id}")
-                _summary_log("nm_ids_found=0")
-                _summary_log("clusters_received=0")
-                _summary_log("rows_saved=0")
+            no_data_campaigns.append(campaign_id)
+            _summary_log(
+                "ADS CLUSTERS CAMPAIGN: "
+                f"campaign_id={campaign_id} nm_ids_found=0 "
+                "clusters_received=0 rows_saved=0"
+            )
             continue
         processed += 1
         try:
@@ -603,6 +605,7 @@ def collect_ads_clusters(
             )
             rows = []
 
+        campaign_saved_rows = 0
         if not rows:
             no_data_campaigns.append(campaign_id)
             if is_force_campaign:
@@ -610,40 +613,45 @@ def collect_ads_clusters(
             _summary_log(
                 f"ADS CLUSTERS: no cluster data for campaign_id={campaign_id}"
             )
-            if is_force_campaign:
-                _summary_log("ADS CLUSTERS FORCE PROCESSING:")
-                _summary_log(f"campaign_id={campaign_id}")
-                _summary_log(f"nm_ids_found={len(_campaign_nm_ids(campaign))}")
-                _summary_log("clusters_received=0")
-                _summary_log("rows_saved=0")
+            _summary_log(
+                "ADS CLUSTERS CAMPAIGN: "
+                f"campaign_id={campaign_id} nm_ids_found={nm_ids_found} "
+                "clusters_received=0 rows_saved=0"
+            )
             time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
             continue
 
         total_clusters += len(rows)
-        campaign_saved_rows = 0
         try:
             campaign_saved_rows = _save_ads_clusters(
                 rows, report_date, seller_id, seller_name
             )
             saved_rows += campaign_saved_rows
+            if campaign_saved_rows:
+                campaigns_saved += 1
         except Exception as error:
             _summary_log(
                 f"ADS CLUSTERS: Supabase save error campaign_id={campaign_id} "
                 f"error={error}"
             )
-        if is_force_campaign:
-            _summary_log("ADS CLUSTERS FORCE PROCESSING:")
-            _summary_log(f"campaign_id={campaign_id}")
-            _summary_log(f"nm_ids_found={len(_campaign_nm_ids(campaign))}")
-            _summary_log(f"clusters_received={len(rows)}")
-            _summary_log(f"rows_saved={campaign_saved_rows}")
+        _summary_log(
+            "ADS CLUSTERS CAMPAIGN: "
+            f"campaign_id={campaign_id} nm_ids_found={nm_ids_found} "
+            f"clusters_received={len(rows)} rows_saved={campaign_saved_rows}"
+        )
         all_rows.extend(rows)
         time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
 
+    campaigns_available = len(active_campaigns) + len(skipped_campaigns)
+    campaigns_without_clusters = len(no_data_campaigns)
+    skipped_by_limit = len(skipped_campaigns)
     _summary_log(
         "ADS CLUSTERS RESULT: "
-        f"seller_id={seller_id} campaigns_available={len(active_campaigns) + len(skipped_campaigns)} "
+        f"seller_id={seller_id} campaigns_available={campaigns_available} "
         f"campaigns_selected={len(selected_campaign_ids)} "
+        f"campaigns_saved={campaigns_saved} "
+        f"campaigns_without_clusters={campaigns_without_clusters} "
+        f"skipped_by_limit={skipped_by_limit} "
         f"selected_campaign_ids={selected_campaign_ids} "
         f"skipped_campaign_ids={skipped_campaign_ids} rows_saved={saved_rows}"
     )
