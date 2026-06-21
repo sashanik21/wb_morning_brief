@@ -740,13 +740,24 @@ with st.sidebar:
         cluster_start_date = st.date_input("дата начала", key="ads_cluster_start_date")
         cluster_end_date = st.date_input("дата окончания", key="ads_cluster_end_date")
 
-        campaign_search = st.text_input(
+        manual_campaign_id_raw = st.text_input(
             "ID рекламной кампании",
             placeholder="37030841",
             key="ads_cluster_campaign_search",
             disabled=not selected_cluster_seller,
-        ).strip()
-        found_cluster_campaign = find_ads_cluster_campaign(selected_cluster_seller, campaign_search)
+        )
+        campaign_search = manual_campaign_id_raw.strip()
+        manual_campaign_id_parsed = None
+        if campaign_search:
+            if campaign_search.isdigit():
+                manual_campaign_id_parsed = int(campaign_search)
+            else:
+                st.error("ID кампании должен быть числом")
+        found_cluster_campaign = (
+            find_ads_cluster_campaign(selected_cluster_seller, campaign_search)
+            if manual_campaign_id_parsed is not None
+            else None
+        )
         if campaign_search and found_cluster_campaign:
             st.success(
                 "Кампания найдена:\n\n"
@@ -754,7 +765,7 @@ with st.sidebar:
                 f"{_campaign_type_display_name(found_cluster_campaign['campaign_type'])}\n\n"
                 f"{found_cluster_campaign.get('seller_name') or seller_report_labels.get(selected_cluster_seller, '')}"
             )
-        elif campaign_search:
+        elif campaign_search and manual_campaign_id_parsed is not None:
             st.warning("Кампания не найдена в ads_clusters_daily или daily_ads_metrics.")
 
         campaign_options, campaign_list_debug = fetch_ads_cluster_campaigns(
@@ -777,8 +788,11 @@ with st.sidebar:
             key="ads_cluster_campaign_id",
             disabled=not selected_cluster_seller or bool(campaign_search),
         )
+        campaign_id_source = "manual_input" if campaign_search else "selectbox"
         effective_cluster_campaign = (
-            found_cluster_campaign["campaign_id"] if found_cluster_campaign else selected_cluster_campaign
+            manual_campaign_id_parsed
+            if campaign_id_source == "manual_input"
+            else selected_cluster_campaign
         )
 
         cluster_available_dates = fetch_ads_cluster_available_dates(
@@ -792,11 +806,20 @@ with st.sidebar:
         )
         show_cluster_report = st.button("Показать отчёт", key="ads_cluster_show_report")
 
-        if show_cluster_report:
-            selected_campaign_debug = found_cluster_campaign or campaign_debug_by_id.get(effective_cluster_campaign, {})
+        if show_cluster_report and campaign_search and manual_campaign_id_parsed is None:
+            st.error("ID кампании должен быть числом")
+        elif show_cluster_report:
+            selected_campaign_debug = (
+                found_cluster_campaign
+                if campaign_id_source == "manual_input"
+                else campaign_debug_by_id.get(effective_cluster_campaign, {})
+            )
             st.session_state["ads_cluster_report_request"] = {
                 "seller_id": selected_cluster_seller,
                 "campaign_id": effective_cluster_campaign,
+                "manual_campaign_id_raw": manual_campaign_id_raw,
+                "manual_campaign_id_parsed": manual_campaign_id_parsed,
+                "campaign_id_source": campaign_id_source,
                 "campaign_type": selected_campaign_debug.get("campaign_type", ""),
                 "display_name": selected_campaign_debug.get("display_name", ""),
                 "start_date": cluster_start_date.isoformat(),
@@ -953,6 +976,9 @@ if ads_cluster_request:
                     ads_cluster_request.get("cluster_filter", ""),
                 ),
                 **orders_filter_debug,
+                "manual_campaign_id_raw": ads_cluster_request.get("manual_campaign_id_raw", ""),
+                "manual_campaign_id_parsed": ads_cluster_request.get("manual_campaign_id_parsed"),
+                "campaign_id_source": ads_cluster_request.get("campaign_id_source", ""),
                 "campaign_list_source": ads_cluster_request.get("campaign_list_source", ""),
                 "campaigns_loaded": ads_cluster_request.get("campaigns_loaded", 0),
                 "campaign_ids_loaded": ads_cluster_request.get("campaign_ids_loaded", []),
@@ -989,6 +1015,9 @@ if ads_cluster_request:
         st.markdown("**DEBUG ADS CLUSTERS**")
         st.write(f"selected_seller_id:\n\n{ads_cluster_debug['selected_seller_id']}")
         st.write(f"campaign_id:\n\n{ads_cluster_debug['selected_campaign_id']}")
+        st.write(f"manual_campaign_id_raw:\n\n{ads_cluster_debug.get('manual_campaign_id_raw', '')}")
+        st.write(f"manual_campaign_id_parsed:\n\n{ads_cluster_debug.get('manual_campaign_id_parsed')}")
+        st.write(f"campaign_id_source:\n\n{ads_cluster_debug.get('campaign_id_source', '')}")
         st.write(f"selected_campaign_name:\n\n{ads_cluster_debug['selected_campaign_name']}")
         st.write(f"selected_start_date:\n\n{ads_cluster_debug['selected_start_date']}")
         st.write(f"selected_end_date:\n\n{ads_cluster_debug['selected_end_date']}")
