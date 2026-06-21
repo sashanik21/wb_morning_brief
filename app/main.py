@@ -1,5 +1,5 @@
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from time import perf_counter
 from zoneinfo import ZoneInfo
 
@@ -89,6 +89,127 @@ def _log_time_checkpoint(label, started_at=None):
         message += f" | elapsed={perf_counter() - started_at:.1f}s"
     _summary_log(message)
     return utc_now, local_now
+
+
+def _parse_hh_mm(value):
+    try:
+        hour, minute = str(value).strip().split(":", 1)
+        return int(hour), int(minute)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _parse_cron_hour_minute(cron_expression):
+    parts = str(cron_expression or "").split()
+    if len(parts) != 5:
+        return None, None
+
+    try:
+        return int(parts[1]), int(parts[0])
+    except ValueError:
+        return None, None
+
+
+def _workflow_start_utc(default_start_utc):
+    raw_value = os.getenv("WORKFLOW_STARTED_AT") or os.getenv("GITHUB_RUN_STARTED_AT")
+    if not raw_value:
+        return default_start_utc
+
+    normalized = raw_value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        _summary_log(f"TIME WARNING: invalid WORKFLOW_STARTED_AT={raw_value}, fallback=app_start")
+        return default_start_utc
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _expected_run_for_actual(actual_start_utc):
+    cron_hour, cron_minute = _parse_cron_hour_minute(SCHEDULED_CRON_UTC)
+    if cron_hour is None or cron_minute is None:
+        return None
+
+    expected = datetime.combine(
+        actual_start_utc.date(),
+        time(cron_hour, cron_minute),
+        tzinfo=UTC,
+    )
+    if actual_start_utc < expected - timedelta(hours=12):
+        expected -= timedelta(days=1)
+    return expected
+
+
+def _format_minutes(value):
+    return f"{value:.1f}"
+
+
+def _log_schedule_diagnostics(run_started_utc, app_started_utc):
+    local_timezone = _local_timezone()
+    workflow_start_utc = _workflow_start_utc(run_started_utc)
+    workflow_start_local = workflow_start_utc.astimezone(local_timezone)
+    expected_run_utc = _expected_run_for_actual(workflow_start_utc)
+    cron_hour, cron_minute = _parse_cron_hour_minute(SCHEDULED_CRON_UTC)
+    local_hour, local_minute = _parse_hh_mm(SCHEDULED_LOCAL_TIME)
+    delay_minutes = (
+        (workflow_start_utc - expected_run_utc).total_seconds() / 60
+        if expected_run_utc
+        else 0
+    )
+
+    _summary_log("GITHUB EVENT:")
+    _summary_log(f"event_name={os.getenv('GITHUB_EVENT_NAME', '')}")
+    _summary_log(f"schedule={os.getenv('GITHUB_EVENT_SCHEDULE', '')}")
+    _summary_log(f"workflow_dispatch={str(os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch').lower()}")
+    _summary_log("SERVER TIME:")
+    _summary_log(f"UTC={_format_dt(app_started_utc.astimezone(UTC))}")
+    _summary_log(f"Europe/Moscow={_format_dt(app_started_utc.astimezone(ZoneInfo('Europe/Moscow')))}")
+    _summary_log("CRON RAW:")
+    _summary_log(SCHEDULED_CRON_UTC)
+    _summary_log("EXPECTED UTC:")
+    _summary_log(f"{cron_hour:02d}:{cron_minute:02d}" if cron_hour is not None else "unknown")
+    _summary_log("EXPECTED MSK:")
+    _summary_log(f"{local_hour:02d}:{local_minute:02d}" if local_hour is not None else "unknown")
+    _summary_log("EXPECTED RUN:")
+    _summary_log(f"cron_expression={SCHEDULED_CRON_UTC}")
+    _summary_log(f"next_run_time={_format_dt(expected_run_utc) if expected_run_utc else 'unknown'}")
+    _summary_log("ACTUAL RUN:")
+    _summary_log(f"workflow_start_UTC={_format_dt(workflow_start_utc)}")
+    _summary_log(f"workflow_start_Moscow={_format_dt(workflow_start_local)}")
+    _summary_log("DELAY:")
+    _summary_log(f"minutes_difference={_format_minutes(delay_minutes)}")
+    if abs(delay_minutes) > 10:
+        _summary_log("WARNING:")
+        _summary_log("workflow started later than expected")
+        _summary_log(f"delay_minutes={_format_minutes(delay_minutes)}")
+
+    return {
+        "scheduled_time": expected_run_utc,
+        "actual_start": workflow_start_utc,
+        "delay_before_start": delay_minutes,
+    }
+
+
+def _log_scheduler_summary(schedule_diagnostics, telegram_sent_utc, total_duration):
+    scheduled_time = schedule_diagnostics.get("scheduled_time")
+    actual_start = schedule_diagnostics.get("actual_start")
+    delay_before_start = schedule_diagnostics.get("delay_before_start", 0)
+    processing_duration_minutes = total_duration / 60
+    total_delay = (
+        (telegram_sent_utc - scheduled_time).total_seconds() / 60
+        if scheduled_time
+        else processing_duration_minutes
+    )
+
+    _summary_log("SCHEDULER DIAGNOSTICS")
+    _summary_log(f"scheduled_time={_format_dt(scheduled_time) if scheduled_time else 'unknown'}")
+    _summary_log(f"actual_start={_format_dt(actual_start) if actual_start else 'unknown'}")
+    _summary_log(f"telegram_sent_time={_format_dt(telegram_sent_utc)}")
+    _summary_log(f"delay_before_start={_format_minutes(delay_before_start)}")
+    _summary_log(f"processing_duration={_format_minutes(processing_duration_minutes)}")
+    _summary_log(f"total_delay={_format_minutes(total_delay)}")
 
 
 def _run_timed_stage(label, action):
@@ -1474,6 +1595,7 @@ def main():
     _summary_log("WB MORNING BRIEF START")
     _summary_log(f"SCHEDULED TIME: {SCHEDULED_LOCAL_TIME} {PROJECT_TIMEZONE} (cron UTC: {SCHEDULED_CRON_UTC})")
     _summary_log(f"ACTUAL START: UTC {_format_dt(run_started_utc)} | Local {_format_dt(run_started_local)}")
+    schedule_diagnostics = _log_schedule_diagnostics(run_started_utc, run_started_utc)
     _log_time_checkpoint("Workflow start observed by app", run_started_at)
 
     storage = get_storage()
@@ -1571,6 +1693,7 @@ def main():
     total_duration = perf_counter() - run_started_at
     finish_utc, finish_local = _now_times()
     _summary_log(f"TOTAL DURATION: {total_duration:.1f}s")
+    _log_scheduler_summary(schedule_diagnostics, telegram_sent_utc, total_duration)
     _summary_log(
         "SCHEDULE SUMMARY | "
         f"SCHEDULED TIME: {SCHEDULED_LOCAL_TIME} {PROJECT_TIMEZONE} (cron UTC: {SCHEDULED_CRON_UTC}) | "
