@@ -1,6 +1,7 @@
 """Streamlit Executive Dashboard for Morning Brief."""
 
 import hashlib
+from io import BytesIO
 import logging
 import sys
 from datetime import date
@@ -745,12 +746,19 @@ def ads_cluster_orders_filter_debug(rows, cluster_filter="", min_orders_filter=1
 AD_CHANGE_HISTORY_COLUMNS = {
     "campaign_id": ["id кампании", "campaign_id", "campaign id", "id рк"],
     "nm_id": ["id товара", "nm_id", "nm id", "артикул wb", "номенклатура"],
-    "change_type": ["что изменилось", "изменение", "change_type", "change type"],
-    "cluster": ["кластер", "cluster"],
+    "change_type": ["что изменилось", "change_type", "change type"],
+    "cluster_name": ["кластер", "cluster_name", "cluster name", "cluster"],
+    "change_action": ["изменение", "change_action", "change action"],
     "old_value": ["было", "old_value", "old value", "previous value"],
     "new_value": ["стало", "new_value", "new value", "current value"],
-    "source": ["источник", "source", "источник изменения"],
-    "changed_at": ["дата и время", "changed_at", "changed at", "дата изменения"],
+    "change_source": ["источник", "change_source", "change source", "source", "источник изменения"],
+    "changed_at": [
+        "дата и время (gmt +3)",
+        "changed_at",
+        "changed at",
+        "дата и время",
+        "дата изменения",
+    ],
 }
 
 
@@ -776,9 +784,13 @@ def _excel_cell_value(value):
     return text or None
 
 
+def _read_ad_change_history_dataframe(file_bytes):
+    return pd.read_excel(BytesIO(file_bytes), sheet_name="История изменений")
+
+
 def _parse_ad_change_history_excel(uploaded_file):
     file_bytes = uploaded_file.getvalue()
-    dataframe = pd.read_excel(uploaded_file, sheet_name="История изменений")
+    dataframe = _read_ad_change_history_dataframe(file_bytes)
     dataframe = dataframe.dropna(how="all")
     column_map = {
         field: _find_excel_column(dataframe.columns, aliases)
@@ -788,10 +800,11 @@ def _parse_ad_change_history_excel(uploaded_file):
         "campaign_id",
         "nm_id",
         "change_type",
-        "cluster",
+        "cluster_name",
+        "change_action",
         "old_value",
         "new_value",
-        "source",
+        "change_source",
         "changed_at",
     ]
     missing_fields = [field for field in required_fields if column_map.get(field) is None]
@@ -914,6 +927,16 @@ with st.sidebar:
             type=["xlsx", "xls"],
             key="ad_change_history_file",
         )
+        if uploaded_history_file is not None:
+            try:
+                preview_dataframe = _read_ad_change_history_dataframe(uploaded_history_file.getvalue())
+                st.write(f"Найдено колонок: {len(preview_dataframe.columns)}")
+                st.markdown(
+                    "\n".join(f"✓ {column}" for column in preview_dataframe.columns)
+                )
+            except Exception as error:
+                st.warning(f"Не удалось прочитать колонки файла: {error}")
+
         if st.button(
             "Загрузить историю изменений",
             disabled=not selected_import_seller or uploaded_history_file is None,
