@@ -309,6 +309,41 @@ def fetch_ads_cluster_campaigns(seller_id):
 
 
 @st.cache_data(ttl=300)
+def find_ads_cluster_campaign(seller_id, campaign_search):
+    campaign_search = str(campaign_search or "").strip()
+    if not seller_id or not campaign_search:
+        return None
+
+    rows = _fetch_ads_rows(
+        "ads_clusters_daily",
+        "seller_id,seller_name,campaign_id,campaign_name,campaign_type",
+        seller_id,
+    )
+    normalized_search = _normalize_filter_id(campaign_search).lower()
+    digits_search = "".join(char for char in campaign_search if char.isdigit())
+
+    for row in rows:
+        campaign_id = _normalize_filter_id(row.get("campaign_id"))
+        campaign_name = _campaign_display_name(campaign_id, row.get("campaign_name"))
+        normalized_campaign_name = campaign_name.strip().lower()
+        if (
+            normalized_search == campaign_id.lower()
+            or normalized_search == normalized_campaign_name
+            or (digits_search and digits_search == campaign_id)
+        ):
+            campaign_type = str(row.get("campaign_type") or "").strip()
+            return {
+                "seller_id": str(row.get("seller_id") or seller_id),
+                "seller_name": str(row.get("seller_name") or "").strip(),
+                "campaign_id": campaign_id,
+                "campaign_name": campaign_name,
+                "campaign_type": campaign_type,
+                "display_name": _campaign_option_display_name(campaign_name, campaign_type),
+            }
+    return None
+
+
+@st.cache_data(ttl=300)
 def fetch_ads_cluster_rows(seller_id, campaign_id, start_date, end_date):
     if not seller_id or not campaign_id or not start_date or not end_date:
         return [], _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date)
@@ -646,7 +681,29 @@ with st.sidebar:
             key="ads_cluster_seller_id",
         )
 
+        campaign_search = st.text_input(
+            "ID рекламной кампании",
+            placeholder="37030841",
+            key="ads_cluster_campaign_search",
+            disabled=not selected_cluster_seller,
+        ).strip()
+        found_cluster_campaign = find_ads_cluster_campaign(selected_cluster_seller, campaign_search)
+        if campaign_search and found_cluster_campaign:
+            st.session_state["ads_cluster_campaign_id"] = found_cluster_campaign["campaign_id"]
+            st.success(
+                "Кампания найдена:\n\n"
+                f"{found_cluster_campaign['campaign_id']}\n\n"
+                f"{_campaign_type_display_name(found_cluster_campaign['campaign_type'])}\n\n"
+                f"{found_cluster_campaign.get('seller_name') or seller_report_labels.get(selected_cluster_seller, '')}"
+            )
+        elif campaign_search:
+            st.warning("Кампания не найдена в ads_clusters_daily.")
+
         campaign_options = fetch_ads_cluster_campaigns(selected_cluster_seller)
+        if found_cluster_campaign and all(
+            row["campaign_id"] != found_cluster_campaign["campaign_id"] for row in campaign_options
+        ):
+            campaign_options = [found_cluster_campaign, *campaign_options]
         campaign_ids = ["", *[row["campaign_id"] for row in campaign_options]]
         campaign_labels = {"": "Выберите кампанию"}
         campaign_labels.update(
@@ -658,11 +715,14 @@ with st.sidebar:
             campaign_ids,
             format_func=lambda value: campaign_labels.get(value, value),
             key="ads_cluster_campaign_id",
-            disabled=not selected_cluster_seller,
+            disabled=not selected_cluster_seller or bool(campaign_search),
+        )
+        effective_cluster_campaign = (
+            found_cluster_campaign["campaign_id"] if found_cluster_campaign else selected_cluster_campaign
         )
 
         cluster_available_dates = fetch_ads_cluster_available_dates(
-            selected_cluster_seller, selected_cluster_campaign
+            selected_cluster_seller, effective_cluster_campaign
         )
         cluster_default_date = (
             normalize_report_date(cluster_available_dates[0])
@@ -686,10 +746,10 @@ with st.sidebar:
         show_cluster_report = st.button("Показать отчёт", key="ads_cluster_show_report")
 
         if show_cluster_report:
-            selected_campaign_debug = campaign_debug_by_id.get(selected_cluster_campaign, {})
+            selected_campaign_debug = found_cluster_campaign or campaign_debug_by_id.get(effective_cluster_campaign, {})
             st.session_state["ads_cluster_report_request"] = {
                 "seller_id": selected_cluster_seller,
-                "campaign_id": selected_cluster_campaign,
+                "campaign_id": effective_cluster_campaign,
                 "campaign_type": selected_campaign_debug.get("campaign_type", ""),
                 "display_name": selected_campaign_debug.get("display_name", ""),
                 "start_date": cluster_start_date.isoformat(),
