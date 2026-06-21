@@ -547,6 +547,8 @@ def _has_comparison_base(previous):
 
 
 def _build_sku_summary(current, previous, problem_rows, stock_rows):
+    import logging
+
     orders_delta = _change_percent(current["orders"], previous["orders"])
     revenue_delta = _change_percent(current["revenue"], previous["revenue"])
     status = "товар стабилен"
@@ -585,6 +587,19 @@ def _build_sku_summary(current, previous, problem_rows, stock_rows):
         status = "sku теряет" if (lost_rev > 0 or lost_ord > 0) else "требует внимания"
     if problem_rows:
         reason = sku_main_reason(problem_rows)
+    raw_reason = reason
+    reason = "требует проверки" if reason is None else str(reason).strip().lower()
+    actions_map = {
+        "конверсия": ["Проверить цену, фото, отзывы и карточку против конкурентов.", "Найти дату просадки конверсии и сопоставить с изменениями карточки.", "Запустить точечные улучшения карточки и контролировать конверсию ежедневно."],
+        "реклама": ["Проверить кампании с падением CTR или ростом CPC/ДРР.", "Снизить ставки или отключить неэффективные группы.", "Перераспределить бюджет на кампании с заказами и приемлемым ДРР."],
+        "остатки": ["Проверить доступный остаток и статус товара на WB.", "Запланировать поставку или перераспределение со складов.", "Не усиливать рекламу до восстановления sellable stock."],
+        "заказы": ["Проверить динамику заказов и ключевые изменения в карточке.", "Сопоставить просадку заказов с ценой, конкурентами, рекламой и остатками.", "Подтвердить причину просадки вручную перед изменениями."],
+        "выручка": ["Проверить динамику выручки, заказов и среднего чека.", "Сопоставить просадку выручки с ценой, скидками, рекламой и остатками.", "Подтвердить причину просадки вручную перед изменениями."],
+        "требует проверки": ["Проверить полноту данных по воронке, рекламе и остаткам.", "Сопоставить просадку с ценой, конкурентами и изменениями карточки."],
+    }
+    if not reason or reason == "неизвестно" or reason not in actions_map:
+        logging.getLogger(__name__).debug("UNKNOWN SKU SUMMARY REASON:\nreason=%s", raw_reason)
+        reason = "требует проверки"
     _, stock_status, stock_confirmation = _stock_snapshot(stock_rows)
     if _has_comparison_base(previous):
         confirmation = [
@@ -602,12 +617,7 @@ def _build_sku_summary(current, previous, problem_rows, stock_rows):
         confirmation.append(f"Конверсия в заказ изменилась на {_metric_delta(current.get('order_conversion'), previous.get('order_conversion'))}.")
     elif reason == "остатки":
         confirmation.append(stock_confirmation)
-    actions = {
-        "конверсия": ["Проверить цену, фото, отзывы и карточку против конкурентов.", "Найти дату просадки конверсии и сопоставить с изменениями карточки.", "Запустить точечные улучшения карточки и контролировать конверсию ежедневно."],
-        "реклама": ["Проверить кампании с падением CTR или ростом CPC/ДРР.", "Снизить ставки или отключить неэффективные группы.", "Перераспределить бюджет на кампании с заказами и приемлемым ДРР."],
-        "остатки": ["Проверить доступный остаток и статус товара на WB.", "Запланировать поставку или перераспределение со складов.", "Не усиливать рекламу до восстановления sellable stock."],
-        "требует проверки": ["Проверить полноту данных по воронке, рекламе и остаткам.", "Сопоставить просадку с ценой, конкурентами и изменениями карточки."],
-    }[reason]
+    actions = actions_map.get(reason, actions_map["требует проверки"])
     if stock_status == "нет данных" and reason != "остатки":
         confirmation.append(stock_confirmation)
     return status, reason, confirmation[:3], lost_rev, lost_ord, actions
