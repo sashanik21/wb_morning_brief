@@ -1,5 +1,6 @@
 """Streamlit Executive Dashboard for Morning Brief."""
 
+import logging
 import sys
 from datetime import date
 from html import escape
@@ -110,6 +111,7 @@ from supabase_client import get_supabase_client, get_supabase_credentials_info
 from sku_page import render_sku_page
 
 
+logger = logging.getLogger(__name__)
 
 def metric_tooltip(title, how, sources, check, limits):
     return (
@@ -222,6 +224,29 @@ def _campaign_option_display_name(campaign_name, campaign_type):
     return f"{campaign_name} | {_campaign_type_display_name(campaign_type)}"
 
 
+def _normalize_filter_id(value):
+    value = str(value or "").strip()
+    if value.endswith(".0"):
+        value = value[:-2]
+    return value
+
+
+def _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date):
+    return {
+        "selected_seller_id": _normalize_filter_id(seller_id),
+        "selected_campaign_id": _normalize_filter_id(campaign_id),
+        "selected_campaign_name": "",
+        "selected_start_date": str(start_date or ""),
+        "selected_end_date": str(end_date or ""),
+        "rows_loaded_from_supabase": 0,
+        "rows_after_seller_filter": 0,
+        "rows_after_campaign_filter": 0,
+        "rows_after_date_filter": 0,
+        "rows_after_text_filter": 0,
+        "rows_final": 0,
+    }
+
+
 @st.cache_data(ttl=300)
 def fetch_ads_cluster_sellers():
     rows = []
@@ -283,22 +308,56 @@ def fetch_ads_cluster_campaigns(seller_id):
 @st.cache_data(ttl=300)
 def fetch_ads_cluster_rows(seller_id, campaign_id, start_date, end_date):
     if not seller_id or not campaign_id or not start_date or not end_date:
-        return []
-    return (
+        return [], _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date)
+
+    debug = _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date)
+    selected_seller_id = _normalize_filter_id(seller_id)
+    selected_campaign_id = _normalize_filter_id(campaign_id)
+    selected_start_date = normalize_report_date(start_date)
+    selected_end_date = normalize_report_date(end_date)
+
+    rows = (
         get_supabase_client()
         .table("ads_clusters_daily")
         .select(
-            "report_date,cluster,impressions,clicks,ctr,cpc,spend,cart_count,orders_count"
+            "seller_id,campaign_id,campaign_name,campaign_type,report_date,cluster,impressions,clicks,ctr,cpc,spend,cart_count,orders_count"
         )
-        .eq("seller_id", seller_id)
-        .eq("campaign_id", campaign_id)
-        .gte("report_date", str(start_date))
-        .lte("report_date", str(end_date))
         .limit(10000)
         .execute()
         .data
         or []
     )
+    debug["rows_loaded_from_supabase"] = len(rows)
+
+    rows_after_seller = [
+        row for row in rows if _normalize_filter_id(row.get("seller_id")) == selected_seller_id
+    ]
+    debug["rows_after_seller_filter"] = len(rows_after_seller)
+
+    rows_after_campaign = [
+        row
+        for row in rows_after_seller
+        if _normalize_filter_id(row.get("campaign_id")) == selected_campaign_id
+    ]
+    debug["rows_after_campaign_filter"] = len(rows_after_campaign)
+
+    rows_after_date = []
+    for row in rows_after_campaign:
+        report_date = normalize_report_date(row.get("report_date"))
+        if report_date is None or selected_start_date is None or selected_end_date is None:
+            continue
+        if selected_start_date <= report_date <= selected_end_date:
+            rows_after_date.append(row)
+    debug["rows_after_date_filter"] = len(rows_after_date)
+
+    if rows_after_date:
+        debug["selected_campaign_name"] = _campaign_display_name(
+            campaign_id,
+            rows_after_date[0].get("campaign_name"),
+        )
+
+    logger.info("DEBUG ADS CLUSTERS %s", debug)
+    return rows_after_date, debug
 
 
 @st.cache_data(ttl=300)
@@ -359,12 +418,6 @@ def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
         if only_orders_10:
             if item["Заказы"] < 10:
                 continue
-        elif not (
-            "белый шоколад" in cluster_lower
-            or "шоколад" in cluster_lower
-            or item["Заказы"] >= 10
-        ):
-            continue
 
         impressions = item["Показы"]
         clicks = item["Клики"]
@@ -410,6 +463,17 @@ def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
         }
     )
     return pd.DataFrame(report_rows).drop(columns=["_clicks"])
+
+
+def count_ads_cluster_rows_after_text_filter(rows, cluster_filter=""):
+    text_filter = str(cluster_filter or "").strip().lower()
+    if not text_filter:
+        return len(rows)
+    return sum(
+        1
+        for row in rows
+        if text_filter in str(row.get("cluster") or "").strip().lower()
+    )
 
 def has_seller_id(row):
     return str(row.get("seller_id") or row.get("sellerId") or "").strip() != ""
@@ -730,7 +794,7 @@ if ads_cluster_request:
     elif ads_cluster_request["start_date"] > ads_cluster_request["end_date"]:
         st.warning("Дата начала не должна быть позже даты окончания.")
     else:
-        ads_cluster_rows = fetch_ads_cluster_rows(
+        ads_cluster_rows, ads_cluster_debug = fetch_ads_cluster_rows(
             ads_cluster_request["seller_id"],
             ads_cluster_request["campaign_id"],
             ads_cluster_request["start_date"],
@@ -741,28 +805,18 @@ if ads_cluster_request:
             cluster_filter=ads_cluster_request.get("cluster_filter", ""),
             only_orders_10=ads_cluster_request.get("only_orders_10", False),
         )
-        if show_debug:
-            st.write("Debug ads_clusters_daily:")
-            st.json(
-                {
-                    "seller_id": ads_cluster_request["seller_id"],
-                    "seller_name": ads_cluster_request.get("seller_name", ""),
-                    "campaigns_found": ads_cluster_request.get("campaigns_found"),
-                    "campaigns_after_filter": ads_cluster_request.get("campaigns_after_filter"),
-                    "selected_campaign_id": ads_cluster_request["campaign_id"],
-                    "campaign_id": ads_cluster_request["campaign_id"],
-                    "campaign_name": ads_cluster_request.get("campaign_name", ""),
-                    "campaign_type": ads_cluster_request.get("campaign_type", ""),
-                    "display_name": ads_cluster_request.get("display_name", ""),
-                    "available_campaign_ids": ads_cluster_request.get("available_campaign_ids", []),
-                    "available_dates": ads_cluster_request.get("available_dates")
-                    or fetch_ads_cluster_available_dates(
-                        ads_cluster_request["seller_id"],
-                        ads_cluster_request["campaign_id"],
-                    ),
-                    "rows_found": len(ads_cluster_rows),
-                }
-            )
+        ads_cluster_debug.update(
+            {
+                "selected_campaign_name": ads_cluster_request.get("campaign_name")
+                or ads_cluster_debug.get("selected_campaign_name", ""),
+                "rows_after_text_filter": count_ads_cluster_rows_after_text_filter(
+                    ads_cluster_rows,
+                    ads_cluster_request.get("cluster_filter", ""),
+                ),
+                "rows_final": 0 if ads_cluster_report.empty else len(ads_cluster_report[ads_cluster_report["Кластер"] != "Итого"]),
+            }
+        )
+        logger.info("DEBUG ADS CLUSTERS final %s", ads_cluster_debug)
 
         if ads_cluster_report.empty:
             st.info("По выбранной кампании и периоду кластеров не найдено.")
@@ -779,6 +833,20 @@ if ads_cluster_request:
                     "Затраты": st.column_config.NumberColumn("Затраты", format="%.2f ₽"),
                 },
             )
+        st.markdown("**DEBUG ADS CLUSTERS**")
+        st.write(f"selected_seller_id:\n\n{ads_cluster_debug['selected_seller_id']}")
+        st.write(f"campaign_id:\n\n{ads_cluster_debug['selected_campaign_id']}")
+        st.write(f"selected_campaign_name:\n\n{ads_cluster_debug['selected_campaign_name']}")
+        st.write(f"selected_start_date:\n\n{ads_cluster_debug['selected_start_date']}")
+        st.write(f"selected_end_date:\n\n{ads_cluster_debug['selected_end_date']}")
+        st.write(f"rows_loaded:\n\n{ads_cluster_debug['rows_loaded_from_supabase']}")
+        st.write(f"rows_after_seller:\n\n{ads_cluster_debug['rows_after_seller_filter']}")
+        st.write(f"rows_after_campaign:\n\n{ads_cluster_debug['rows_after_campaign_filter']}")
+        st.write(f"rows_after_date:\n\n{ads_cluster_debug['rows_after_date_filter']}")
+        st.write(f"rows_after_text:\n\n{ads_cluster_debug['rows_after_text_filter']}")
+        st.write(f"rows_final:\n\n{ads_cluster_debug['rows_final']}")
+        if show_debug:
+            st.json(ads_cluster_debug)
 
 excluded_problems_without_seller_id = 0
 if show_rows_without_seller_id:
