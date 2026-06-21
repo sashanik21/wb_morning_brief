@@ -876,7 +876,7 @@ with st.sidebar:
                     "Запустите сбор кластеров или добавьте campaign_id в ADS_CLUSTER_FORCE_CAMPAIGN_IDS."
                 )
         elif campaign_search and manual_campaign_id_parsed is not None:
-            st.warning("Кампания не найдена в сохранённых данных.")
+            st.warning("Кампания не найдена в сохранённых данных")
 
         campaign_options, campaign_list_debug = fetch_ads_cluster_campaigns(
             selected_cluster_seller,
@@ -926,6 +926,9 @@ with st.sidebar:
                 if campaign_id_source == "manual_input"
                 else campaign_debug_by_id.get(effective_cluster_campaign, {})
             )
+            if not isinstance(selected_campaign_debug, dict):
+                st.warning("Кампания не найдена в сохранённых данных")
+                selected_campaign_debug = {}
             st.session_state["ads_cluster_report_request"] = {
                 "seller_id": selected_cluster_seller,
                 "campaign_id": effective_cluster_campaign,
