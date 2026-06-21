@@ -2,12 +2,17 @@ name: WB Morning Brief MVP
 
 on:
   schedule:
+    # GitHub Actions cron is UTC: 06:05 UTC = 09:05 Europe/Moscow local time.
     - cron: "5 6 * * *"
   workflow_dispatch:
 
 jobs:
   run-morning-brief:
     runs-on: ubuntu-latest
+    env:
+      PROJECT_TIMEZONE: Europe/Moscow
+      SCHEDULED_LOCAL_TIME: "09:05"
+      SCHEDULED_CRON_UTC: "05 06 * * *"
 
     steps:
       - name: Checkout repository
@@ -34,6 +39,11 @@ jobs:
           echo "Telegram chat configured: ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
           echo "Supabase configured: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}"
           echo "Milova token configured: ${{ secrets.WB_API_TOKEN_MILOVA != '' }}"
+          echo "SCHEDULED TIME: ${SCHEDULED_LOCAL_TIME} ${PROJECT_TIMEZONE}"
+          echo "CRON UTC: ${SCHEDULED_CRON_UTC}"
+          echo "UTC now: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Local now: $(TZ=${PROJECT_TIMEZONE} date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "Workflow run started: $(TZ=${PROJECT_TIMEZONE} date '+%H:%M') local"
           python -m app.main
 
       - name: Upload XLSX reports

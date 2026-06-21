@@ -1,5 +1,7 @@
 import os
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from time import perf_counter
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -51,7 +53,50 @@ from app.storage.storage_factory import get_storage
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "summary").strip().lower()
+PROJECT_TIMEZONE = os.getenv("PROJECT_TIMEZONE", "Europe/Moscow")
+SCHEDULED_LOCAL_TIME = os.getenv("SCHEDULED_LOCAL_TIME", "09:05")
+SCHEDULED_CRON_UTC = os.getenv("SCHEDULED_CRON_UTC", "05 06 * * *")
 
+
+
+def _local_timezone():
+    try:
+        return ZoneInfo(PROJECT_TIMEZONE)
+    except Exception:
+        _summary_log(f"TIMEZONE WARNING: invalid PROJECT_TIMEZONE={PROJECT_TIMEZONE}, fallback=UTC")
+        return UTC
+
+
+def _format_dt(value):
+    return value.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _now_times():
+    utc_now = datetime.now(UTC)
+    local_now = utc_now.astimezone(_local_timezone())
+    return utc_now, local_now
+
+
+def _log_time_checkpoint(label, started_at=None):
+    utc_now, local_now = _now_times()
+    message = (
+        f"{label}: UTC now: {_format_dt(utc_now)} | "
+        f"Local now: {_format_dt(local_now)} | "
+        f"Calculated send time: {SCHEDULED_LOCAL_TIME} {PROJECT_TIMEZONE}"
+    )
+    if started_at is not None:
+        message += f" | elapsed={perf_counter() - started_at:.1f}s"
+    _summary_log(message)
+    return utc_now, local_now
+
+
+def _run_timed_stage(label, action):
+    stage_started_at = perf_counter()
+    _log_time_checkpoint(f"{label} started", stage_started_at)
+    try:
+        return action()
+    finally:
+        _log_time_checkpoint(f"{label} finished", stage_started_at)
 
 def _debug_log(*args):
     if LOG_LEVEL == "debug":
@@ -722,7 +767,7 @@ def _process_seller(storage, seller, report_date):
     _debug_log(f"PRODUCTS LOADED: {len(products)}")
     _debug_log(f"CHANGE_LOG LOADED: {len(change_log)}")
 
-    data = collect_sales_funnel()
+    data = _run_timed_stage("DATA COLLECTION funnel", collect_sales_funnel)
 
     if data is None:
         seller_result = _build_seller_result(
@@ -796,11 +841,14 @@ def _process_seller(storage, seller, report_date):
         or row.get("daysUntilOOS") not in (None, "")
     ]
 
-    ads_data = collect_ads_stats(
-        seller_id=seller_id,
-        seller_name=seller_name,
-        top_drop_nm_ids=top_drop_nm_ids,
-        oos_nm_ids=oos_nm_ids,
+    ads_data = _run_timed_stage(
+        "DATA COLLECTION ads",
+        lambda: collect_ads_stats(
+            seller_id=seller_id,
+            seller_name=seller_name,
+            top_drop_nm_ids=top_drop_nm_ids,
+            oos_nm_ids=oos_nm_ids,
+        ),
     )
     _attach_seller_context(ads_data, seller, seller_id)
 
@@ -861,7 +909,7 @@ def _process_seller(storage, seller, report_date):
     funnel_rows = perfume_intelligence["rows"]
     _attach_seller_context(funnel_rows, seller, seller_id)
 
-    raw_qbiki_rows = collect_qbiki_metrics()
+    raw_qbiki_rows = _run_timed_stage("DATA COLLECTION qbiki", collect_qbiki_metrics)
     qbiki_metrics = enrich_qbiki_metrics(
         raw_qbiki_rows, funnel_rows=funnel_rows, ads_rows=ads_data
     )
@@ -898,7 +946,9 @@ def _process_seller(storage, seller, report_date):
 
     stocks_problems = []
     try:
-        supply_stock_metrics_by_nm_id = collect_supply_stock_metrics()
+        supply_stock_metrics_by_nm_id = _run_timed_stage(
+            "DATA COLLECTION supplies", collect_supply_stock_metrics
+        )
     except Exception as error:
         _summary_log(f"SUPPLIES: seller={seller_name} status=failed reason={error}")
         supply_stock_metrics_by_nm_id = {}
@@ -1409,7 +1459,12 @@ def _send_critical_seller_details(
 
 
 def main():
+    run_started_at = perf_counter()
+    run_started_utc, run_started_local = _now_times()
     _summary_log("WB MORNING BRIEF START")
+    _summary_log(f"SCHEDULED TIME: {SCHEDULED_LOCAL_TIME} {PROJECT_TIMEZONE} (cron UTC: {SCHEDULED_CRON_UTC})")
+    _summary_log(f"ACTUAL START: UTC {_format_dt(run_started_utc)} | Local {_format_dt(run_started_local)}")
+    _log_time_checkpoint("Workflow start observed by app", run_started_at)
 
     storage = get_storage()
 
@@ -1448,6 +1503,7 @@ def main():
             seller_summary_stats_by_name[seller_name] = processed["summary_stats"]
             summary_stats = processed["summary_stats"]
 
+    _log_time_checkpoint("REPORT FORMATION started", run_started_at)
     _print_multi_seller_processing(active_sellers, seller_results)
 
     summary_stats.setdefault("sellerName", "")
@@ -1468,6 +1524,8 @@ def main():
 
     _summary_log(f"TOTAL PROBLEMS: {len(combined_problems)}")
     telegram_messages_sent = 0
+    telegram_started_at = perf_counter()
+    telegram_started_utc, telegram_started_local = _log_time_checkpoint("Telegram send started", run_started_at)
     _summary_log("TELEGRAM SUMMARY: sending")
 
     sent_summary_messages = send_telegram_morning_brief(
@@ -1487,6 +1545,8 @@ def main():
     if len(active_sellers) > 1:
         _summary_log("TELEGRAM DETAILS: skipped for morning brief")
 
+    telegram_sent_utc, telegram_sent_local = _log_time_checkpoint("Telegram send finished", telegram_started_at)
+    _summary_log(f"TELEGRAM SENT: UTC {_format_dt(telegram_sent_utc)} | Local {_format_dt(telegram_sent_local)}")
     _summary_log(f"TELEGRAM MESSAGES SENT: {telegram_messages_sent}")
 
     storage.create_tasks(combined_tasks)
@@ -1497,6 +1557,17 @@ def main():
         f"success={sum(1 for result in seller_results if result.get('processing_status') == 'success')} | "
         f"problems={len(combined_problems)} | "
         f"tasks={len(combined_tasks)}"
+    )
+    total_duration = perf_counter() - run_started_at
+    finish_utc, finish_local = _now_times()
+    _summary_log(f"TOTAL DURATION: {total_duration:.1f}s")
+    _summary_log(
+        "SCHEDULE SUMMARY | "
+        f"SCHEDULED TIME: {SCHEDULED_LOCAL_TIME} {PROJECT_TIMEZONE} (cron UTC: {SCHEDULED_CRON_UTC}) | "
+        f"ACTUAL START: UTC {_format_dt(run_started_utc)} / Local {_format_dt(run_started_local)} | "
+        f"TELEGRAM SENT: UTC {_format_dt(telegram_sent_utc)} / Local {_format_dt(telegram_sent_local)} | "
+        f"FINISHED: UTC {_format_dt(finish_utc)} / Local {_format_dt(finish_local)} | "
+        f"TOTAL DURATION: {total_duration:.1f}s"
     )
     _summary_log("WB MORNING BRIEF FINISHED")
 
