@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime, timedelta
 
 import requests
@@ -8,8 +9,10 @@ from app.collectors.ads import _ads_error_summary, _load_campaigns
 from app.storage.supabase_storage import _get_client
 
 ADS_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v0/normquery/stats"
-ADS_AUTO_STAT_WORDS_URL = "https://advert-api.wildberries.ru/adv/v2/auto/stat-words"
+ADS_DAILY_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v1/normquery/stats"
 ADS_CLUSTERS_TIMEOUT_SECONDS = 60
+ADS_CLUSTERS_MAX_CAMPAIGNS = int(os.getenv("ADS_CLUSTERS_MAX_CAMPAIGNS", "5"))
+ADS_CLUSTERS_REQUEST_PAUSE_SECONDS = float(os.getenv("ADS_CLUSTERS_REQUEST_PAUSE_SECONDS", "6.5"))
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "summary").strip().lower()
 
@@ -67,6 +70,24 @@ def _iter_dicts(value):
             yield from _iter_dicts(item)
 
 
+def _response_reason(response):
+    if response.status_code == 400:
+        return "invalid payload"
+    if response.status_code in (403, 404):
+        return "unsupported endpoint"
+    if response.status_code == 429:
+        return "rate limited"
+    return "request failed"
+
+
+def _log_ads_clusters_request(endpoint, method, campaign_id, status_code, body, payload):
+    _summary_log(
+        "ADS CLUSTERS REQUEST: "
+        f"endpoint={endpoint} method={method} campaign_id={campaign_id} "
+        f"status_code={status_code} payload={payload} response_body={body}"
+    )
+
+
 def _cluster_value(row):
     return _first_present(
         row,
@@ -83,11 +104,49 @@ def _cluster_value(row):
     )
 
 
+def _extract_rows_from_v0(payload, campaign):
+    rows = []
+    for item in payload.get("stats") or [] if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        base = {
+            "advertId": item.get("advert_id"),
+            "nmId": item.get("nm_id"),
+        }
+        for stat in item.get("stats") or []:
+            if isinstance(stat, dict):
+                rows.append({**base, **stat})
+    return rows
+
+
+def _extract_rows_from_v1(payload, campaign):
+    rows = []
+    for item in payload.get("items") or [] if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        base = {
+            "advertId": item.get("advertId"),
+            "nmId": item.get("nmId"),
+        }
+        for daily_stat in item.get("dailyStats") or []:
+            if not isinstance(daily_stat, dict):
+                continue
+            stat = daily_stat.get("stat")
+            if isinstance(stat, dict):
+                rows.append({**base, **stat, "date": daily_stat.get("date")})
+    return rows
+
+
 def _extract_cluster_rows(payload, campaign):
     rows = []
     campaign_id = campaign.get("campaign_id")
+    extracted_rows = _extract_rows_from_v0(payload, campaign) + _extract_rows_from_v1(
+        payload, campaign
+    )
+    if not extracted_rows:
+        extracted_rows = list(_iter_dicts(payload))
 
-    for item in _iter_dicts(payload):
+    for item in extracted_rows:
         cluster = _cluster_value(item)
         if cluster in (None, ""):
             continue
@@ -133,11 +192,30 @@ def _extract_cluster_rows(payload, campaign):
     return rows
 
 
-def _request_normquery_stats(token, campaign_id, report_date):
+def _campaign_nm_ids(campaign):
+    nm_ids = campaign.get("nm_ids") or campaign.get("nmIds") or []
+    if campaign.get("nm_id") not in (None, ""):
+        nm_ids = [campaign.get("nm_id"), *nm_ids]
+    normalized = []
+    seen = set()
+    for nm_id in nm_ids:
+        value = _to_int(nm_id)
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _request_normquery_stats(token, campaign, report_date):
+    campaign_id = campaign.get("campaign_id")
+    nm_ids = _campaign_nm_ids(campaign)
     payload = {
-        "advertId": _to_int(campaign_id),
         "from": str(report_date),
         "to": str(report_date),
+        "items": [
+            {"advert_id": _to_int(campaign_id), "nm_id": nm_id} for nm_id in nm_ids
+        ],
     }
     response = requests.post(
         ADS_NORMQUERY_STATS_URL,
@@ -145,11 +223,19 @@ def _request_normquery_stats(token, campaign_id, report_date):
         json=payload,
         timeout=ADS_CLUSTERS_TIMEOUT_SECONDS,
     )
+    _log_ads_clusters_request(
+        ADS_NORMQUERY_STATS_URL,
+        "POST",
+        campaign_id,
+        response.status_code,
+        response.text,
+        payload,
+    )
     if response.status_code != 200:
         _summary_log(
-            f"ADS CLUSTERS: {_ads_error_summary(response)} campaign_id={campaign_id}"
+            f"ADS CLUSTERS: {_response_reason(response)} "
+            f"{_ads_error_summary(response)} campaign_id={campaign_id}"
         )
-        _debug_log("ADS CLUSTERS TEXT:", response.text)
         return None
     try:
         return response.json()
@@ -158,18 +244,35 @@ def _request_normquery_stats(token, campaign_id, report_date):
         return None
 
 
-def _request_auto_stat_words(token, campaign_id):
-    response = requests.get(
-        ADS_AUTO_STAT_WORDS_URL,
+def _request_daily_normquery_stats(token, campaign, report_date):
+    campaign_id = campaign.get("campaign_id")
+    nm_ids = _campaign_nm_ids(campaign)
+    payload = {
+        "from": str(report_date),
+        "to": str(report_date),
+        "items": [
+            {"advertId": _to_int(campaign_id), "nmId": nm_id} for nm_id in nm_ids
+        ],
+    }
+    response = requests.post(
+        ADS_DAILY_NORMQUERY_STATS_URL,
         headers={"Authorization": token},
-        params={"id": campaign_id},
+        json=payload,
         timeout=ADS_CLUSTERS_TIMEOUT_SECONDS,
+    )
+    _log_ads_clusters_request(
+        ADS_DAILY_NORMQUERY_STATS_URL,
+        "POST",
+        campaign_id,
+        response.status_code,
+        response.text,
+        payload,
     )
     if response.status_code != 200:
         _summary_log(
-            f"ADS CLUSTERS: {_ads_error_summary(response)} campaign_id={campaign_id}"
+            f"ADS CLUSTERS: {_response_reason(response)} "
+            f"{_ads_error_summary(response)} campaign_id={campaign_id}"
         )
-        _debug_log("ADS CLUSTERS TEXT:", response.text)
         return None
     try:
         return response.json()
@@ -179,13 +282,13 @@ def _request_auto_stat_words(token, campaign_id):
 
 
 def _request_campaign_clusters(token, campaign, report_date):
-    campaign_id = campaign.get("campaign_id")
-    payload = _request_normquery_stats(token, campaign_id, report_date)
+    payload = _request_daily_normquery_stats(token, campaign, report_date)
     rows = _extract_cluster_rows(payload, campaign) if payload is not None else []
     if rows:
         return rows
 
-    payload = _request_auto_stat_words(token, campaign_id)
+    time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
+    payload = _request_normquery_stats(token, campaign, report_date)
     return _extract_cluster_rows(payload, campaign) if payload is not None else []
 
 
@@ -231,6 +334,74 @@ def _save_ads_clusters(rows, report_date, seller_id, seller_name):
     return len(normalized_rows)
 
 
+def _load_active_ads_metric_campaigns(report_date, seller_id, limit):
+    try:
+        rows = (
+            _get_client()
+            .table("daily_ads_metrics")
+            .select(
+                "campaign_id,campaign_name,campaign_type,nm_id,vendor_code,title,"
+                "impressions,clicks,spend"
+            )
+            .eq("report_date", str(report_date))
+            .eq("seller_id", _to_int(seller_id))
+            .order("spend", desc=True)
+            .limit(100)
+            .execute()
+            .data
+        )
+    except Exception as error:
+        _summary_log(f"ADS CLUSTERS: daily_ads_metrics read error error={error}")
+        return []
+
+    campaigns_by_id = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        campaign_id = row.get("campaign_id")
+        if campaign_id in (None, ""):
+            continue
+        has_activity = any(
+            (_to_number(row.get(key)) or 0) > 0
+            for key in ("impressions", "clicks", "spend")
+        )
+        if not has_activity:
+            continue
+
+        campaign = campaigns_by_id.setdefault(
+            str(campaign_id),
+            {
+                "campaign_id": campaign_id,
+                "campaign_name": row.get("campaign_name"),
+                "campaign_type": row.get("campaign_type"),
+                "nm_ids": [],
+                "vendor_code": row.get("vendor_code"),
+                "title": row.get("title"),
+            },
+        )
+        nm_id = _to_int(row.get("nm_id"))
+        if nm_id is not None and nm_id not in campaign["nm_ids"]:
+            campaign["nm_ids"].append(nm_id)
+
+    return list(campaigns_by_id.values())[:limit]
+
+
+def _merge_campaign_metadata(active_campaigns, campaigns):
+    by_id = {
+        str(campaign.get("campaign_id")): campaign
+        for campaign in campaigns or []
+        if campaign.get("campaign_id") not in (None, "")
+    }
+    merged = []
+    for active_campaign in active_campaigns or []:
+        campaign = {
+            **by_id.get(str(active_campaign.get("campaign_id")), {}),
+            **active_campaign,
+        }
+        merged.append(campaign)
+    return merged
+
+
 def collect_ads_clusters(
     report_date=None, seller_id=None, seller_name=None, campaigns=None
 ):
@@ -248,6 +419,18 @@ def collect_ads_clusters(
 
     campaigns = campaigns or []
     _summary_log(f"ADS CLUSTERS: campaigns found={len(campaigns)}")
+    active_campaigns = _load_active_ads_metric_campaigns(
+        report_date, seller_id, ADS_CLUSTERS_MAX_CAMPAIGNS
+    )
+    if active_campaigns:
+        campaigns = _merge_campaign_metadata(active_campaigns, campaigns)
+        _summary_log(
+            "ADS CLUSTERS: using active daily_ads_metrics campaigns="
+            + ",".join(str(row.get("campaign_id")) for row in campaigns)
+        )
+    else:
+        campaigns = campaigns[: min(ADS_CLUSTERS_MAX_CAMPAIGNS, 3)]
+        _summary_log("ADS CLUSTERS: no active daily_ads_metrics campaigns found")
 
     processed = 0
     total_clusters = 0
@@ -258,6 +441,12 @@ def collect_ads_clusters(
     for campaign in campaigns:
         campaign_id = campaign.get("campaign_id")
         if campaign_id in (None, ""):
+            continue
+        if not _campaign_nm_ids(campaign):
+            _summary_log(
+                f"ADS CLUSTERS: invalid payload campaign_id={campaign_id} "
+                "reason=no nm_id from daily_ads_metrics"
+            )
             continue
         processed += 1
         try:
@@ -275,7 +464,10 @@ def collect_ads_clusters(
 
         if not rows:
             no_data_campaigns.append(campaign_id)
-            _summary_log(f"ADS CLUSTERS: no data for campaign_id={campaign_id}")
+            _summary_log(
+                f"ADS CLUSTERS: no cluster data for campaign_id={campaign_id}"
+            )
+            time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
             continue
 
         total_clusters += len(rows)
@@ -287,6 +479,7 @@ def collect_ads_clusters(
                 f"error={error}"
             )
         all_rows.extend(rows)
+        time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
 
     _summary_log(
         "ADS CLUSTERS: "
