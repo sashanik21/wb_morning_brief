@@ -181,10 +181,15 @@ def _extract_cluster_rows(payload, campaign):
 
         spend = _first_present(item, ["sum", "spend", "expense", "expenses", "cost"])
         cart_count = _first_present(item, ["atbs", "cart_count", "cartCount", "carts"])
-        orders_count_source, orders_count = _first_present_with_key(
+        _, orders = _first_present_with_key(
             item, ["orders", "orders_count", "ordersCount"]
         )
+        orders_count_source, orders_count = _first_present_with_key(
+            item, ["shks", "orders", "orders_count", "ordersCount"]
+        )
         normalized_orders_count = _to_int(orders_count)
+        normalized_orders = _to_int(orders)
+        normalized_shks = _to_int(item.get("shks"))
 
         _summary_log(
             "ADS CLUSTERS ROW AUDIT: "
@@ -192,7 +197,9 @@ def _extract_cluster_rows(payload, campaign):
             f"cluster={cluster} "
             f"clicks={_to_int(item.get('clicks'))} "
             f"cart_count={_to_int(cart_count)} "
-            f"orders_count={normalized_orders_count} "
+            f"orders={normalized_orders} "
+            f"shks={normalized_shks} "
+            f"orders_count_saved={normalized_orders_count} "
             f"orders_count_source={orders_count_source}"
         )
 
