@@ -4,7 +4,7 @@ import hashlib
 from io import BytesIO
 import logging
 import sys
-from datetime import date
+from datetime import date, timedelta
 from html import escape
 from pathlib import Path
 
@@ -259,6 +259,61 @@ def _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date):
         "max_orders_count": 0,
         "rows_final": 0,
     }
+
+
+@st.cache_data(ttl=300)
+def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None, start_date=None, end_date=None):
+    query = (
+        get_supabase_client()
+        .table("wb_ad_change_history")
+        .select("changed_at,change_type,cluster,old_value,new_value,source,nm_id,campaign_id,seller_id")
+        .order("changed_at", desc=True)
+        .limit(10000)
+    )
+    if seller_id and seller_id != "Все продавцы":
+        query = query.eq("seller_id", _normalize_filter_id(seller_id))
+    if campaign_id:
+        query = query.eq("campaign_id", _normalize_filter_id(campaign_id))
+    if nm_id:
+        query = query.eq("nm_id", _normalize_filter_id(nm_id))
+    if start_date:
+        query = query.gte("changed_at", str(start_date))
+    if end_date:
+        end_day = pd.to_datetime(str(end_date), errors="coerce")
+        if pd.notna(end_day):
+            query = query.lt("changed_at", (end_day.date() + timedelta(days=1)).isoformat())
+        else:
+            query = query.lte("changed_at", str(end_date))
+    try:
+        return query.execute().data or []
+    except Exception:
+        return []
+
+
+def build_ad_change_history_dataframe(rows, include_campaign=False, include_nm_id=False):
+    records = []
+    for row in rows:
+        record = {
+            "Дата и время": row.get("changed_at") or "",
+            "Что изменилось": row.get("change_type") or "",
+            "Кластер": row.get("cluster") or "",
+            "Было": row.get("old_value") or "",
+            "Стало": row.get("new_value") or "",
+            "Источник": row.get("source") or "",
+        }
+        if include_campaign:
+            record["Кампания"] = row.get("campaign_id") or ""
+        if include_nm_id:
+            record["ID товара"] = row.get("nm_id") or ""
+        records.append(record)
+
+    columns = ["Дата и время"]
+    if include_campaign:
+        columns.append("Кампания")
+    columns.extend(["Что изменилось", "Кластер", "Было", "Стало", "Источник"])
+    if include_nm_id:
+        columns.append("ID товара")
+    return pd.DataFrame(records, columns=columns)
 
 
 @st.cache_data(ttl=300)
@@ -1341,6 +1396,29 @@ if ads_cluster_request:
                 width="stretch",
                 hide_index=True,
             )
+
+        st.subheader("История изменений кампании")
+        st.caption(
+            "Фильтр: "
+            f"campaign_id={ads_cluster_request.get('campaign_id')}, "
+            f"seller_id={ads_cluster_request.get('seller_id')}, "
+            f"период {ads_cluster_request.get('start_date')} — {ads_cluster_request.get('end_date')}"
+        )
+        ad_change_history_rows = fetch_ad_change_history_rows(
+            seller_id=ads_cluster_request.get("seller_id"),
+            campaign_id=ads_cluster_request.get("campaign_id"),
+            start_date=ads_cluster_request.get("start_date"),
+            end_date=ads_cluster_request.get("end_date"),
+        )
+        if ad_change_history_rows:
+            st.caption(f"Найдено изменений: {len(ad_change_history_rows)}")
+            st.dataframe(
+                build_ad_change_history_dataframe(ad_change_history_rows, include_nm_id=True),
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.info("История изменений по этой кампании не загружена.")
         if show_debug:
             with st.expander("Debug ADS Clusters", expanded=False):
                 st.markdown("**DEBUG ADS CLUSTERS**")
