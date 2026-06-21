@@ -109,7 +109,7 @@ from wb_dashboard_queries import (
     is_change_log_available,
 )
 from supabase_client import get_supabase_client, get_supabase_credentials_info
-from storage.supabase_storage import save_ad_change_history_import
+from ad_change_history_storage import save_ad_change_history_import, save_ad_change_history_rows
 from sku_page import render_sku_page
 
 
