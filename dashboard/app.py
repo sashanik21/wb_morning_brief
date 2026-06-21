@@ -127,7 +127,7 @@ def _dashboard_ad_change_history_dedupe_key(row):
         ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("old_value")),
         ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("new_value")),
         ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("changed_at")),
-        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("source")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("change_source")),
     ]
     return "|".join(parts)
 
@@ -142,7 +142,9 @@ def _dashboard_normalize_ad_change_history_row(row, seller_id, import_id=None):
         "cluster_name": ad_change_history_storage_module._ad_change_history_text(row.get("cluster_name")),
         "old_value": ad_change_history_storage_module._ad_change_history_text(row.get("old_value")),
         "new_value": ad_change_history_storage_module._ad_change_history_text(row.get("new_value")),
-        "source": ad_change_history_storage_module._ad_change_history_text(row.get("source")),
+        "change_source": ad_change_history_storage_module._ad_change_history_text(
+            row.get("change_source") or row.get("source")
+        ),
         "changed_at": ad_change_history_storage_module._ad_change_history_text(row.get("changed_at")),
         "raw_row": ad_change_history_storage_module._json_safe_row(row.get("raw_row") or row),
     }
@@ -150,10 +152,127 @@ def _dashboard_normalize_ad_change_history_row(row, seller_id, import_id=None):
     return ad_change_history_storage_module._json_safe_row(normalized)
 
 
+def _dashboard_row_is_empty(row):
+    raw_row = (row or {}).get("raw_row") or {}
+    if raw_row:
+        return not any(value not in (None, "") for value in raw_row.values())
+    return not any(
+        value not in (None, "")
+        for key, value in (row or {}).items()
+        if key not in {"import_id", "seller_id", "dedupe_key", "raw_row"}
+    )
+
+
+def _dashboard_save_ad_change_history_rows(seller_id, rows, rows_total=None, import_id=None):
+    total_rows = len(rows or []) if rows_total is None else rows_total
+    normalized_rows = [
+        _dashboard_normalize_ad_change_history_row(row, seller_id, import_id=import_id)
+        for row in rows or []
+    ]
+    skip_reasons = {}
+    valid_rows = []
+    seen_keys = set()
+
+    for index, row in enumerate(normalized_rows, start=1):
+        reason = None
+        if _dashboard_row_is_empty(row):
+            reason = "строка полностью пустая"
+        elif row.get("campaign_id") is None:
+            reason = "нет campaign_id"
+        elif row.get("changed_at") is None:
+            reason = "нет changed_at"
+        elif row.get("dedupe_key") in seen_keys:
+            reason = "дубль по dedupe_key"
+
+        if reason:
+            skip_reasons[f"row_{index}"] = reason
+            continue
+
+        seen_keys.add(row.get("dedupe_key"))
+        valid_rows.append(row)
+
+    existing_keys = ad_change_history_storage_module._fetch_existing_ad_change_history_keys(
+        [row.get("dedupe_key") for row in valid_rows]
+    )
+    rows_to_insert = []
+    for index, row in enumerate(valid_rows, start=1):
+        if row.get("dedupe_key") in existing_keys:
+            skip_reasons[f"valid_row_{index}"] = "дубль по dedupe_key"
+            continue
+        rows_to_insert.append(row)
+
+    error_message = None
+    if rows_to_insert:
+        success, error_message = ad_change_history_storage_module._execute_write(
+            ad_change_history_storage_module._get_client()
+            .table("wb_ad_change_history")
+            .insert(rows_to_insert),
+            "wb_ad_change_history",
+        )
+        if not success:
+            skip_reasons["insert_error"] = error_message
+            rows_to_insert = []
+
+    debug = {
+        "parsed_rows_total": total_rows,
+        "valid_rows": len(rows_to_insert),
+        "skipped_rows": total_rows - len(rows_to_insert),
+        "skip_reasons": skip_reasons,
+        "sample_payload_first_row": rows_to_insert[0] if rows_to_insert else (valid_rows[0] if valid_rows else None),
+    }
+    return len(rows_to_insert), total_rows - len(rows_to_insert), error_message, debug
+
+
+def _dashboard_save_ad_change_history_import(seller_id, file_name, file_hash, rows, rows_total):
+    existing_import = ad_change_history_storage_module._find_existing_ad_change_history_import(
+        seller_id, file_hash
+    )
+    if existing_import:
+        import_id, create_error = existing_import.get("id"), None
+    else:
+        import_id, create_error = ad_change_history_storage_module._create_ad_change_history_import(
+            seller_id, file_name, file_hash, rows_total
+        )
+    if create_error:
+        return {
+            "import_id": None,
+            "rows_total": rows_total,
+            "rows_inserted": 0,
+            "rows_skipped": rows_total,
+            "error": create_error,
+            "debug": {
+                "parsed_rows_total": rows_total,
+                "valid_rows": 0,
+                "skipped_rows": rows_total,
+                "skip_reasons": {"import_error": create_error},
+                "sample_payload_first_row": None,
+            },
+        }
+
+    rows_inserted, rows_skipped, error_message, debug = _dashboard_save_ad_change_history_rows(
+        seller_id=seller_id,
+        rows=rows,
+        rows_total=rows_total,
+        import_id=import_id,
+    )
+
+    ad_change_history_storage_module._update_ad_change_history_import(
+        import_id, rows_inserted, rows_skipped, error_message=error_message
+    )
+    return {
+        "import_id": import_id,
+        "rows_total": rows_total,
+        "rows_inserted": rows_inserted,
+        "rows_skipped": rows_skipped,
+        "error": error_message,
+        "debug": debug,
+    }
+
+
 ad_change_history_storage_module._ad_change_history_dedupe_key = _dashboard_ad_change_history_dedupe_key
 ad_change_history_storage_module._normalize_ad_change_history_row = _dashboard_normalize_ad_change_history_row
-save_ad_change_history_import = ad_change_history_storage_module.save_ad_change_history_import
-save_ad_change_history_rows = ad_change_history_storage_module.save_ad_change_history_rows
+save_ad_change_history_import = _dashboard_save_ad_change_history_import
+save_ad_change_history_rows = _dashboard_save_ad_change_history_rows
 
 def metric_tooltip(title, how, sources, check, limits):
     return (
@@ -336,7 +455,7 @@ def fetch_ad_change_history_rows_with_debug(seller_id=None, campaign_id=None):
     query = (
         get_supabase_client()
         .table("wb_ad_change_history")
-        .select("changed_at,change_type,cluster_name,old_value,new_value,source,nm_id,campaign_id,seller_id")
+        .select("changed_at,change_type,cluster_name,old_value,new_value,change_source,nm_id,campaign_id,seller_id")
         .order("changed_at", desc=True)
         .limit(10000)
     )
@@ -401,7 +520,7 @@ def build_ad_change_history_dataframe(rows, include_campaign=False, include_nm_i
             "Кластер": row.get("cluster_name") or "",
             "Было": row.get("old_value") or "",
             "Стало": row.get("new_value") or "",
-            "Источник": row.get("source") or "",
+            "Источник": row.get("change_source") or "",
         }
         if include_campaign:
             record["Кампания"] = row.get("campaign_id") or ""
@@ -416,6 +535,26 @@ def build_ad_change_history_dataframe(rows, include_campaign=False, include_nm_i
     if include_nm_id:
         columns.append("ID товара")
     return pd.DataFrame(records, columns=columns)
+
+
+def _count_saved_ad_change_history_rows_for_campaigns(seller_id, campaign_ids):
+    campaign_ids = sorted({campaign_id for campaign_id in campaign_ids if campaign_id is not None})
+    if not campaign_ids:
+        return 0
+
+    try:
+        response = (
+            get_supabase_client()
+            .table("wb_ad_change_history")
+            .select("campaign_id")
+            .eq("seller_id", ad_change_history_storage_module._string_or_none(seller_id))
+            .in_("campaign_id", campaign_ids)
+            .execute()
+        )
+    except Exception:
+        return 0
+
+    return len(response.data or [])
 
 
 @st.cache_data(ttl=300)
@@ -971,13 +1110,6 @@ def _parse_ad_change_history_excel(uploaded_file):
     }
     required_fields = [
         "campaign_id",
-        "nm_id",
-        "change_type",
-        "cluster_name",
-        "change_action",
-        "old_value",
-        "new_value",
-        "change_source",
         "changed_at",
     ]
     missing_fields = [field for field in required_fields if column_map.get(field) is None]
@@ -1124,20 +1256,61 @@ with st.sidebar:
                     rows=parsed_history["rows"],
                     rows_total=parsed_history["rows_total"],
                 )
+                campaign_ids = [
+                    ad_change_history_storage_module._to_int(row.get("campaign_id"))
+                    for row in parsed_history["rows"]
+                ]
+                fetch_ad_change_history_rows_with_debug.clear()
+                import_result["saved_rows_for_campaign"] = (
+                    _count_saved_ad_change_history_rows_for_campaigns(
+                        selected_import_seller, campaign_ids
+                    )
+                )
             except Exception as error:
                 import_result = {
                     "rows_total": 0,
                     "rows_inserted": 0,
                     "rows_skipped": 0,
                     "error": str(error),
+                    "debug": {
+                        "parsed_rows_total": 0,
+                        "valid_rows": 0,
+                        "skipped_rows": 0,
+                        "skip_reasons": {"import_error": str(error)},
+                        "sample_payload_first_row": None,
+                    },
+                    "saved_rows_for_campaign": 0,
                 }
 
-            result_1, result_2, result_3 = st.columns(3)
+            result_1, result_2, result_3, result_4 = st.columns(4)
             result_1.metric("Строк в файле", import_result.get("rows_total", 0))
             result_2.metric("Загружено", import_result.get("rows_inserted", 0))
             result_3.metric("Пропущено", import_result.get("rows_skipped", 0))
+            result_4.metric(
+                "Сохранено по кампании",
+                import_result.get("saved_rows_for_campaign", 0),
+            )
+            debug_payload = import_result.get("debug") or {}
+            with st.expander("Debug импорта истории изменений", expanded=True):
+                st.json(
+                    {
+                        "parsed_rows_total": debug_payload.get("parsed_rows_total", 0),
+                        "valid_rows": debug_payload.get("valid_rows", 0),
+                        "skipped_rows": debug_payload.get("skipped_rows", 0),
+                        "skip_reasons": debug_payload.get("skip_reasons", {}),
+                        "sample_payload_first_row": debug_payload.get("sample_payload_first_row"),
+                        "saved_rows_for_campaign": import_result.get(
+                            "saved_rows_for_campaign", 0
+                        ),
+                    }
+                )
             if import_result.get("error"):
                 st.error(import_result["error"])
+            elif import_result.get("rows_inserted", 0) == 0 and import_result.get("rows_skipped", 0) > 0:
+                st.error(
+                    "История изменений рекламы не загружена: все строки пропущены. "
+                    "Причины указаны в debug-блоке."
+                )
             else:
                 st.success("История изменений рекламы загружена")
 
