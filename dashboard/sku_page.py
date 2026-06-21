@@ -350,6 +350,61 @@ def _stocks_dataframe(rows):
     return pd.DataFrame(records).sort_values("Дата")
 
 
+@st.cache_data(ttl=300)
+def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None, start_date=None, end_date=None):
+    query = (
+        get_supabase_client()
+        .table("wb_ad_change_history")
+        .select("changed_at,change_type,cluster,old_value,new_value,source,nm_id,campaign_id,seller_id")
+        .order("changed_at", desc=True)
+        .limit(10000)
+    )
+    if seller_id and seller_id != "Все продавцы":
+        query = query.eq("seller_id", str(seller_id).strip())
+    if campaign_id:
+        query = query.eq("campaign_id", str(campaign_id).strip())
+    if nm_id:
+        query = query.eq("nm_id", str(nm_id).strip())
+    if start_date:
+        query = query.gte("changed_at", str(start_date))
+    if end_date:
+        end_day = pd.to_datetime(str(end_date), errors="coerce")
+        if pd.notna(end_day):
+            query = query.lt("changed_at", (end_day.date() + timedelta(days=1)).isoformat())
+        else:
+            query = query.lte("changed_at", str(end_date))
+    try:
+        return query.execute().data or []
+    except Exception:
+        return []
+
+
+def _ad_change_history_dataframe(rows, include_campaign=False, include_nm_id=False):
+    records = []
+    for row in rows:
+        record = {
+            "Дата и время": row.get("changed_at") or "",
+            "Что изменилось": row.get("change_type") or "",
+            "Кластер": row.get("cluster") or "",
+            "Было": row.get("old_value") or "",
+            "Стало": row.get("new_value") or "",
+            "Источник": row.get("source") or "",
+        }
+        if include_campaign:
+            record["Кампания"] = row.get("campaign_id") or ""
+        if include_nm_id:
+            record["ID товара"] = row.get("nm_id") or ""
+        records.append(record)
+
+    columns = ["Дата и время"]
+    if include_campaign:
+        columns.append("Кампания")
+    columns.extend(["Что изменилось", "Кластер", "Было", "Стало", "Источник"])
+    if include_nm_id:
+        columns.append("ID товара")
+    return pd.DataFrame(records, columns=columns)
+
+
 def _change_log_dataframe(rows):
     records = []
     for row in rows:
@@ -815,6 +870,20 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     previous_ads_rows = fetch_sku_ads_history(selected_nm_id, selected_seller, previous_start, previous_end)
     stock_rows = fetch_sku_stocks_history(selected_nm_id, selected_seller, start_date, end_date)
     change_log_rows = fetch_sku_change_log(selected_nm_id, selected_seller, start_date, end_date)
+    selected_sku = sku_by_id.get(str(selected_nm_id), {})
+    ad_history_seller_id = selected_sku.get("seller_id") or selected_seller
+    ad_change_history_rows = fetch_ad_change_history_rows(
+        seller_id=ad_history_seller_id,
+        nm_id=selected_nm_id,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+    recent_ad_change_history_rows = fetch_ad_change_history_rows(
+        seller_id=ad_history_seller_id,
+        nm_id=selected_nm_id,
+        start_date=(date.today() - timedelta(days=6)).isoformat(),
+        end_date=date.today().isoformat(),
+    )
     current_metrics = _period_metrics(history_rows, ads_rows)
     previous_metrics = _period_metrics(previous_history_rows, previous_ads_rows)
     status, summary_reason, confirmation, lost_rev, lost_ord, actions = _build_sku_summary(current_metrics, previous_metrics, problem_rows, stock_rows)
@@ -839,6 +908,11 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         if diagnosis_text:
             st.markdown(f"**Диагноз SKU:** {help_icon(SKU_DIAGNOSIS_HELP)}", unsafe_allow_html=True)
             render_diagnosis_help(diagnosis_text)
+        if recent_ad_change_history_rows:
+            st.info(
+                "По товару были изменения рекламы: "
+                f"{len(recent_ad_change_history_rows)} изменений за период."
+            )
         diag_1, diag_2, diag_3 = st.columns(3)
         diag_1.metric("Потеря выручки ⓘ", format_money(lost_rev), help=LOST_REVENUE_HELP)
         diag_2.metric("Потеря заказов ⓘ", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
@@ -976,3 +1050,20 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
             st.info("История изменений пока не заполнена.")
         else:
             st.dataframe(change_log_df, width="stretch", hide_index=True)
+
+        st.subheader("История изменений рекламы")
+        st.caption(
+            "Фильтр: "
+            f"seller_id={ad_history_seller_id}, "
+            f"nm_id={selected_nm_id}, "
+            f"период {start_date.isoformat()} — {end_date.isoformat()}"
+        )
+        if ad_change_history_rows:
+            st.caption(f"Найдено изменений: {len(ad_change_history_rows)}")
+            st.dataframe(
+                _ad_change_history_dataframe(ad_change_history_rows, include_campaign=True),
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.info("История изменений рекламы по этому товару не загружена.")
