@@ -153,9 +153,15 @@ def _dashboard_normalize_ad_change_history_row(row, seller_id, import_id=None):
 
 
 def _dashboard_row_is_empty(row):
+    if not isinstance(row, dict):
+        return False
+
     raw_row = (row or {}).get("raw_row") or {}
-    if raw_row:
+    if isinstance(raw_row, dict) and raw_row:
         return not any(value not in (None, "") for value in raw_row.values())
+    if raw_row and not isinstance(raw_row, dict):
+        return False
+
     return not any(
         value not in (None, "")
         for key, value in (row or {}).items()
@@ -177,15 +183,18 @@ def _dashboard_find_existing_ad_change_history_import(file_hash):
 
 def _dashboard_save_ad_change_history_rows(seller_id, rows, rows_total=None, import_id=None):
     total_rows = len(rows or []) if rows_total is None else rows_total
-    normalized_rows = [
-        _dashboard_normalize_ad_change_history_row(row, seller_id, import_id=import_id)
-        for row in rows or []
-    ]
     skip_reasons = {}
     valid_rows = []
     seen_keys = set()
 
-    for index, row in enumerate(normalized_rows, start=1):
+    for index, source_row in enumerate(rows or [], start=1):
+        if not isinstance(source_row, dict):
+            skip_reasons[f"row_{index}"] = f"invalid_row_type: {type(source_row).__name__}"
+            continue
+
+        row = _dashboard_normalize_ad_change_history_row(
+            source_row, seller_id, import_id=import_id
+        )
         reason = None
         if _dashboard_row_is_empty(row):
             reason = "строка полностью пустая"
@@ -237,7 +246,9 @@ def _dashboard_save_ad_change_history_rows(seller_id, rows, rows_total=None, imp
     return rows_inserted, rows_skipped, error_message, debug
 
 
-def _dashboard_save_ad_change_history_import(seller_id, file_name, file_hash, rows, rows_total):
+def _dashboard_save_ad_change_history_import(
+    seller_id, file_name, file_hash, rows, rows_total, debug_metadata=None
+):
     existing_import = _dashboard_find_existing_ad_change_history_import(file_hash)
     if (
         existing_import
@@ -258,6 +269,7 @@ def _dashboard_save_ad_change_history_import(seller_id, file_name, file_hash, ro
                 "skipped_rows": 0,
                 "skip_reasons": {},
                 "sample_payload_first_row": None,
+                **(debug_metadata or {}),
             },
         }
 
@@ -280,6 +292,7 @@ def _dashboard_save_ad_change_history_import(seller_id, file_name, file_hash, ro
                 "skipped_rows": rows_total,
                 "skip_reasons": {"import_error": create_error},
                 "sample_payload_first_row": None,
+                **(debug_metadata or {}),
             },
         }
 
@@ -289,6 +302,8 @@ def _dashboard_save_ad_change_history_import(seller_id, file_name, file_hash, ro
         rows_total=rows_total,
         import_id=import_id,
     )
+
+    debug.update(debug_metadata or {})
 
     ad_change_history_storage_module._update_ad_change_history_import(
         import_id, rows_inserted, rows_skipped, error_message=error_message
@@ -1138,6 +1153,18 @@ def _parse_ad_change_history_excel(uploaded_file):
     file_bytes = uploaded_file.getvalue()
     dataframe = _read_ad_change_history_dataframe(file_bytes)
     dataframe = dataframe.dropna(how="all")
+    records = dataframe.to_dict("records")
+    debug = {
+        "dataframe_shape": list(dataframe.shape),
+        "dataframe_columns": [str(column) for column in dataframe.columns],
+        "rows_as_records_count": len(records),
+        "first_record_type": type(records[0]).__name__ if records else None,
+        "first_record_sample": (
+            ad_change_history_storage_module._json_safe_row(records[0])
+            if records
+            else None
+        ),
+    }
     column_map = {
         field: _find_excel_column(dataframe.columns, aliases)
         for field, aliases in AD_CHANGE_HISTORY_COLUMNS.items()
@@ -1152,15 +1179,19 @@ def _parse_ad_change_history_excel(uploaded_file):
         raise ValueError(f"Не найдены обязательные колонки: {missing_labels}")
 
     rows = []
-    for _, excel_row in dataframe.iterrows():
+    for record in records:
+        if not isinstance(record, dict):
+            rows.append(record)
+            continue
+
         normalized_row = {
-            field: _excel_cell_value(excel_row[column])
+            field: _excel_cell_value(record.get(column))
             for field, column in column_map.items()
             if column is not None
         }
         normalized_row.pop("cluster", None)
         normalized_row["raw_row"] = {
-            str(column): _excel_cell_value(excel_row[column]) for column in dataframe.columns
+            str(column): _excel_cell_value(record.get(column)) for column in dataframe.columns
         }
         rows.append(normalized_row)
 
@@ -1168,7 +1199,8 @@ def _parse_ad_change_history_excel(uploaded_file):
         "file_name": uploaded_file.name,
         "file_hash": hashlib.sha256(file_bytes).hexdigest(),
         "rows": rows,
-        "rows_total": len(dataframe),
+        "rows_total": len(records),
+        "debug": debug,
     }
 
 def has_seller_id(row):
@@ -1289,10 +1321,12 @@ with st.sidebar:
                     file_hash=parsed_history["file_hash"],
                     rows=parsed_history["rows"],
                     rows_total=parsed_history["rows_total"],
+                    debug_metadata=parsed_history.get("debug"),
                 )
                 campaign_ids = [
                     ad_change_history_storage_module._to_int(row.get("campaign_id"))
                     for row in parsed_history["rows"]
+                    if isinstance(row, dict)
                 ]
                 fetch_ad_change_history_rows_with_debug.clear()
                 import_result["saved_rows_for_campaign"] = (
@@ -1332,6 +1366,11 @@ with st.sidebar:
                         "valid_rows": debug_payload.get("valid_rows", 0),
                         "skipped_rows": debug_payload.get("skipped_rows", 0),
                         "skip_reasons": debug_payload.get("skip_reasons", {}),
+                        "dataframe_shape": debug_payload.get("dataframe_shape"),
+                        "dataframe_columns": debug_payload.get("dataframe_columns"),
+                        "rows_as_records_count": debug_payload.get("rows_as_records_count"),
+                        "first_record_type": debug_payload.get("first_record_type"),
+                        "first_record_sample": debug_payload.get("first_record_sample"),
                         "sample_payload_first_row": debug_payload.get("sample_payload_first_row"),
                         "saved_rows_for_campaign": import_result.get(
                             "saved_rows_for_campaign", 0
