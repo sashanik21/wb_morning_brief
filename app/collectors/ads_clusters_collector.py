@@ -369,13 +369,6 @@ def _load_active_ads_metric_campaigns(report_date, seller_id, limit):
         campaign_id = row.get("campaign_id")
         if campaign_id in (None, ""):
             continue
-        has_activity = any(
-            (_to_number(row.get(key)) or 0) > 0
-            for key in ("impressions", "clicks", "spend", "orders_count")
-        )
-        if not has_activity:
-            continue
-
         campaign = campaigns_by_id.setdefault(
             str(campaign_id),
             {
@@ -574,6 +567,12 @@ def collect_ads_clusters(
     )
     campaigns = _merge_force_campaigns(campaigns, force_campaigns)
     selected_campaign_ids = [campaign.get("campaign_id") for campaign in campaigns]
+    if force_campaigns:
+        _summary_log(
+            "ADS CLUSTERS SELECTION AFTER FORCE: "
+            f"seller_id={seller_id} campaigns_selected={len(campaigns)} "
+            f"selected_campaign_ids={selected_campaign_ids}"
+        )
 
     processed = 0
     total_clusters = 0
@@ -619,6 +618,7 @@ def collect_ads_clusters(
             no_data_campaigns.append(campaign_id)
             if is_force_campaign:
                 _summary_log(f"ADS CLUSTERS FORCE NO DATA campaign_id={campaign_id}")
+            _summary_log(f"ADS CLUSTERS NO DATA campaign_id={campaign_id}")
             _summary_log(
                 f"ADS CLUSTERS: no cluster data for campaign_id={campaign_id}"
             )
