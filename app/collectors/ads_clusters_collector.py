@@ -29,6 +29,9 @@ ADS_CLUSTERS_AUDIT_CAMPAIGN_ID = 31971499
 ADS_CLUSTERS_AUDIT_REPORT_DATE = "2026-06-20"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "summary").strip().lower()
+ADS_CLUSTER_VERBOSE_LOGS = (
+    os.getenv("ADS_CLUSTER_VERBOSE_LOGS", "false").strip().lower() == "true"
+)
 
 
 def _debug_log(*args):
@@ -184,6 +187,14 @@ def _log_audit_summary(payload, campaign, report_date, response_rows, saved_rows
         ):
             api_zero_click_paid_views += 1
     skipped_rows = max(len(extracted_rows) - len(response_rows or []), 0)
+    rows_with_cpm = sum(
+        1 for row in response_rows or [] if row.get("cpm_bid") is not None
+    )
+    rows_without_cpm = len(response_rows or []) - rows_with_cpm
+    rows_with_avg_position = sum(
+        1 for row in response_rows or [] if row.get("avg_position") is not None
+    )
+    rows_without_avg_position = len(response_rows or []) - rows_with_avg_position
     _summary_log(
         "ADS CLUSTERS AUDIT SUMMARY: "
         f"campaign_id={campaign.get('campaign_id')} report_date={report_date} "
@@ -192,6 +203,9 @@ def _log_audit_summary(payload, campaign, report_date, response_rows, saved_rows
         f"sum_views={totals['views']} sum_clicks={totals['clicks']} "
         f"sum_atbs={totals['atbs']} sum_orders={totals['orders']} "
         f"sum_shks={totals['shks']} sum_spend={round(totals['spend'], 2)} "
+        f"rows_with_cpm={rows_with_cpm} rows_without_cpm={rows_without_cpm} "
+        f"rows_with_avg_position={rows_with_avg_position} "
+        f"rows_without_avg_position={rows_without_avg_position} "
         f"api_rows_views_gt_0_spend_gt_0_clicks_0_orders_0_shks_0={api_zero_click_paid_views}"
     )
     if saved_rows is None:
@@ -255,11 +269,22 @@ def _response_reason(response):
 
 
 def _log_ads_clusters_request(endpoint, method, campaign_id, status_code, body, payload):
-    _summary_log(
+    try:
+        response_payload = requests.models.complexjson.loads(body) if body else None
+    except ValueError:
+        response_payload = None
+    items_count, daily_stats_count = _audit_response_shape(response_payload)
+    response_truncated = bool(body) and not ADS_CLUSTER_VERBOSE_LOGS
+    log_message = (
         "ADS CLUSTERS REQUEST: "
         f"endpoint={endpoint} method={method} campaign_id={campaign_id} "
-        f"status_code={status_code} payload={payload} response_body={body}"
+        f"status_code={status_code} payload={payload} "
+        f"items_count={items_count} daily_stats_count={daily_stats_count} "
+        f"response_truncated={response_truncated}"
     )
+    if ADS_CLUSTER_VERBOSE_LOGS:
+        log_message = f"{log_message} response_body={body}"
+    _summary_log(log_message)
 
 
 def _remember_ads_clusters_request(campaign, endpoint, payload, response):
@@ -385,19 +410,20 @@ def _extract_cluster_rows(payload, campaign, report_date=None):
             f"avg_position={normalized_avg_position}"
         )
 
-        _summary_log(
-            "ADS CLUSTERS ROW AUDIT: "
-            f"campaign_id={_to_int(_first_present(item, ['advertId', 'campaignId', 'campaign_id'], campaign_id))} "
-            f"cluster={cluster} "
-            f"clicks={_to_int(item.get('clicks'))} "
-            f"cart_count={_to_int(cart_count)} "
-            f"orders_count={normalized_orders_count} "
-            f"orders_count_source={orders_count_source} "
-            f"cluster_has_cpm={normalized_cpm_bid is not None} "
-            f"cluster_has_position={normalized_avg_position is not None} "
-            f"cpm_source={cpm_source} "
-            f"position_source={position_source}"
-        )
+        if ADS_CLUSTER_VERBOSE_LOGS:
+            _summary_log(
+                "ADS CLUSTERS ROW AUDIT: "
+                f"campaign_id={_to_int(_first_present(item, ['advertId', 'campaignId', 'campaign_id'], campaign_id))} "
+                f"cluster={cluster} "
+                f"clicks={_to_int(item.get('clicks'))} "
+                f"cart_count={_to_int(cart_count)} "
+                f"orders_count={normalized_orders_count} "
+                f"orders_count_source={orders_count_source} "
+                f"cluster_has_cpm={normalized_cpm_bid is not None} "
+                f"cluster_has_position={normalized_avg_position is not None} "
+                f"cpm_source={cpm_source} "
+                f"position_source={position_source}"
+            )
 
         rows.append(
             {
