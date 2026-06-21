@@ -2,8 +2,7 @@ name: WB Morning Brief MVP
 
 on:
   schedule:
-    # GitHub Actions cron is UTC: 06:05 UTC = 09:05 Europe/Moscow local time.
-    - cron: "5 6 * * *"
+    - cron: "05 06 * * *"
   workflow_dispatch:
 
 jobs:
