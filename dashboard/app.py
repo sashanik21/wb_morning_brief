@@ -304,8 +304,35 @@ def _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date):
     }
 
 
+def _empty_ad_change_history_debug(seller_id, campaign_id):
+    return {
+        "selected_seller_id": _normalize_filter_id(seller_id),
+        "selected_campaign_id": _normalize_filter_id(campaign_id),
+        "rows_loaded": 0,
+        "rows_after_seller": 0,
+        "rows_after_campaign": 0,
+        "available_campaign_ids_for_seller": [],
+        "min_changed_at": None,
+        "max_changed_at": None,
+    }
+
+
+def _changed_at_bounds(rows):
+    changed_at_values = pd.to_datetime(
+        [row.get("changed_at") for row in rows],
+        errors="coerce",
+    ).dropna()
+    if changed_at_values.empty:
+        return None, None
+    return changed_at_values.min().isoformat(), changed_at_values.max().isoformat()
+
+
 @st.cache_data(ttl=300)
-def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None):
+def fetch_ad_change_history_rows_with_debug(seller_id=None, campaign_id=None):
+    debug = _empty_ad_change_history_debug(seller_id, campaign_id)
+    selected_seller_id = debug["selected_seller_id"]
+    selected_campaign_id = debug["selected_campaign_id"]
+
     query = (
         get_supabase_client()
         .table("wb_ad_change_history")
@@ -313,16 +340,56 @@ def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None):
         .order("changed_at", desc=True)
         .limit(10000)
     )
-    if seller_id and seller_id != "Все продавцы":
-        query = query.eq("seller_id", _normalize_filter_id(seller_id))
-    if campaign_id:
-        query = query.eq("campaign_id", _normalize_filter_id(campaign_id))
-    if nm_id:
-        query = query.eq("nm_id", _normalize_filter_id(nm_id))
     try:
-        return query.execute().data or []
+        loaded_rows = query.execute().data or []
     except Exception:
-        return []
+        return [], debug
+
+    debug["rows_loaded"] = len(loaded_rows)
+
+    if selected_seller_id and selected_seller_id != "Все продавцы":
+        seller_rows = [
+            row
+            for row in loaded_rows
+            if _normalize_filter_id(row.get("seller_id")) == selected_seller_id
+        ]
+    else:
+        seller_rows = loaded_rows
+    debug["rows_after_seller"] = len(seller_rows)
+
+    available_campaign_ids = sorted(
+        {
+            _normalize_filter_id(row.get("campaign_id"))
+            for row in seller_rows
+            if _normalize_filter_id(row.get("campaign_id"))
+        },
+        key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value),
+    )
+    debug["available_campaign_ids_for_seller"] = available_campaign_ids
+
+    if selected_campaign_id:
+        campaign_rows = [
+            row
+            for row in seller_rows
+            if _normalize_filter_id(row.get("campaign_id")) == selected_campaign_id
+        ]
+    else:
+        campaign_rows = seller_rows
+    debug["rows_after_campaign"] = len(campaign_rows)
+    debug["min_changed_at"], debug["max_changed_at"] = _changed_at_bounds(campaign_rows)
+
+    return campaign_rows, debug
+
+
+def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None):
+    rows, _debug = fetch_ad_change_history_rows_with_debug(
+        seller_id=seller_id,
+        campaign_id=campaign_id,
+    )
+    if nm_id:
+        selected_nm_id = _normalize_filter_id(nm_id)
+        rows = [row for row in rows if _normalize_filter_id(row.get("nm_id")) == selected_nm_id]
+    return rows
 
 
 def build_ad_change_history_dataframe(rows, include_campaign=False, include_nm_id=False):
@@ -1454,21 +1521,13 @@ if ads_cluster_request:
             f"campaign_id={ads_cluster_request.get('campaign_id')}, "
             f"seller_id={ads_cluster_request.get('seller_id')}"
         )
-        ad_change_history_rows = fetch_ad_change_history_rows(
+        ad_change_history_rows, ad_change_history_debug = fetch_ad_change_history_rows_with_debug(
             seller_id=ads_cluster_request.get("seller_id"),
             campaign_id=ads_cluster_request.get("campaign_id"),
         )
         if ad_change_history_rows:
-            changed_at_values = pd.to_datetime(
-                [row.get("changed_at") for row in ad_change_history_rows],
-                errors="coerce",
-            ).dropna()
-            if not changed_at_values.empty:
-                first_change_date = changed_at_values.min().date().isoformat()
-                last_change_date = changed_at_values.max().date().isoformat()
-            else:
-                first_change_date = "—"
-                last_change_date = "—"
+            first_change_date = ad_change_history_debug.get("min_changed_at") or "—"
+            last_change_date = ad_change_history_debug.get("max_changed_at") or "—"
             st.caption(f"Всего изменений: {len(ad_change_history_rows)}")
             st.caption(f"Дата первого изменения: {first_change_date}")
             st.caption(f"Дата последнего изменения: {last_change_date}")
@@ -1477,8 +1536,28 @@ if ads_cluster_request:
                 width="stretch",
                 hide_index=True,
             )
+        elif ad_change_history_debug.get("available_campaign_ids_for_seller"):
+            st.info(
+                "История по выбранной кампании не найдена.\n\n"
+                "Доступные campaign_id в истории: "
+                f"{', '.join(ad_change_history_debug['available_campaign_ids_for_seller'])}"
+            )
         else:
             st.info("История изменений по этой кампании не загружена.")
+        if show_debug:
+            with st.expander("Debug AD Change History", expanded=False):
+                st.markdown("**AD CHANGE HISTORY DEBUG:**")
+                st.write(f"selected_seller_id:\n\n{ad_change_history_debug['selected_seller_id']}")
+                st.write(f"selected_campaign_id:\n\n{ad_change_history_debug['selected_campaign_id']}")
+                st.write(f"rows_loaded:\n\n{ad_change_history_debug['rows_loaded']}")
+                st.write(f"rows_after_seller:\n\n{ad_change_history_debug['rows_after_seller']}")
+                st.write(f"rows_after_campaign:\n\n{ad_change_history_debug['rows_after_campaign']}")
+                st.write(
+                    "available_campaign_ids_for_seller:\n\n"
+                    f"{ad_change_history_debug['available_campaign_ids_for_seller']}"
+                )
+                st.write(f"min_changed_at:\n\n{ad_change_history_debug['min_changed_at']}")
+                st.write(f"max_changed_at:\n\n{ad_change_history_debug['max_changed_at']}")
         if show_debug:
             with st.expander("Debug ADS Clusters", expanded=False):
                 st.markdown("**DEBUG ADS CLUSTERS**")
