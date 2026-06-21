@@ -517,7 +517,7 @@ def _ads_cluster_report_columns():
     return ["Кластер", "CTR", "CPO Корзины", "CPO Заказов", "Показы", "CPC", "Затраты", "Заказы", "Корзина"]
 
 
-def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
+def build_ads_clusters_report(rows, cluster_filter="", min_orders_filter=10):
     aggregated = {}
     for row in rows:
         cluster = str(row.get("cluster") or "").strip()
@@ -546,9 +546,8 @@ def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
         cluster_lower = item["Кластер"].lower()
         if text_filter and text_filter not in cluster_lower:
             continue
-        if only_orders_10:
-            if item["Заказы"] < 10:
-                continue
+        if min_orders_filter > 0 and item["Заказы"] < min_orders_filter:
+            continue
 
         impressions = item["Показы"]
         clicks = item["Клики"]
@@ -639,7 +638,7 @@ def count_ads_cluster_rows_after_text_filter(rows, cluster_filter=""):
     return sum(1 for cluster in clusters if not text_filter or text_filter in cluster.lower())
 
 
-def ads_cluster_orders_filter_debug(rows, cluster_filter="", only_orders_10=False):
+def ads_cluster_orders_filter_debug(rows, cluster_filter="", min_orders_filter=10):
     aggregated = {}
     for row in rows:
         cluster = str(row.get("cluster") or "").strip()
@@ -654,14 +653,17 @@ def ads_cluster_orders_filter_debug(rows, cluster_filter="", only_orders_10=Fals
         if not text_filter or text_filter in cluster.lower()
     ]
     rows_after_text = len(orders_counts)
-    if only_orders_10:
-        rows_after_orders_filter = sum(1 for orders_count in orders_counts if orders_count >= 10)
+    if min_orders_filter > 0:
+        rows_after_orders_filter = sum(
+            1 for orders_count in orders_counts if orders_count >= min_orders_filter
+        )
         rows_final = rows_after_orders_filter
     else:
         rows_after_orders_filter = "not_applied"
         rows_final = rows_after_text
 
     return {
+        "min_orders_filter": min_orders_filter,
         "rows_before_orders_filter": rows_after_text,
         "rows_after_orders_filter": rows_after_orders_filter,
         "max_orders_count": max(orders_counts) if orders_counts else 0,
@@ -895,10 +897,12 @@ with st.sidebar:
             selected_cluster_seller, effective_cluster_campaign
         )
         cluster_text_filter = st.text_input("текстовый фильтр по кластеру", key="ads_cluster_text_filter")
-        only_ordered_clusters = st.checkbox(
-            "Только кластеры с заказами ≥ 10",
-            value=False,
-            key="ads_cluster_only_orders_10",
+        min_orders_filter = st.number_input(
+            "Минимум заказов",
+            min_value=0,
+            value=10,
+            step=1,
+            key="ads_cluster_min_orders_filter",
         )
         show_cluster_report = st.button("Показать отчёт", key="ads_cluster_show_report")
 
@@ -921,7 +925,7 @@ with st.sidebar:
                 "start_date": cluster_start_date.isoformat(),
                 "end_date": cluster_end_date.isoformat(),
                 "cluster_filter": cluster_text_filter,
-                "only_orders_10": only_ordered_clusters,
+                "min_orders_filter": min_orders_filter,
                 "seller_name": seller_report_labels.get(selected_cluster_seller, ""),
                 "campaign_name": selected_campaign_debug.get("campaign_name", ""),
                 "available_campaign_ids": [row["campaign_id"] for row in campaign_options],
@@ -1057,12 +1061,12 @@ if ads_cluster_request:
         ads_cluster_report = build_ads_clusters_report(
             ads_cluster_rows,
             cluster_filter=ads_cluster_request.get("cluster_filter", ""),
-            only_orders_10=ads_cluster_request.get("only_orders_10", False),
+            min_orders_filter=ads_cluster_request.get("min_orders_filter", 10),
         )
         orders_filter_debug = ads_cluster_orders_filter_debug(
             ads_cluster_rows,
             ads_cluster_request.get("cluster_filter", ""),
-            ads_cluster_request.get("only_orders_10", False),
+            ads_cluster_request.get("min_orders_filter", 10),
         )
         ads_cluster_debug.update(
             {
@@ -1085,13 +1089,13 @@ if ads_cluster_request:
 
         if ads_cluster_report.empty:
             if (
-                ads_cluster_request.get("only_orders_10", False)
+                ads_cluster_request.get("min_orders_filter", 10) > 0
                 and ads_cluster_debug["rows_before_orders_filter"] > 0
                 and ads_cluster_debug["rows_after_orders_filter"] == 0
             ):
                 st.info(
-                    "По выбранной кампании есть кластеры, но нет кластеров с заказами ≥ 10. "
-                    "Отключите фильтр."
+                    "По выбранной кампании есть кластеры, но нет кластеров с нужным минимумом заказов. "
+                    "Уменьшите значение в поле «Минимум заказов»."
                 )
             elif (
                 ads_cluster_debug.get("campaign_id_source") == "manual_input"
@@ -1116,32 +1120,36 @@ if ads_cluster_request:
                 width="stretch",
                 hide_index=True,
             )
-        st.markdown("**DEBUG ADS CLUSTERS**")
-        st.write(f"selected_seller_id:\n\n{ads_cluster_debug['selected_seller_id']}")
-        st.write(f"campaign_id:\n\n{ads_cluster_debug['selected_campaign_id']}")
-        st.write(f"manual_campaign_id_raw:\n\n{ads_cluster_debug.get('manual_campaign_id_raw', '')}")
-        st.write(f"manual_campaign_id_parsed:\n\n{ads_cluster_debug.get('manual_campaign_id_parsed')}")
-        st.write(f"campaign_id_source:\n\n{ads_cluster_debug.get('campaign_id_source', '')}")
-        st.write(f"selected_campaign_name:\n\n{ads_cluster_debug['selected_campaign_name']}")
-        st.write(f"selected_start_date:\n\n{ads_cluster_debug['selected_start_date']}")
-        st.write(f"selected_end_date:\n\n{ads_cluster_debug['selected_end_date']}")
-        st.write(f"campaign_list_source:\n\n{ads_cluster_debug.get('campaign_list_source', '')}")
-        st.write(f"campaigns_loaded:\n\n{ads_cluster_debug.get('campaigns_loaded', 0)}")
-        st.write(f"campaign_ids_loaded:\n\n{ads_cluster_debug.get('campaign_ids_loaded', [])}")
-        st.write(f"exists_in_daily_ads_metrics:\n\n{ads_cluster_debug.get('exists_in_daily_ads_metrics')}")
-        st.write(f"exists_in_ads_clusters_daily:\n\n{ads_cluster_debug.get('exists_in_ads_clusters_daily')}")
-        st.write(f"available_cluster_campaign_ids:\n\n{ads_cluster_debug.get('available_cluster_campaign_ids', [])}")
-        st.write(f"rows_loaded:\n\n{ads_cluster_debug['rows_loaded_from_supabase']}")
-        st.write(f"rows_after_seller:\n\n{ads_cluster_debug['rows_after_seller_filter']}")
-        st.write(f"rows_after_campaign:\n\n{ads_cluster_debug['rows_after_campaign_filter']}")
-        st.write(f"rows_after_date:\n\n{ads_cluster_debug['rows_after_date_filter']}")
-        st.write(f"rows_after_text:\n\n{ads_cluster_debug['rows_after_text_filter']}")
-        st.write(f"rows_before_orders_filter:\n\n{ads_cluster_debug['rows_before_orders_filter']}")
-        st.write(f"rows_after_orders_filter:\n\n{ads_cluster_debug['rows_after_orders_filter']}")
-        st.write(f"max_orders_count:\n\n{ads_cluster_debug['max_orders_count']}")
-        st.write(f"rows_final:\n\n{ads_cluster_debug['rows_final']}")
         if show_debug:
-            st.json(ads_cluster_debug)
+            with st.expander("Debug ADS Clusters", expanded=False):
+                st.markdown("**DEBUG ADS CLUSTERS**")
+                st.write(f"selected_seller_id:\n\n{ads_cluster_debug['selected_seller_id']}")
+                st.write(f"campaign_id:\n\n{ads_cluster_debug['selected_campaign_id']}")
+                st.write(f"manual_campaign_id_raw:\n\n{ads_cluster_debug.get('manual_campaign_id_raw', '')}")
+                st.write(f"manual_campaign_id_parsed:\n\n{ads_cluster_debug.get('manual_campaign_id_parsed')}")
+                st.write(f"campaign_id_source:\n\n{ads_cluster_debug.get('campaign_id_source', '')}")
+                st.write(f"selected_campaign_name:\n\n{ads_cluster_debug['selected_campaign_name']}")
+                st.write(f"selected_start_date:\n\n{ads_cluster_debug['selected_start_date']}")
+                st.write(f"selected_end_date:\n\n{ads_cluster_debug['selected_end_date']}")
+                st.write(f"campaign_list_source:\n\n{ads_cluster_debug.get('campaign_list_source', '')}")
+                st.write(f"campaigns_loaded:\n\n{ads_cluster_debug.get('campaigns_loaded', 0)}")
+                st.write(f"campaign_ids_loaded:\n\n{ads_cluster_debug.get('campaign_ids_loaded', [])}")
+                st.write(f"exists_in_daily_ads_metrics:\n\n{ads_cluster_debug.get('exists_in_daily_ads_metrics')}")
+                st.write(f"exists_in_ads_clusters_daily:\n\n{ads_cluster_debug.get('exists_in_ads_clusters_daily')}")
+                st.write(
+                    f"available_cluster_campaign_ids:\n\n{ads_cluster_debug.get('available_cluster_campaign_ids', [])}"
+                )
+                st.write(f"rows_loaded:\n\n{ads_cluster_debug['rows_loaded_from_supabase']}")
+                st.write(f"rows_after_seller:\n\n{ads_cluster_debug['rows_after_seller_filter']}")
+                st.write(f"rows_after_campaign:\n\n{ads_cluster_debug['rows_after_campaign_filter']}")
+                st.write(f"rows_after_date:\n\n{ads_cluster_debug['rows_after_date_filter']}")
+                st.write(f"rows_after_text:\n\n{ads_cluster_debug['rows_after_text_filter']}")
+                st.write(f"min_orders_filter:\n\n{ads_cluster_debug['min_orders_filter']}")
+                st.write(f"rows_before_orders_filter:\n\n{ads_cluster_debug['rows_before_orders_filter']}")
+                st.write(f"rows_after_orders_filter:\n\n{ads_cluster_debug['rows_after_orders_filter']}")
+                st.write(f"max_orders_count:\n\n{ads_cluster_debug['max_orders_count']}")
+                st.write(f"rows_final:\n\n{ads_cluster_debug['rows_final']}")
+                st.json(ads_cluster_debug)
 
 excluded_problems_without_seller_id = 0
 if show_rows_without_seller_id:
