@@ -63,6 +63,14 @@ def _first_present(row, keys, default=None):
     return default
 
 
+def _first_present_with_key(row, keys, default=None):
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return key, value
+    return None, default
+
+
 def _safe_cpo(spend, count):
     spend = _to_number(spend) or 0
     count = _to_number(count) or 0
@@ -173,7 +181,20 @@ def _extract_cluster_rows(payload, campaign):
 
         spend = _first_present(item, ["sum", "spend", "expense", "expenses", "cost"])
         cart_count = _first_present(item, ["atbs", "cart_count", "cartCount", "carts"])
-        orders_count = _first_present(item, ["orders", "orders_count", "ordersCount"])
+        orders_count_source, orders_count = _first_present_with_key(
+            item, ["orders", "orders_count", "ordersCount"]
+        )
+        normalized_orders_count = _to_int(orders_count)
+
+        _summary_log(
+            "ADS CLUSTERS ROW AUDIT: "
+            f"campaign_id={_to_int(_first_present(item, ['advertId', 'campaignId', 'campaign_id'], campaign_id))} "
+            f"cluster={cluster} "
+            f"clicks={_to_int(item.get('clicks'))} "
+            f"cart_count={_to_int(cart_count)} "
+            f"orders_count={normalized_orders_count} "
+            f"orders_count_source={orders_count_source}"
+        )
 
         rows.append(
             {
@@ -202,7 +223,7 @@ def _extract_cluster_rows(payload, campaign):
                 "cpc": _to_number(item.get("cpc")),
                 "spend": _to_number(spend),
                 "cart_count": _to_int(cart_count),
-                "orders_count": _to_int(orders_count),
+                "orders_count": normalized_orders_count,
                 "cpo_cart": _safe_cpo(spend, cart_count),
                 "cpo_order": _safe_cpo(spend, orders_count),
                 "raw_json": item,
