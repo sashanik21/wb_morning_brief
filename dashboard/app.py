@@ -163,6 +163,18 @@ def _dashboard_row_is_empty(row):
     )
 
 
+def _dashboard_find_existing_ad_change_history_import(file_hash):
+    rows = ad_change_history_storage_module._execute_read(
+        ad_change_history_storage_module._get_client()
+        .table("wb_ad_change_history_imports")
+        .select("id,status,rows_total,rows_inserted,rows_skipped,error_message")
+        .eq("source_file_hash", file_hash)
+        .limit(1),
+        "wb_ad_change_history_imports",
+    )
+    return rows[0] if rows else None
+
+
 def _dashboard_save_ad_change_history_rows(seller_id, rows, rows_total=None, import_id=None):
     total_rows = len(rows or []) if rows_total is None else rows_total
     normalized_rows = [
@@ -213,20 +225,42 @@ def _dashboard_save_ad_change_history_rows(seller_id, rows, rows_total=None, imp
             skip_reasons["insert_error"] = error_message
             rows_to_insert = []
 
+    rows_inserted = len(rows_to_insert) if error_message is None else 0
+    rows_skipped = total_rows - rows_inserted
     debug = {
         "parsed_rows_total": total_rows,
-        "valid_rows": len(rows_to_insert),
-        "skipped_rows": total_rows - len(rows_to_insert),
+        "valid_rows": len(valid_rows),
+        "skipped_rows": rows_skipped,
         "skip_reasons": skip_reasons,
         "sample_payload_first_row": rows_to_insert[0] if rows_to_insert else (valid_rows[0] if valid_rows else None),
     }
-    return len(rows_to_insert), total_rows - len(rows_to_insert), error_message, debug
+    return rows_inserted, rows_skipped, error_message, debug
 
 
 def _dashboard_save_ad_change_history_import(seller_id, file_name, file_hash, rows, rows_total):
-    existing_import = ad_change_history_storage_module._find_existing_ad_change_history_import(
-        seller_id, file_hash
-    )
+    existing_import = _dashboard_find_existing_ad_change_history_import(file_hash)
+    if (
+        existing_import
+        and existing_import.get("status") == "parsed"
+        and (existing_import.get("rows_inserted") or 0) > 0
+    ):
+        rows_inserted = existing_import.get("rows_inserted") or 0
+        return {
+            "import_id": existing_import.get("id"),
+            "rows_total": existing_import.get("rows_total") or rows_total,
+            "rows_inserted": rows_inserted,
+            "rows_skipped": existing_import.get("rows_skipped") or 0,
+            "error": None,
+            "message": "Файл уже был загружен ранее",
+            "debug": {
+                "parsed_rows_total": rows_total,
+                "valid_rows": rows_inserted,
+                "skipped_rows": 0,
+                "skip_reasons": {},
+                "sample_payload_first_row": None,
+            },
+        }
+
     if existing_import:
         import_id, create_error = existing_import.get("id"), None
     else:
@@ -1312,7 +1346,7 @@ with st.sidebar:
                     "Причины указаны в debug-блоке."
                 )
             else:
-                st.success("История изменений рекламы загружена")
+                st.success(import_result.get("message") or "История изменений рекламы загружена")
 
 date_problems = []
 if report_date:
