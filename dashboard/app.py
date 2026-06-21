@@ -258,6 +258,10 @@ def _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date):
         "rows_after_orders_filter": 0,
         "max_orders_count": 0,
         "rows_final": 0,
+        "cpm_bid_present": False,
+        "avg_position_present": False,
+        "sample_cpm_bid": None,
+        "sample_avg_position": None,
     }
 
 
@@ -532,6 +536,14 @@ def fetch_ads_cluster_rows(seller_id, campaign_id, start_date, end_date):
         if selected_start_date <= report_date <= selected_end_date:
             rows_after_date.append(row)
     debug["rows_after_date_filter"] = len(rows_after_date)
+    debug["cpm_bid_present"] = any(
+        _to_optional_number(row.get("cpm_bid")) is not None for row in rows_after_date
+    )
+    debug["avg_position_present"] = any(
+        _to_optional_number(row.get("avg_position")) is not None for row in rows_after_date
+    )
+    debug["sample_cpm_bid"] = _sample_present_value(rows_after_date, "cpm_bid")
+    debug["sample_avg_position"] = _sample_present_value(rows_after_date, "avg_position")
 
     if rows_after_date:
         debug["selected_campaign_name"] = _campaign_display_name(
@@ -589,6 +601,14 @@ def _average_present(values):
     if not present_values:
         return pd.NA
     return sum(present_values) / len(present_values)
+
+
+def _sample_present_value(rows, field_name):
+    for row in rows:
+        value = row.get(field_name)
+        if _to_optional_number(value) is not None:
+            return value
+    return None
 
 
 def _ads_cluster_report_columns():
@@ -1443,6 +1463,10 @@ if ads_cluster_request:
                 st.write(f"rows_after_seller:\n\n{ads_cluster_debug['rows_after_seller_filter']}")
                 st.write(f"rows_after_campaign:\n\n{ads_cluster_debug['rows_after_campaign_filter']}")
                 st.write(f"rows_after_date:\n\n{ads_cluster_debug['rows_after_date_filter']}")
+                st.write(f"cpm_bid_present:\n\n{ads_cluster_debug.get('cpm_bid_present')}")
+                st.write(f"avg_position_present:\n\n{ads_cluster_debug.get('avg_position_present')}")
+                st.write(f"sample_cpm_bid:\n\n{ads_cluster_debug.get('sample_cpm_bid')}")
+                st.write(f"sample_avg_position:\n\n{ads_cluster_debug.get('sample_avg_position')}")
                 st.write(f"rows_after_text:\n\n{ads_cluster_debug['rows_after_text_filter']}")
                 st.write(f"min_orders_filter:\n\n{ads_cluster_debug['min_orders_filter']}")
                 st.write(f"rows_before_orders_filter:\n\n{ads_cluster_debug['rows_before_orders_filter']}")
