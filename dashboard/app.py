@@ -243,6 +243,9 @@ def _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date):
         "rows_after_campaign_filter": 0,
         "rows_after_date_filter": 0,
         "rows_after_text_filter": 0,
+        "rows_before_orders_filter": 0,
+        "rows_after_orders_filter": 0,
+        "max_orders_count": 0,
         "rows_final": 0,
     }
 
@@ -474,6 +477,28 @@ def count_ads_cluster_rows_after_text_filter(rows, cluster_filter=""):
         for row in rows
         if text_filter in str(row.get("cluster") or "").strip().lower()
     )
+
+
+def ads_cluster_orders_filter_debug(rows, cluster_filter=""):
+    aggregated = {}
+    for row in rows:
+        cluster = str(row.get("cluster") or "").strip()
+        if not cluster:
+            continue
+        aggregated[cluster] = aggregated.get(cluster, 0) + _to_number(row.get("orders_count"))
+
+    text_filter = str(cluster_filter or "").strip().lower()
+    orders_counts = [
+        orders_count
+        for cluster, orders_count in aggregated.items()
+        if not text_filter or text_filter in cluster.lower()
+    ]
+    return {
+        "rows_before_orders_filter": len(orders_counts),
+        "rows_after_orders_filter": sum(1 for orders_count in orders_counts if orders_count >= 10),
+        "max_orders_count": max(orders_counts) if orders_counts else 0,
+    }
+
 
 def has_seller_id(row):
     return str(row.get("seller_id") or row.get("sellerId") or "").strip() != ""
@@ -805,6 +830,10 @@ if ads_cluster_request:
             cluster_filter=ads_cluster_request.get("cluster_filter", ""),
             only_orders_10=ads_cluster_request.get("only_orders_10", False),
         )
+        orders_filter_debug = ads_cluster_orders_filter_debug(
+            ads_cluster_rows,
+            ads_cluster_request.get("cluster_filter", ""),
+        )
         ads_cluster_debug.update(
             {
                 "selected_campaign_name": ads_cluster_request.get("campaign_name")
@@ -813,13 +842,24 @@ if ads_cluster_request:
                     ads_cluster_rows,
                     ads_cluster_request.get("cluster_filter", ""),
                 ),
+                **orders_filter_debug,
                 "rows_final": 0 if ads_cluster_report.empty else len(ads_cluster_report[ads_cluster_report["Кластер"] != "Итого"]),
             }
         )
         logger.info("DEBUG ADS CLUSTERS final %s", ads_cluster_debug)
 
         if ads_cluster_report.empty:
-            st.info("По выбранной кампании и периоду кластеров не найдено.")
+            if (
+                ads_cluster_request.get("only_orders_10", False)
+                and ads_cluster_debug["rows_before_orders_filter"] > 0
+                and ads_cluster_debug["rows_after_orders_filter"] == 0
+            ):
+                st.info(
+                    "По выбранной кампании есть кластеры, но нет кластеров с заказами ≥ 10. "
+                    "Отключите фильтр."
+                )
+            else:
+                st.info("По выбранной кампании и периоду кластеров не найдено.")
         else:
             st.dataframe(
                 ads_cluster_report,
@@ -844,6 +884,9 @@ if ads_cluster_request:
         st.write(f"rows_after_campaign:\n\n{ads_cluster_debug['rows_after_campaign_filter']}")
         st.write(f"rows_after_date:\n\n{ads_cluster_debug['rows_after_date_filter']}")
         st.write(f"rows_after_text:\n\n{ads_cluster_debug['rows_after_text_filter']}")
+        st.write(f"rows_before_orders_filter:\n\n{ads_cluster_debug['rows_before_orders_filter']}")
+        st.write(f"rows_after_orders_filter:\n\n{ads_cluster_debug['rows_after_orders_filter']}")
+        st.write(f"max_orders_count:\n\n{ads_cluster_debug['max_orders_count']}")
         st.write(f"rows_final:\n\n{ads_cluster_debug['rows_final']}")
         if show_debug:
             st.json(ads_cluster_debug)
