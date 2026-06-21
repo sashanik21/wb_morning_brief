@@ -25,6 +25,9 @@ ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER = _env_int(
 ADS_CLUSTERS_REQUEST_PAUSE_SECONDS = float(os.getenv("ADS_CLUSTERS_REQUEST_PAUSE_SECONDS", "6.5"))
 ADS_CLUSTER_FORCE_CAMPAIGN_IDS_ENV = "ADS_CLUSTER_FORCE_CAMPAIGN_IDS"
 
+ADS_CLUSTERS_AUDIT_CAMPAIGN_ID = 31971499
+ADS_CLUSTERS_AUDIT_REPORT_DATE = "2026-06-20"
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "summary").strip().lower()
 
 
@@ -69,6 +72,158 @@ def _first_present_with_key(row, keys, default=None):
         if value not in (None, ""):
             return key, value
     return None, default
+
+
+def _is_audit_campaign(campaign, report_date):
+    return (
+        _to_int(campaign.get("campaign_id")) == ADS_CLUSTERS_AUDIT_CAMPAIGN_ID
+        and str(report_date) == ADS_CLUSTERS_AUDIT_REPORT_DATE
+    )
+
+
+def _metric_values(row):
+    spend = _first_present(row, ["sum", "spend", "expense", "expenses", "cost"])
+    return {
+        "views": _to_int(_first_present(row, ["views", "impressions", "shows"])) or 0,
+        "clicks": _to_int(row.get("clicks")) or 0,
+        "atbs": _to_int(
+            _first_present(row, ["atbs", "cart_count", "cartCount", "carts"])
+        )
+        or 0,
+        "orders": _to_int(row.get("orders")) or 0,
+        "shks": _to_int(row.get("shks")) or 0,
+        "spend": _to_number(spend) or 0,
+    }
+
+
+def _empty_totals():
+    return {
+        "views": 0,
+        "clicks": 0,
+        "atbs": 0,
+        "orders": 0,
+        "shks": 0,
+        "spend": 0,
+    }
+
+
+def _add_totals(totals, values):
+    for key in totals:
+        totals[key] += values.get(key) or 0
+
+
+def _totals_from_rows(rows):
+    totals = _empty_totals()
+    for row in rows or []:
+        values = {
+            "views": row.get("impressions") or 0,
+            "clicks": row.get("clicks") or 0,
+            "atbs": row.get("cart_count") or 0,
+            "orders": (row.get("raw_json") or {}).get("orders") or 0,
+            "shks": row.get("orders_count") or 0,
+            "spend": row.get("spend") or 0,
+        }
+        _add_totals(totals, values)
+    return totals
+
+
+def _audit_response_shape(payload):
+    if not isinstance(payload, dict):
+        return 0, 0
+    total_items = 0
+    total_daily_stats = 0
+    items = payload.get("items")
+    if isinstance(items, list):
+        total_items += len(items)
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("dailyStats"), list):
+                total_daily_stats += len(item.get("dailyStats") or [])
+    stats = payload.get("stats")
+    if isinstance(stats, list):
+        total_items += len(stats)
+        for item in stats:
+            if isinstance(item, dict) and isinstance(item.get("stats"), list):
+                total_daily_stats += len(item.get("stats") or [])
+    return total_items, total_daily_stats
+
+
+def _log_skipped_audit_row(reason, item, campaign_id):
+    values = _metric_values(item)
+    _summary_log(
+        "ADS CLUSTERS AUDIT SKIPPED ROW: "
+        f"reason={reason} "
+        f"advertId={_first_present(item, ['advertId', 'advert_id', 'campaignId', 'campaign_id'], campaign_id)} "
+        f"nmId={_first_present(item, ['nmId', 'nm_id', 'nm'])} "
+        f"normQuery={_cluster_value(item)} "
+        f"views={values['views']} clicks={values['clicks']} atbs={values['atbs']} "
+        f"orders={values['orders']} shks={values['shks']} spend={values['spend']}"
+    )
+
+
+def _log_audit_summary(payload, campaign, report_date, response_rows, saved_rows=None):
+    if not _is_audit_campaign(campaign, report_date):
+        return
+    total_items, total_daily_stats = _audit_response_shape(payload)
+    totals = _empty_totals()
+    extracted_rows = _extract_rows_from_v0(payload, campaign) + _extract_rows_from_v1(
+        payload, campaign
+    )
+    if not extracted_rows:
+        extracted_rows = list(_iter_dicts(payload))
+    for item in extracted_rows:
+        _add_totals(totals, _metric_values(item))
+    api_zero_click_paid_views = 0
+    for item in extracted_rows:
+        values = _metric_values(item)
+        if (
+            values["views"] > 0
+            and values["spend"] > 0
+            and values["clicks"] == 0
+            and values["orders"] == 0
+            and values["shks"] == 0
+        ):
+            api_zero_click_paid_views += 1
+    skipped_rows = max(len(extracted_rows) - len(response_rows or []), 0)
+    _summary_log(
+        "ADS CLUSTERS AUDIT SUMMARY: "
+        f"campaign_id={campaign.get('campaign_id')} report_date={report_date} "
+        f"total_items={total_items} total_dailyStats={total_daily_stats} "
+        f"extracted_rows={len(response_rows or [])} skipped_rows={skipped_rows} "
+        f"sum_views={totals['views']} sum_clicks={totals['clicks']} "
+        f"sum_atbs={totals['atbs']} sum_orders={totals['orders']} "
+        f"sum_shks={totals['shks']} sum_spend={round(totals['spend'], 2)} "
+        f"api_rows_views_gt_0_spend_gt_0_clicks_0_orders_0_shks_0={api_zero_click_paid_views}"
+    )
+    if saved_rows is None:
+        return
+    saved_totals = _totals_from_rows(saved_rows)
+    saved_zero_click_paid_views = 0
+    for row in saved_rows or []:
+        raw_json = row.get("raw_json") or {}
+        if (
+            (row.get("impressions") or 0) > 0
+            and (row.get("spend") or 0) > 0
+            and (row.get("clicks") or 0) == 0
+            and (_to_int(raw_json.get("orders")) or 0) == 0
+            and (row.get("orders_count") or 0) == 0
+        ):
+            saved_zero_click_paid_views += 1
+    diff_totals = {
+        key: round(totals[key] - saved_totals[key], 2)
+        for key in totals
+    }
+    _summary_log(f"WB_API_TOTALS campaign_id={campaign.get('campaign_id')} {totals}")
+    _summary_log(
+        f"SAVED_TOTALS campaign_id={campaign.get('campaign_id')} {saved_totals}"
+    )
+    _summary_log(
+        f"DIFF_TOTALS campaign_id={campaign.get('campaign_id')} {diff_totals}"
+    )
+    _summary_log(
+        "ADS CLUSTERS AUDIT ZERO_CLICK_PAID_VIEWS: "
+        f"campaign_id={campaign.get('campaign_id')} "
+        f"api_rows={api_zero_click_paid_views} saved_rows={saved_zero_click_paid_views}"
+    )
 
 
 def _safe_cpo(spend, count):
@@ -165,9 +320,10 @@ def _extract_rows_from_v1(payload, campaign):
     return rows
 
 
-def _extract_cluster_rows(payload, campaign):
+def _extract_cluster_rows(payload, campaign, report_date=None):
     rows = []
     campaign_id = campaign.get("campaign_id")
+    audit_enabled = _is_audit_campaign(campaign, report_date)
     extracted_rows = _extract_rows_from_v0(payload, campaign) + _extract_rows_from_v1(
         payload, campaign
     )
@@ -177,6 +333,8 @@ def _extract_cluster_rows(payload, campaign):
     for item in extracted_rows:
         cluster = _cluster_value(item)
         if cluster in (None, ""):
+            if audit_enabled:
+                _log_skipped_audit_row("missing normQuery", item, campaign_id)
             continue
 
         spend = _first_present(item, ["sum", "spend", "expense", "expenses", "cost"])
@@ -336,13 +494,22 @@ def _request_daily_normquery_stats(token, campaign, report_date):
 
 def _request_campaign_clusters(token, campaign, report_date):
     payload = _request_daily_normquery_stats(token, campaign, report_date)
-    rows = _extract_cluster_rows(payload, campaign) if payload is not None else []
+    rows = (
+        _extract_cluster_rows(payload, campaign, report_date)
+        if payload is not None
+        else []
+    )
     if rows:
-        return rows
+        return rows, payload
 
     time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
     payload = _request_normquery_stats(token, campaign, report_date)
-    return _extract_cluster_rows(payload, campaign) if payload is not None else []
+    rows = (
+        _extract_cluster_rows(payload, campaign, report_date)
+        if payload is not None
+        else []
+    )
+    return rows, payload
 
 
 def _normalize_save_row(row, report_date, seller_id, seller_name):
@@ -689,8 +856,11 @@ def collect_ads_clusters(
                 )
             continue
         processed += 1
+        audit_payload = None
         try:
-            rows = _request_campaign_clusters(token, campaign, report_date)
+            rows, audit_payload = _request_campaign_clusters(
+                token, campaign, report_date
+            )
         except requests.RequestException as error:
             _summary_log(
                 f"ADS CLUSTERS: WB API error campaign_id={campaign_id} error={error}"
@@ -722,10 +892,17 @@ def collect_ads_clusters(
                 _log_force_processing(
                     seller_id, campaign, report_date, nm_ids, 0, rows_prepared, 0
                 )
+            _log_audit_summary(audit_payload, campaign, report_date, rows, [])
             time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
             continue
 
         total_clusters += len(rows)
+        saved_audit_rows = [
+            row
+            for row in rows
+            if row.get("campaign_id") not in (None, "")
+            and row.get("cluster") not in (None, "")
+        ]
         try:
             campaign_saved_rows = _save_ads_clusters(
                 rows, report_date, seller_id, seller_name
@@ -749,6 +926,13 @@ def collect_ads_clusters(
             "ADS CLUSTERS CAMPAIGN: "
             f"campaign_id={campaign_id} nm_ids_found={nm_ids_found} "
             f"clusters_received={len(rows)} rows_saved={campaign_saved_rows}"
+        )
+        _log_audit_summary(
+            audit_payload,
+            campaign,
+            report_date,
+            rows,
+            saved_audit_rows if campaign_saved_rows else [],
         )
         if is_force_campaign:
             if rows and campaign_saved_rows <= 0:
