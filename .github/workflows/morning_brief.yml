@@ -1,4 +1,4 @@
-name: WB Morning Brief MVP
+name: WB Morning Brief
 
 on:
   schedule:
@@ -44,17 +44,17 @@ jobs:
           echo "Local now: $(TZ=${PROJECT_TIMEZONE} date '+%Y-%m-%d %H:%M:%S %Z')"
           WORKFLOW_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           GITHUB_EVENT_SCHEDULE="$(python - <<'PY'
-import json
-import os
+          import json
+          import os
 
-path = os.environ.get("GITHUB_EVENT_PATH")
-try:
-    with open(path, encoding="utf-8") as event_file:
-        print(json.load(event_file).get("schedule", ""))
-except Exception:
-    print("")
-PY
-)"
+          path = os.environ.get("GITHUB_EVENT_PATH")
+          try:
+              with open(path, encoding="utf-8") as event_file:
+                  print(json.load(event_file).get("schedule", ""))
+          except Exception:
+              print("")
+          PY
+          )"
           export WORKFLOW_STARTED_AT
           export GITHUB_EVENT_SCHEDULE
           echo "GITHUB EVENT:"
