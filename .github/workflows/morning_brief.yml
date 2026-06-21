@@ -29,6 +29,7 @@ jobs:
         env:
           WB_API_TOKEN_TEST: ${{ secrets.WB_API_TOKEN_TEST }}
           WB_API_TOKEN_MILOVA: ${{ secrets.WB_API_TOKEN_MILOVA }}
+          WB_API_TOKEN_SELLER_3: ${{ secrets.WB_API_TOKEN_SELLER_3 }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -38,6 +39,7 @@ jobs:
           echo "Telegram chat configured: ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
           echo "Supabase configured: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}"
           echo "Milova token configured: ${{ secrets.WB_API_TOKEN_MILOVA != '' }}"
+          echo "Seller token configured: ${{ secrets.WB_API_TOKEN_SELLER_3 != '' }}"
           echo "SCHEDULED TIME: ${SCHEDULED_LOCAL_TIME} ${PROJECT_TIMEZONE}"
           echo "CRON UTC: ${SCHEDULED_CRON_UTC}"
           echo "UTC now: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
