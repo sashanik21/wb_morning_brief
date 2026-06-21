@@ -570,11 +570,11 @@ with st.sidebar:
         for key in ("ads_cluster_start_date", "ads_cluster_end_date"):
             selected_date = st.session_state.get(key)
             selected_date_iso = selected_date.isoformat() if hasattr(selected_date, "isoformat") else str(selected_date or "")
-            if cluster_available_dates and selected_date_iso not in cluster_available_dates:
+            if not selected_date or (cluster_available_dates and selected_date_iso not in cluster_available_dates):
                 st.session_state[key] = cluster_default_date
 
-        cluster_start_date = st.date_input("дата начала", value=cluster_default_date, key="ads_cluster_start_date")
-        cluster_end_date = st.date_input("дата окончания", value=cluster_default_date, key="ads_cluster_end_date")
+        cluster_start_date = st.date_input("дата начала", key="ads_cluster_start_date")
+        cluster_end_date = st.date_input("дата окончания", key="ads_cluster_end_date")
         cluster_text_filter = st.text_input("текстовый фильтр по кластеру", key="ads_cluster_text_filter")
         only_ordered_clusters = st.checkbox(
             "Только кластеры с заказами ≥ 10",
