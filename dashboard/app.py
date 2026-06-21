@@ -507,6 +507,16 @@ def _to_number(value):
         return 0
 
 
+def _safe_ratio(numerator, denominator):
+    if denominator:
+        return numerator / denominator
+    return pd.NA
+
+
+def _ads_cluster_report_columns():
+    return ["Кластер", "CTR", "CPO Корзины", "CPO Заказов", "Показы", "CPC", "Затраты", "Заказы", "Корзина"]
+
+
 def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
     aggregated = {}
     for row in rows:
@@ -548,11 +558,11 @@ def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
         report_rows.append(
             {
                 "Кластер": item["Кластер"],
-                "CTR": (clicks / impressions * 100) if impressions else None,
-                "CPO Корзины": (spend / carts) if carts else None,
-                "CPO Заказов": (spend / orders) if orders else None,
+                "CTR": _safe_ratio(clicks * 100, impressions),
+                "CPO Корзины": _safe_ratio(spend, carts),
+                "CPO Заказов": _safe_ratio(spend, orders),
                 "Показы": int(impressions),
-                "CPC": (spend / clicks) if clicks else None,
+                "CPC": _safe_ratio(spend, clicks),
                 "Затраты": spend,
                 "Заказы": int(orders),
                 "Корзина": int(carts),
@@ -560,9 +570,13 @@ def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
             }
         )
 
-    report_rows = sorted(report_rows, key=lambda row: (row["Заказы"], row["Затраты"]), reverse=True)
+    report_rows = sorted(
+        report_rows,
+        key=lambda row: (row["Заказы"], row["Затраты"], row["Показы"]),
+        reverse=True,
+    )
     if not report_rows:
-        return pd.DataFrame(columns=["Кластер", "CTR", "CPO Корзины", "CPO Заказов", "Показы", "CPC", "Затраты", "Заказы", "Корзина"])
+        return pd.DataFrame(columns=_ads_cluster_report_columns())
 
     total_impressions = sum(row["Показы"] for row in report_rows)
     total_clicks = sum(row["_clicks"] for row in report_rows)
@@ -572,32 +586,60 @@ def build_ads_clusters_report(rows, cluster_filter="", only_orders_10=False):
     report_rows.append(
         {
             "Кластер": "Итого",
-            "CTR": (total_clicks / total_impressions * 100) if total_impressions else None,
-            "CPO Корзины": (total_spend / total_carts) if total_carts else None,
-            "CPO Заказов": (total_spend / total_orders) if total_orders else None,
+            "CTR": _safe_ratio(total_clicks * 100, total_impressions),
+            "CPO Корзины": _safe_ratio(total_spend, total_carts),
+            "CPO Заказов": _safe_ratio(total_spend, total_orders),
             "Показы": int(total_impressions),
-            "CPC": (total_spend / total_clicks) if total_clicks else None,
+            "CPC": _safe_ratio(total_spend, total_clicks),
             "Затраты": total_spend,
             "Заказы": int(total_orders),
             "Корзина": int(total_carts),
             "_clicks": total_clicks,
         }
     )
-    return pd.DataFrame(report_rows).drop(columns=["_clicks"])
+    return pd.DataFrame(report_rows).drop(columns=["_clicks"])[_ads_cluster_report_columns()]
+
+
+def _format_ads_cluster_value(value, suffix="", decimals=2):
+    if pd.isna(value):
+        return "—"
+    if decimals == 0:
+        formatted_value = format_number(int(value))
+    else:
+        formatted_value = f"{float(value):,.{decimals}f}".replace(",", " ")
+    return f"{formatted_value}{suffix}"
+
+
+def prepare_ads_clusters_report_for_display(report):
+    display_report = report.copy()
+    money_columns = ["CPO Корзины", "CPO Заказов", "CPC", "Затраты"]
+    count_columns = ["Показы", "Заказы", "Корзина"]
+
+    display_report["CTR"] = display_report["CTR"].apply(
+        lambda value: _format_ads_cluster_value(value, suffix="%")
+    )
+    for column in money_columns:
+        display_report[column] = display_report[column].apply(
+            lambda value: _format_ads_cluster_value(value, suffix=" ₽")
+        )
+    for column in count_columns:
+        display_report[column] = display_report[column].apply(
+            lambda value: _format_ads_cluster_value(value, decimals=0)
+        )
+    return display_report
 
 
 def count_ads_cluster_rows_after_text_filter(rows, cluster_filter=""):
-    text_filter = str(cluster_filter or "").strip().lower()
-    if not text_filter:
-        return len(rows)
-    return sum(
-        1
+    clusters = {
+        str(row.get("cluster") or "").strip()
         for row in rows
-        if text_filter in str(row.get("cluster") or "").strip().lower()
-    )
+        if str(row.get("cluster") or "").strip()
+    }
+    text_filter = str(cluster_filter or "").strip().lower()
+    return sum(1 for cluster in clusters if not text_filter or text_filter in cluster.lower())
 
 
-def ads_cluster_orders_filter_debug(rows, cluster_filter=""):
+def ads_cluster_orders_filter_debug(rows, cluster_filter="", only_orders_10=False):
     aggregated = {}
     for row in rows:
         cluster = str(row.get("cluster") or "").strip()
@@ -611,10 +653,19 @@ def ads_cluster_orders_filter_debug(rows, cluster_filter=""):
         for cluster, orders_count in aggregated.items()
         if not text_filter or text_filter in cluster.lower()
     ]
+    rows_after_text = len(orders_counts)
+    if only_orders_10:
+        rows_after_orders_filter = sum(1 for orders_count in orders_counts if orders_count >= 10)
+        rows_final = rows_after_orders_filter
+    else:
+        rows_after_orders_filter = "not_applied"
+        rows_final = rows_after_text
+
     return {
-        "rows_before_orders_filter": len(orders_counts),
-        "rows_after_orders_filter": sum(1 for orders_count in orders_counts if orders_count >= 10),
+        "rows_before_orders_filter": rows_after_text,
+        "rows_after_orders_filter": rows_after_orders_filter,
         "max_orders_count": max(orders_counts) if orders_counts else 0,
+        "rows_final": rows_final,
     }
 
 
@@ -1011,6 +1062,7 @@ if ads_cluster_request:
         orders_filter_debug = ads_cluster_orders_filter_debug(
             ads_cluster_rows,
             ads_cluster_request.get("cluster_filter", ""),
+            ads_cluster_request.get("only_orders_10", False),
         )
         ads_cluster_debug.update(
             {
@@ -1027,7 +1079,6 @@ if ads_cluster_request:
                 "campaign_list_source": ads_cluster_request.get("campaign_list_source", ""),
                 "campaigns_loaded": ads_cluster_request.get("campaigns_loaded", 0),
                 "campaign_ids_loaded": ads_cluster_request.get("campaign_ids_loaded", []),
-                "rows_final": 0 if ads_cluster_report.empty else len(ads_cluster_report[ads_cluster_report["Кластер"] != "Итого"]),
             }
         )
         logger.info("DEBUG ADS CLUSTERS final %s", ads_cluster_debug)
@@ -1061,16 +1112,9 @@ if ads_cluster_request:
                 st.info("По выбранной кампании и периоду кластеров не найдено.")
         else:
             st.dataframe(
-                ads_cluster_report,
+                prepare_ads_clusters_report_for_display(ads_cluster_report),
                 width="stretch",
                 hide_index=True,
-                column_config={
-                    "CTR": st.column_config.NumberColumn("CTR", format="%.2f%%"),
-                    "CPO Корзины": st.column_config.NumberColumn("CPO Корзины", format="%.2f ₽"),
-                    "CPO Заказов": st.column_config.NumberColumn("CPO Заказов", format="%.2f ₽"),
-                    "CPC": st.column_config.NumberColumn("CPC", format="%.2f ₽"),
-                    "Затраты": st.column_config.NumberColumn("Затраты", format="%.2f ₽"),
-                },
             )
         st.markdown("**DEBUG ADS CLUSTERS**")
         st.write(f"selected_seller_id:\n\n{ads_cluster_debug['selected_seller_id']}")
