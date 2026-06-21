@@ -198,11 +198,28 @@ def _fetch_ads_rows(table_name, columns, seller_id=None):
         return []
 
 
+CAMPAIGN_TYPE_LABELS = {
+    "manual": "Аукцион",
+    "unified": "Автокампания",
+    "search": "Поиск",
+    "catalog": "Каталог",
+}
+
+
 def _campaign_display_name(campaign_id, campaign_name):
     name = str(campaign_name or "").strip()
     if not name or name.lower() == "unknown":
         return f"Кампания {campaign_id}"
     return name
+
+
+def _campaign_type_display_name(campaign_type):
+    campaign_type = str(campaign_type or "").strip().lower()
+    return CAMPAIGN_TYPE_LABELS.get(campaign_type, "Тип не определён")
+
+
+def _campaign_option_display_name(campaign_name, campaign_type):
+    return f"{campaign_name} | {_campaign_type_display_name(campaign_type)}"
 
 
 @st.cache_data(ttl=300)
@@ -250,10 +267,12 @@ def fetch_ads_cluster_campaigns(seller_id):
         current_name = current.get("campaign_name")
         if not current_name or current_name == f"Кампания {campaign_id}":
             current_name = campaign_name
+        current_type = current.get("campaign_type") or campaign_type
         campaigns_map[campaign_id] = {
             "campaign_id": campaign_id,
             "campaign_name": current_name,
-            "campaign_type": current.get("campaign_type") or campaign_type,
+            "campaign_type": current_type,
+            "display_name": _campaign_option_display_name(current_name, current_type),
         }
     return sorted(
         campaigns_map.values(),
@@ -542,15 +561,9 @@ with st.sidebar:
         campaign_ids = ["", *[row["campaign_id"] for row in campaign_options]]
         campaign_labels = {"": "Выберите кампанию"}
         campaign_labels.update(
-            {
-                row["campaign_id"]: (
-                    f"{row['campaign_name']} | {row['campaign_type']}"
-                    if row.get("campaign_type")
-                    else row["campaign_name"]
-                )
-                for row in campaign_options
-            }
+            {row["campaign_id"]: row["display_name"] for row in campaign_options}
         )
+        campaign_debug_by_id = {row["campaign_id"]: row for row in campaign_options}
         selected_cluster_campaign = st.selectbox(
             "рекламная кампания",
             campaign_ids,
@@ -584,15 +597,18 @@ with st.sidebar:
         show_cluster_report = st.button("Показать отчёт", key="ads_cluster_show_report")
 
         if show_cluster_report:
+            selected_campaign_debug = campaign_debug_by_id.get(selected_cluster_campaign, {})
             st.session_state["ads_cluster_report_request"] = {
                 "seller_id": selected_cluster_seller,
                 "campaign_id": selected_cluster_campaign,
+                "campaign_type": selected_campaign_debug.get("campaign_type", ""),
+                "display_name": selected_campaign_debug.get("display_name", ""),
                 "start_date": cluster_start_date.isoformat(),
                 "end_date": cluster_end_date.isoformat(),
                 "cluster_filter": cluster_text_filter,
                 "only_orders_10": only_ordered_clusters,
                 "seller_name": seller_report_labels.get(selected_cluster_seller, ""),
-                "campaign_name": campaign_labels.get(selected_cluster_campaign, ""),
+                "campaign_name": selected_campaign_debug.get("campaign_name", ""),
                 "available_campaign_ids": [row["campaign_id"] for row in campaign_options],
                 "available_dates": cluster_available_dates,
                 "campaigns_found": len(campaign_options),
@@ -734,7 +750,10 @@ if ads_cluster_request:
                     "campaigns_found": ads_cluster_request.get("campaigns_found"),
                     "campaigns_after_filter": ads_cluster_request.get("campaigns_after_filter"),
                     "selected_campaign_id": ads_cluster_request["campaign_id"],
-                    "selected_campaign_name": ads_cluster_request.get("campaign_name", ""),
+                    "campaign_id": ads_cluster_request["campaign_id"],
+                    "campaign_name": ads_cluster_request.get("campaign_name", ""),
+                    "campaign_type": ads_cluster_request.get("campaign_type", ""),
+                    "display_name": ads_cluster_request.get("display_name", ""),
                     "available_campaign_ids": ads_cluster_request.get("available_campaign_ids", []),
                     "available_dates": ads_cluster_request.get("available_dates")
                     or fetch_ads_cluster_available_dates(
