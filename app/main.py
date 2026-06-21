@@ -867,10 +867,11 @@ def _print_multi_seller_processing(active_sellers, seller_results):
 def _process_seller(storage, seller, report_date):
     seller_name = seller.get("seller_name", "")
     seller_id = _seller_id(seller)
-    wb_token_secret_name = seller.get("wb_token_secret_name")
+    wb_token_secret_name = seller.get("wb_api_token_env") or seller.get("wb_token_secret_name")
     wb_token = set_wb_api_token(wb_token_secret_name)
 
     _summary_log(f"SELLER START: {seller_name}")
+    _summary_log(f"Seller token configured: {str(bool(wb_token)).lower()}")
 
     if not wb_token:
         seller_result = _build_seller_result(
