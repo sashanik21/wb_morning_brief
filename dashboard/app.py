@@ -216,12 +216,17 @@ def _campaign_display_name(campaign_id, campaign_name):
 
 
 def _campaign_type_display_name(campaign_type):
-    campaign_type = str(campaign_type or "").strip().lower()
-    return CAMPAIGN_TYPE_LABELS.get(campaign_type, "Тип не определён")
+    campaign_type_value = str(campaign_type or "").strip()
+    if not campaign_type_value:
+        return "Тип неизвестен"
+    return CAMPAIGN_TYPE_LABELS.get(campaign_type_value.lower(), campaign_type_value)
 
 
-def _campaign_option_display_name(campaign_name, campaign_type):
-    return f"{campaign_name} | {_campaign_type_display_name(campaign_type)}"
+def _campaign_option_display_name(campaign_id, campaign_name, campaign_type):
+    campaign_type_name = _campaign_type_display_name(campaign_type)
+    if campaign_name == f"Кампания {campaign_id}":
+        return f"{campaign_name} | {campaign_type_name}"
+    return f"{campaign_name} | {campaign_type_name} | {campaign_id}"
 
 
 def _normalize_filter_id(value):
@@ -276,20 +281,27 @@ def fetch_ads_cluster_sellers():
     )
 
 
-def _fetch_ads_cluster_campaign_rows(table_name, seller_id, start_date, end_date):
+def _fetch_ads_cluster_campaign_rows(seller_id):
+    rows = []
+    offset = 0
+    page_size = 1000
     try:
-        return (
-            get_supabase_client()
-            .table(table_name)
-            .select("campaign_id,campaign_name,campaign_type,report_date")
-            .eq("seller_id", seller_id)
-            .gte("report_date", str(start_date))
-            .lte("report_date", str(end_date))
-            .limit(10000)
-            .execute()
-            .data
-            or []
-        )
+        while True:
+            page = (
+                get_supabase_client()
+                .table("daily_ads_metrics")
+                .select("campaign_id,campaign_name,campaign_type")
+                .eq("seller_id", seller_id)
+                .range(offset, offset + page_size - 1)
+                .execute()
+                .data
+                or []
+            )
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        return rows
     except Exception:
         return []
 
@@ -297,23 +309,20 @@ def _fetch_ads_cluster_campaign_rows(table_name, seller_id, start_date, end_date
 @st.cache_data(ttl=300)
 def fetch_ads_cluster_campaigns(seller_id, start_date, end_date):
     debug = {
-        "campaign_list_source": "",
+        "campaigns_source": "daily_ads_metrics",
+        "campaign_list_source": "daily_ads_metrics",
         "selected_seller_id": _normalize_filter_id(seller_id),
         "selected_start_date": str(start_date or ""),
         "selected_end_date": str(end_date or ""),
+        "campaigns_found": 0,
         "campaigns_loaded": 0,
         "campaign_ids_loaded": [],
     }
-    if not seller_id or not start_date or not end_date:
+    if not seller_id:
         return [], debug
 
-    rows = []
-    source = ""
-    for table_name in ("ads_clusters_daily", "daily_ads_metrics"):
-        rows = _fetch_ads_cluster_campaign_rows(table_name, seller_id, start_date, end_date)
-        if rows:
-            source = table_name
-            break
+    rows = _fetch_ads_cluster_campaign_rows(seller_id)
+    source = "daily_ads_metrics"
 
     campaigns_map = {}
     for row in rows:
@@ -332,15 +341,18 @@ def fetch_ads_cluster_campaigns(seller_id, start_date, end_date):
             "campaign_id": campaign_id,
             "campaign_name": current_name,
             "campaign_type": current_type,
-            "display_name": _campaign_option_display_name(current_name, current_type),
+            "display_name": _campaign_option_display_name(campaign_id, current_name, current_type),
             "campaign_list_source": source,
+            "campaigns_source": source,
         }
 
     campaigns = sorted(
         campaigns_map.values(),
         key=lambda row: (str(row["campaign_name"]).lower(), row["campaign_id"]),
     )
-    debug["campaign_list_source"] = source or "no_period_rows"
+    debug["campaigns_source"] = source
+    debug["campaign_list_source"] = source
+    debug["campaigns_found"] = len(campaigns)
     debug["campaigns_loaded"] = len(campaigns)
     debug["campaign_ids_loaded"] = [row["campaign_id"] for row in campaigns]
     return campaigns, debug
@@ -387,7 +399,7 @@ def find_ads_cluster_campaign(seller_id, campaign_search):
             "campaign_id": campaign_id,
             "campaign_name": campaign_name,
             "campaign_type": campaign_type,
-            "display_name": _campaign_option_display_name(campaign_name, campaign_type),
+            "display_name": _campaign_option_display_name(campaign_id, campaign_name, campaign_type),
             "data_source": source,
         }
     return None
@@ -930,7 +942,8 @@ with st.sidebar:
                 "campaign_name": selected_campaign_debug.get("campaign_name", ""),
                 "available_campaign_ids": [row["campaign_id"] for row in campaign_options],
                 "available_dates": cluster_available_dates,
-                "campaigns_found": len(campaign_options),
+                "campaigns_source": campaign_list_debug.get("campaigns_source", ""),
+                "campaigns_found": campaign_list_debug.get("campaigns_found", len(campaign_options)),
                 "campaigns_after_filter": len(campaign_ids) - 1,
                 "campaign_list_source": campaign_list_debug.get("campaign_list_source", ""),
                 "campaigns_loaded": campaign_list_debug.get("campaigns_loaded", 0),
@@ -1080,6 +1093,8 @@ if ads_cluster_request:
                 "manual_campaign_id_raw": ads_cluster_request.get("manual_campaign_id_raw", ""),
                 "manual_campaign_id_parsed": ads_cluster_request.get("manual_campaign_id_parsed"),
                 "campaign_id_source": ads_cluster_request.get("campaign_id_source", ""),
+                "campaigns_source": ads_cluster_request.get("campaigns_source", ""),
+                "campaigns_found": ads_cluster_request.get("campaigns_found", 0),
                 "campaign_list_source": ads_cluster_request.get("campaign_list_source", ""),
                 "campaigns_loaded": ads_cluster_request.get("campaigns_loaded", 0),
                 "campaign_ids_loaded": ads_cluster_request.get("campaign_ids_loaded", []),
@@ -1131,8 +1146,8 @@ if ads_cluster_request:
                 st.write(f"selected_campaign_name:\n\n{ads_cluster_debug['selected_campaign_name']}")
                 st.write(f"selected_start_date:\n\n{ads_cluster_debug['selected_start_date']}")
                 st.write(f"selected_end_date:\n\n{ads_cluster_debug['selected_end_date']}")
-                st.write(f"campaign_list_source:\n\n{ads_cluster_debug.get('campaign_list_source', '')}")
-                st.write(f"campaigns_loaded:\n\n{ads_cluster_debug.get('campaigns_loaded', 0)}")
+                st.write(f"campaigns_source:\n\n{ads_cluster_debug.get('campaigns_source', '')}")
+                st.write(f"campaigns_found:\n\n{ads_cluster_debug.get('campaigns_found', 0)}")
                 st.write(f"campaign_ids_loaded:\n\n{ads_cluster_debug.get('campaign_ids_loaded', [])}")
                 st.write(f"exists_in_daily_ads_metrics:\n\n{ads_cluster_debug.get('exists_in_daily_ads_metrics')}")
                 st.write(f"exists_in_ads_clusters_daily:\n\n{ads_cluster_debug.get('exists_in_ads_clusters_daily')}")
