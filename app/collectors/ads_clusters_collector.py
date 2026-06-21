@@ -291,13 +291,7 @@ def _cluster_cpm_bid(row):
     return _first_present_with_key(
         row,
         [
-            "cpm_bid",
-            "cpmBid",
             "cpm",
-            "bid",
-            "bet",
-            "rate",
-            "price",
         ],
     )
 
@@ -306,12 +300,7 @@ def _cluster_avg_position(row):
     return _first_present_with_key(
         row,
         [
-            "avg_position",
-            "avgPosition",
-            "average_position",
-            "averagePosition",
-            "position",
-            "pos",
+            "avgPos",
         ],
     )
 
@@ -386,6 +375,15 @@ def _extract_cluster_rows(payload, campaign, report_date=None):
         position_source, avg_position = _cluster_avg_position(item)
         normalized_cpm_bid = _to_number(cpm_bid)
         normalized_avg_position = _to_number(avg_position)
+
+        _debug_log(
+            "ADS CLUSTERS CPM POSITION DEBUG: "
+            f"cluster={cluster} "
+            f"cpm={item.get('cpm')} "
+            f"avgPos={item.get('avgPos')} "
+            f"cpm_bid={normalized_cpm_bid} "
+            f"avg_position={normalized_avg_position}"
+        )
 
         _summary_log(
             "ADS CLUSTERS ROW AUDIT: "
