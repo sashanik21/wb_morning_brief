@@ -3,7 +3,9 @@ import json
 import logging
 import re
 import os
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from time import perf_counter
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -30,7 +32,35 @@ LOW_PRIORITY_SIGNAL_THRESHOLD = 10
 EXECUTIVE_PROBLEMS_LIMIT = 2
 TELEGRAM_PROBLEMS_PER_PRODUCT_LIMIT = 6
 EXECUTIVE_ACTIONS_LIMIT = 5
+PROJECT_TIMEZONE = os.getenv("PROJECT_TIMEZONE", "Europe/Moscow")
+SCHEDULED_LOCAL_TIME = os.getenv("SCHEDULED_LOCAL_TIME", "09:05")
 
+
+
+def _telegram_local_timezone():
+    try:
+        return ZoneInfo(PROJECT_TIMEZONE)
+    except Exception:
+        return UTC
+
+
+def _format_telegram_dt(value):
+    return value.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _telegram_time_log(label, started_at=None):
+    utc_now = datetime.now(UTC)
+    local_now = utc_now.astimezone(_telegram_local_timezone())
+    message = (
+        f"{label}: UTC now: {_format_telegram_dt(utc_now)} | "
+        f"Local now: {_format_telegram_dt(local_now)} | "
+        f"Calculated send time: {SCHEDULED_LOCAL_TIME} {PROJECT_TIMEZONE}"
+    )
+    if started_at is not None:
+        message += f" | elapsed={perf_counter() - started_at:.1f}s"
+    logger.info(message)
+    print(message)
+    return utc_now, local_now
 
 def _is_debug_log():
     return os.getenv("LOG_LEVEL", "summary").strip().lower() == "debug"
@@ -5745,6 +5775,8 @@ def _log_telegram_business_ranking(problems):
 
 
 def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insights=None):
+    telegram_started_at = perf_counter()
+    _telegram_time_log("Telegram Morning Brief preparation started", telegram_started_at)
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -5780,6 +5812,8 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
         message_parts = split_telegram_message(sanitize_telegram_text(message))[:3]
     total_parts = len(message_parts)
 
+    _telegram_time_log("Telegram HTTP send started", telegram_started_at)
+
     for part_index, message_part in enumerate(message_parts, start=1):
         payload = {
             "chat_id": chat_id,
@@ -5788,6 +5822,11 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
             "disable_web_page_preview": True,
         }
 
+        part_started_at = perf_counter()
+        _telegram_time_log(
+            f"Telegram text brief part {part_index}/{total_parts} request started",
+            telegram_started_at,
+        )
         try:
             response = _post_telegram_message(url, payload)
         except requests.RequestException as error:
@@ -5851,7 +5890,12 @@ def send_telegram_morning_brief(problems, summary_stats=None, root_cause_insight
             total_parts,
         )
         print(f"Telegram text brief part {part_index}/{total_parts} sent successfully")
+        _telegram_time_log(
+            f"Telegram text brief part {part_index}/{total_parts} request finished",
+            part_started_at,
+        )
 
+    _telegram_time_log("Telegram Morning Brief sent", telegram_started_at)
     logger.info("Telegram Morning Brief sent successfully")
     print("Telegram Morning Brief sent successfully")
     return total_parts
