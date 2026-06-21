@@ -13,6 +13,7 @@ ADS_DAILY_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v1/normqu
 ADS_CLUSTERS_TIMEOUT_SECONDS = 60
 ADS_CLUSTERS_MAX_CAMPAIGNS = int(os.getenv("ADS_CLUSTERS_MAX_CAMPAIGNS", "5"))
 ADS_CLUSTERS_REQUEST_PAUSE_SECONDS = float(os.getenv("ADS_CLUSTERS_REQUEST_PAUSE_SECONDS", "6.5"))
+ADS_CLUSTER_FORCE_CAMPAIGN_IDS_ENV = "ADS_CLUSTER_FORCE_CAMPAIGN_IDS"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "summary").strip().lower()
 
@@ -386,6 +387,104 @@ def _load_active_ads_metric_campaigns(report_date, seller_id, limit):
     return list(campaigns_by_id.values())[:limit]
 
 
+def _parse_force_campaign_ids():
+    raw_value = os.getenv(ADS_CLUSTER_FORCE_CAMPAIGN_IDS_ENV, "")
+    campaign_ids = []
+    seen = set()
+    for part in raw_value.split(","):
+        campaign_id = _to_int(part.strip())
+        if campaign_id is None or campaign_id in seen:
+            continue
+        seen.add(campaign_id)
+        campaign_ids.append(campaign_id)
+    return campaign_ids
+
+
+def _load_force_ads_metric_campaigns(report_date, seller_id, force_campaign_ids):
+    if not force_campaign_ids:
+        return []
+
+    _summary_log("ADS CLUSTERS FORCE IDS:")
+    for campaign_id in force_campaign_ids:
+        _summary_log(campaign_id)
+
+    try:
+        rows = (
+            _get_client()
+            .table("daily_ads_metrics")
+            .select(
+                "campaign_id,campaign_name,campaign_type,nm_id,vendor_code,title"
+            )
+            .eq("report_date", str(report_date))
+            .eq("seller_id", _to_int(seller_id))
+            .in_("campaign_id", force_campaign_ids)
+            .execute()
+            .data
+        )
+    except Exception as error:
+        _summary_log(f"ADS CLUSTERS FORCE: daily_ads_metrics read error error={error}")
+        rows = []
+
+    campaigns_by_id = {
+        str(campaign_id): {
+            "campaign_id": campaign_id,
+            "campaign_name": None,
+            "campaign_type": None,
+            "nm_ids": [],
+            "vendor_code": None,
+            "title": None,
+            "force_ads_clusters": True,
+        }
+        for campaign_id in force_campaign_ids
+    }
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        campaign_id = _to_int(row.get("campaign_id"))
+        if campaign_id is None or str(campaign_id) not in campaigns_by_id:
+            continue
+
+        campaign = campaigns_by_id[str(campaign_id)]
+        campaign["campaign_name"] = campaign["campaign_name"] or row.get("campaign_name")
+        campaign["campaign_type"] = campaign["campaign_type"] or row.get("campaign_type")
+        campaign["vendor_code"] = campaign["vendor_code"] or row.get("vendor_code")
+        campaign["title"] = campaign["title"] or row.get("title")
+        nm_id = _to_int(row.get("nm_id"))
+        if nm_id is not None and nm_id not in campaign["nm_ids"]:
+            campaign["nm_ids"].append(nm_id)
+
+    return list(campaigns_by_id.values())
+
+
+def _merge_force_campaigns(campaigns, force_campaigns):
+    merged_by_id = {
+        str(campaign.get("campaign_id")): campaign
+        for campaign in campaigns or []
+        if campaign.get("campaign_id") not in (None, "")
+    }
+
+    for force_campaign in force_campaigns or []:
+        campaign_id = force_campaign.get("campaign_id")
+        if campaign_id in (None, ""):
+            continue
+
+        existing = merged_by_id.get(str(campaign_id), {})
+        nm_ids = _campaign_nm_ids(existing) + _campaign_nm_ids(force_campaign)
+        force_campaign = {
+            **existing,
+            **force_campaign,
+            "nm_ids": [],
+            "force_ads_clusters": True,
+        }
+        for nm_id in nm_ids:
+            if nm_id not in force_campaign["nm_ids"]:
+                force_campaign["nm_ids"].append(nm_id)
+        merged_by_id[str(campaign_id)] = force_campaign
+
+    return list(merged_by_id.values())
+
+
 def _merge_campaign_metadata(active_campaigns, campaigns):
     by_id = {
         str(campaign.get("campaign_id")): campaign
@@ -432,6 +531,12 @@ def collect_ads_clusters(
         campaigns = campaigns[: min(ADS_CLUSTERS_MAX_CAMPAIGNS, 3)]
         _summary_log("ADS CLUSTERS: no active daily_ads_metrics campaigns found")
 
+    force_campaign_ids = _parse_force_campaign_ids()
+    force_campaigns = _load_force_ads_metric_campaigns(
+        report_date, seller_id, force_campaign_ids
+    )
+    campaigns = _merge_force_campaigns(campaigns, force_campaigns)
+
     processed = 0
     total_clusters = 0
     saved_rows = 0
@@ -440,6 +545,7 @@ def collect_ads_clusters(
 
     for campaign in campaigns:
         campaign_id = campaign.get("campaign_id")
+        is_force_campaign = bool(campaign.get("force_ads_clusters"))
         if campaign_id in (None, ""):
             continue
         if not _campaign_nm_ids(campaign):
@@ -447,6 +553,12 @@ def collect_ads_clusters(
                 f"ADS CLUSTERS: invalid payload campaign_id={campaign_id} "
                 "reason=no nm_id from daily_ads_metrics"
             )
+            if is_force_campaign:
+                _summary_log("ADS CLUSTERS FORCE PROCESSING:")
+                _summary_log(f"campaign_id={campaign_id}")
+                _summary_log("nm_ids_found=0")
+                _summary_log("clusters_received=0")
+                _summary_log("rows_saved=0")
             continue
         processed += 1
         try:
@@ -464,20 +576,38 @@ def collect_ads_clusters(
 
         if not rows:
             no_data_campaigns.append(campaign_id)
+            if is_force_campaign:
+                _summary_log(f"ADS CLUSTERS FORCE NO DATA campaign_id={campaign_id}")
             _summary_log(
                 f"ADS CLUSTERS: no cluster data for campaign_id={campaign_id}"
             )
+            if is_force_campaign:
+                _summary_log("ADS CLUSTERS FORCE PROCESSING:")
+                _summary_log(f"campaign_id={campaign_id}")
+                _summary_log(f"nm_ids_found={len(_campaign_nm_ids(campaign))}")
+                _summary_log("clusters_received=0")
+                _summary_log("rows_saved=0")
             time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
             continue
 
         total_clusters += len(rows)
+        campaign_saved_rows = 0
         try:
-            saved_rows += _save_ads_clusters(rows, report_date, seller_id, seller_name)
+            campaign_saved_rows = _save_ads_clusters(
+                rows, report_date, seller_id, seller_name
+            )
+            saved_rows += campaign_saved_rows
         except Exception as error:
             _summary_log(
                 f"ADS CLUSTERS: Supabase save error campaign_id={campaign_id} "
                 f"error={error}"
             )
+        if is_force_campaign:
+            _summary_log("ADS CLUSTERS FORCE PROCESSING:")
+            _summary_log(f"campaign_id={campaign_id}")
+            _summary_log(f"nm_ids_found={len(_campaign_nm_ids(campaign))}")
+            _summary_log(f"clusters_received={len(rows)}")
+            _summary_log(f"rows_saved={campaign_saved_rows}")
         all_rows.extend(rows)
         time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
 
