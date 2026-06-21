@@ -1,5 +1,6 @@
 """Streamlit Executive Dashboard for Morning Brief."""
 
+import hashlib
 import logging
 import sys
 from datetime import date
@@ -108,6 +109,7 @@ from wb_dashboard_queries import (
     is_change_log_available,
 )
 from supabase_client import get_supabase_client, get_supabase_credentials_info
+from storage.supabase_storage import save_ad_change_history_import
 from sku_page import render_sku_page
 
 
@@ -739,6 +741,83 @@ def ads_cluster_orders_filter_debug(rows, cluster_filter="", min_orders_filter=1
     }
 
 
+
+AD_CHANGE_HISTORY_COLUMNS = {
+    "campaign_id": ["id кампании", "campaign_id", "campaign id", "id рк"],
+    "nm_id": ["id товара", "nm_id", "nm id", "артикул wb", "номенклатура"],
+    "change_type": ["что изменилось", "изменение", "change_type", "change type"],
+    "cluster": ["кластер", "cluster"],
+    "old_value": ["было", "old_value", "old value", "previous value"],
+    "new_value": ["стало", "new_value", "new value", "current value"],
+    "source": ["источник", "source", "источник изменения"],
+    "changed_at": ["дата и время", "changed_at", "changed at", "дата изменения"],
+}
+
+
+def _normalize_excel_column_name(value):
+    return " ".join(str(value or "").strip().lower().replace("ё", "е").split())
+
+
+def _find_excel_column(columns, aliases):
+    normalized = {_normalize_excel_column_name(column): column for column in columns}
+    for alias in aliases:
+        column = normalized.get(_normalize_excel_column_name(alias))
+        if column is not None:
+            return column
+    return None
+
+
+def _excel_cell_value(value):
+    if pd.isna(value):
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_ad_change_history_excel(uploaded_file):
+    file_bytes = uploaded_file.getvalue()
+    dataframe = pd.read_excel(uploaded_file, sheet_name="История изменений")
+    dataframe = dataframe.dropna(how="all")
+    column_map = {
+        field: _find_excel_column(dataframe.columns, aliases)
+        for field, aliases in AD_CHANGE_HISTORY_COLUMNS.items()
+    }
+    required_fields = [
+        "campaign_id",
+        "nm_id",
+        "change_type",
+        "cluster",
+        "old_value",
+        "new_value",
+        "source",
+        "changed_at",
+    ]
+    missing_fields = [field for field in required_fields if column_map.get(field) is None]
+    if missing_fields:
+        missing_labels = ", ".join(missing_fields)
+        raise ValueError(f"Не найдены обязательные колонки: {missing_labels}")
+
+    rows = []
+    for _, excel_row in dataframe.iterrows():
+        normalized_row = {
+            field: _excel_cell_value(excel_row[column])
+            for field, column in column_map.items()
+            if column is not None
+        }
+        normalized_row["raw_row"] = {
+            str(column): _excel_cell_value(excel_row[column]) for column in dataframe.columns
+        }
+        rows.append(normalized_row)
+
+    return {
+        "file_name": uploaded_file.name,
+        "file_hash": hashlib.sha256(file_bytes).hexdigest(),
+        "rows": rows,
+        "rows_total": len(dataframe),
+    }
+
 def has_seller_id(row):
     return str(row.get("seller_id") or row.get("sellerId") or "").strip() != ""
 
@@ -820,6 +899,50 @@ with st.sidebar:
         seller_options,
         format_func=lambda value: seller_labels.get(value, value),
     )
+
+    with st.expander("Импорт истории изменений рекламы", expanded=False):
+        import_seller_options = [value for value in seller_options if value != "Все продавцы"]
+        selected_import_seller = st.selectbox(
+            "Продавец для импорта",
+            import_seller_options,
+            format_func=lambda value: seller_labels.get(value, value),
+            key="ad_change_history_import_seller",
+            disabled=not import_seller_options,
+        )
+        uploaded_history_file = st.file_uploader(
+            "Excel-файл «История изменений»",
+            type=["xlsx", "xls"],
+            key="ad_change_history_file",
+        )
+        if st.button(
+            "Загрузить историю изменений",
+            disabled=not selected_import_seller or uploaded_history_file is None,
+        ):
+            try:
+                parsed_history = _parse_ad_change_history_excel(uploaded_history_file)
+                import_result = save_ad_change_history_import(
+                    seller_id=selected_import_seller,
+                    file_name=parsed_history["file_name"],
+                    file_hash=parsed_history["file_hash"],
+                    rows=parsed_history["rows"],
+                    rows_total=parsed_history["rows_total"],
+                )
+            except Exception as error:
+                import_result = {
+                    "rows_total": 0,
+                    "rows_inserted": 0,
+                    "rows_skipped": 0,
+                    "error": str(error),
+                }
+
+            result_1, result_2, result_3 = st.columns(3)
+            result_1.metric("Строк в файле", import_result.get("rows_total", 0))
+            result_2.metric("Загружено", import_result.get("rows_inserted", 0))
+            result_3.metric("Пропущено", import_result.get("rows_skipped", 0))
+            if import_result.get("error"):
+                st.error(import_result["error"])
+            else:
+                st.success("История изменений рекламы загружена")
 
 date_problems = []
 if report_date:
