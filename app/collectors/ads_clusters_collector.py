@@ -287,6 +287,35 @@ def _cluster_value(row):
     )
 
 
+def _cluster_cpm_bid(row):
+    return _first_present_with_key(
+        row,
+        [
+            "cpm_bid",
+            "cpmBid",
+            "cpm",
+            "bid",
+            "bet",
+            "rate",
+            "price",
+        ],
+    )
+
+
+def _cluster_avg_position(row):
+    return _first_present_with_key(
+        row,
+        [
+            "avg_position",
+            "avgPosition",
+            "average_position",
+            "averagePosition",
+            "position",
+            "pos",
+        ],
+    )
+
+
 def _extract_rows_from_v0(payload, campaign):
     rows = []
     for item in payload.get("stats") or [] if isinstance(payload, dict) else []:
@@ -353,6 +382,10 @@ def _extract_cluster_rows(payload, campaign, report_date=None):
             ],
         )
         normalized_orders_count = _to_int(orders_count)
+        cpm_source, cpm_bid = _cluster_cpm_bid(item)
+        position_source, avg_position = _cluster_avg_position(item)
+        normalized_cpm_bid = _to_number(cpm_bid)
+        normalized_avg_position = _to_number(avg_position)
 
         _summary_log(
             "ADS CLUSTERS ROW AUDIT: "
@@ -361,7 +394,11 @@ def _extract_cluster_rows(payload, campaign, report_date=None):
             f"clicks={_to_int(item.get('clicks'))} "
             f"cart_count={_to_int(cart_count)} "
             f"orders_count={normalized_orders_count} "
-            f"orders_count_source={orders_count_source}"
+            f"orders_count_source={orders_count_source} "
+            f"cluster_has_cpm={normalized_cpm_bid is not None} "
+            f"cluster_has_position={normalized_avg_position is not None} "
+            f"cpm_source={cpm_source} "
+            f"position_source={position_source}"
         )
 
         rows.append(
@@ -390,6 +427,8 @@ def _extract_cluster_rows(payload, campaign, report_date=None):
                 "ctr": _to_number(item.get("ctr")),
                 "cpc": _to_number(item.get("cpc")),
                 "spend": _to_number(spend),
+                "cpm_bid": normalized_cpm_bid,
+                "avg_position": normalized_avg_position,
                 "cart_count": _to_int(cart_count),
                 "orders_count": normalized_orders_count,
                 "cpo_cart": _safe_cpo(spend, cart_count),
@@ -529,6 +568,8 @@ def _normalize_save_row(row, report_date, seller_id, seller_name):
         "ctr": row.get("ctr"),
         "cpc": row.get("cpc"),
         "spend": row.get("spend"),
+        "cpm_bid": row.get("cpm_bid"),
+        "avg_position": row.get("avg_position"),
         "cart_count": row.get("cart_count"),
         "orders_count": row.get("orders_count"),
         "cpo_cart": row.get("cpo_cart"),
