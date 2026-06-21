@@ -206,6 +206,31 @@ create table if not exists daily_ads_metrics (
     unique(report_date, seller_id, campaign_id, nm_id)
 );
 
+create table if not exists ads_clusters_daily (
+    id bigserial primary key,
+    report_date date not null,
+    seller_id integer,
+    seller_name text,
+    campaign_id bigint not null,
+    campaign_name text,
+    campaign_type text,
+    nm_id bigint,
+    vendor_code text,
+    title text,
+    cluster text not null,
+    impressions integer,
+    clicks integer,
+    ctr numeric,
+    cpc numeric,
+    spend numeric,
+    cart_count integer,
+    orders_count integer,
+    cpo_cart numeric,
+    cpo_order numeric,
+    raw_json jsonb,
+    created_at timestamptz default now()
+);
+
 create table if not exists ads_campaigns_cache (
     id bigint generated always as identity primary key,
     seller_id text,
@@ -257,6 +282,9 @@ create index if not exists idx_daily_ads_metrics_campaign_nm
 
 create unique index if not exists daily_ads_metrics_unique_idx
     on daily_ads_metrics(report_date, seller_id, campaign_id, nm_id);
+
+create unique index if not exists ads_clusters_daily_unique_idx
+    on ads_clusters_daily(report_date, seller_id, campaign_id, nm_id, cluster);
 
 create index if not exists idx_ads_campaigns_cache_seller_last_seen
     on ads_campaigns_cache(seller_id, last_seen_at desc);
@@ -344,6 +372,7 @@ alter table if exists public.stocks_daily enable row level security;
 alter table if exists public.problems enable row level security;
 alter table if exists public.daily_funnel enable row level security;
 alter table if exists public.daily_ads_metrics enable row level security;
+alter table if exists public.ads_clusters_daily enable row level security;
 alter table if exists public.api_coverage_daily enable row level security;
 alter table if exists public.daily_qbiki_metrics enable row level security;
 
