@@ -819,6 +819,7 @@ def _parse_ad_change_history_excel(uploaded_file):
             for field, column in column_map.items()
             if column is not None
         }
+        normalized_row.pop("cluster", None)
         normalized_row["raw_row"] = {
             str(column): _excel_cell_value(excel_row[column]) for column in dataframe.columns
         }
