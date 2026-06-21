@@ -908,7 +908,8 @@ def _sample_present_value(rows, field_name):
 def _ads_cluster_report_columns():
     return [
         "Кластер",
-        "Ставка CPM",
+        "Последняя ставка",
+        "Изменения за период",
         "Средняя позиция",
         "CTR",
         "CPO Корзины",
@@ -969,7 +970,9 @@ def build_ads_clusters_report(rows, cluster_filter="", min_orders_filter=10):
         report_rows.append(
             {
                 "Кластер": item["Кластер"],
-                "Ставка CPM": _average_present(item["_cpm_bids"]),
+                "Последняя ставка": pd.NA,
+                "Изменения за период": "Без изменений",
+                "_cpm_bid": _average_present(item["_cpm_bids"]),
                 "Средняя позиция": _average_present(item["_avg_positions"]),
                 "CTR": _safe_ratio(clicks * 100, impressions),
                 "CPO Корзины": _safe_ratio(spend, carts),
@@ -997,7 +1000,7 @@ def build_ads_clusters_report(rows, cluster_filter="", min_orders_filter=10):
     total_orders = sum(row["Заказы"] for row in report_rows)
     total_carts = sum(row["Корзина"] for row in report_rows)
     total_cpm_bid = _average_present(
-        [row["Ставка CPM"] for row in report_rows if not pd.isna(row["Ставка CPM"])]
+        [row["_cpm_bid"] for row in report_rows if not pd.isna(row["_cpm_bid"])]
     )
     total_avg_position = _average_present(
         [
@@ -1009,7 +1012,9 @@ def build_ads_clusters_report(rows, cluster_filter="", min_orders_filter=10):
     report_rows.append(
         {
             "Кластер": "Итого",
-            "Ставка CPM": total_cpm_bid,
+            "Последняя ставка": pd.NA,
+            "Изменения за период": "",
+            "_cpm_bid": total_cpm_bid,
             "Средняя позиция": total_avg_position,
             "CTR": _safe_ratio(total_clicks * 100, total_impressions),
             "CPO Корзины": _safe_ratio(total_spend, total_carts),
@@ -1022,7 +1027,7 @@ def build_ads_clusters_report(rows, cluster_filter="", min_orders_filter=10):
             "_clicks": total_clicks,
         }
     )
-    return pd.DataFrame(report_rows).drop(columns=["_clicks"])[_ads_cluster_report_columns()]
+    return pd.DataFrame(report_rows).drop(columns=["_clicks"], errors="ignore")[_ads_cluster_report_columns()]
 
 
 def _format_ads_cluster_value(value, suffix="", decimals=2):
@@ -1037,19 +1042,19 @@ def _format_ads_cluster_value(value, suffix="", decimals=2):
 
 def prepare_ads_clusters_report_for_display(report):
     display_report = report.copy()
-    money_columns = ["Ставка CPM", "CPO Корзины", "CPO Заказов", "CPC", "Затраты"]
+    money_columns = ["Последняя ставка", "CPO Корзины", "CPO Заказов", "CPC", "Затраты"]
     count_columns = ["Показы", "Заказы", "Корзина"]
 
     display_report["CTR"] = display_report["CTR"].apply(
         lambda value: _format_ads_cluster_value(value, suffix="%")
     )
-    display_report["Ставка CPM"] = display_report["Ставка CPM"].apply(
+    display_report["Последняя ставка"] = display_report["Последняя ставка"].apply(
         lambda value: _format_ads_cluster_value(value, suffix=" ₽", decimals=0)
     )
     display_report["Средняя позиция"] = display_report["Средняя позиция"].apply(
         lambda value: _format_ads_cluster_value(value)
     )
-    for column in [column for column in money_columns if column != "Ставка CPM"]:
+    for column in [column for column in money_columns if column != "Последняя ставка"]:
         display_report[column] = display_report[column].apply(
             lambda value: _format_ads_cluster_value(value, suffix=" ₽")
         )
@@ -1103,32 +1108,129 @@ def _latest_bid_change_by_cluster(history_rows):
     return latest_by_cluster
 
 
-def _bid_change_verdict(history_row, orders, spend, cpo_orders, cpo_threshold):
+def _history_changed_at(row):
+    return pd.to_datetime(row.get("changed_at"), errors="coerce", utc=True)
+
+
+def _bid_change_history_rows_by_cluster(history_rows):
+    rows_by_cluster = {}
+    for row in history_rows:
+        if not _is_bid_change_history_row(row):
+            continue
+        cluster_key = _normalize_cluster_name(row.get("cluster_name"))
+        if not cluster_key:
+            continue
+        rows_by_cluster.setdefault(cluster_key, []).append(row)
+
+    for cluster_key, rows in rows_by_cluster.items():
+        rows_by_cluster[cluster_key] = sorted(
+            rows,
+            key=lambda row: (
+                not pd.isna(_history_changed_at(row)),
+                _history_changed_at(row)
+                if not pd.isna(_history_changed_at(row))
+                else pd.Timestamp.min,
+            ),
+        )
+    return rows_by_cluster
+
+
+def _bid_change_period_rows_by_cluster(history_rows, start_date, end_date):
+    start_at = pd.to_datetime(start_date, errors="coerce", utc=True)
+    end_at = pd.to_datetime(end_date, errors="coerce", utc=True)
+    if pd.isna(start_at) or pd.isna(end_at):
+        return {}
+    end_at = end_at + pd.Timedelta(days=1)
+
+    rows_by_cluster = {}
+    for cluster_key, rows in _bid_change_history_rows_by_cluster(history_rows).items():
+        period_rows = []
+        for row in rows:
+            changed_at = _history_changed_at(row)
+            if pd.isna(changed_at):
+                continue
+            if start_at <= changed_at < end_at:
+                period_rows.append(row)
+        rows_by_cluster[cluster_key] = period_rows
+    return rows_by_cluster
+
+
+def _format_bid_change_pair(row, spaced=True):
+    separator = " → " if spaced else "→"
+    old_value = (row or {}).get("old_value") or "—"
+    new_value = (row or {}).get("new_value") or "—"
+    return f"{old_value}{separator}{new_value}"
+
+
+def _format_bid_period_changes(rows):
+    if not rows:
+        return "Без изменений"
+    if len(rows) <= 3:
+        return "\n".join(_format_bid_change_pair(row) for row in rows)
+    return f"{len(rows)} изменений"
+
+
+def _format_bid_changes_count(count):
+    if count % 10 == 1 and count % 100 != 11:
+        return f"{count} раз"
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return f"{count} раза"
+    return f"{count} раз"
+
+
+def enrich_ads_clusters_report_with_bid_history(report, history_rows, start_date, end_date):
+    if report.empty:
+        return report
+
+    latest_by_cluster = _latest_bid_change_by_cluster(history_rows)
+    period_by_cluster = _bid_change_period_rows_by_cluster(history_rows, start_date, end_date)
+    enriched_report = report.copy()
+    for index, row in enriched_report.iterrows():
+        cluster = row.get("Кластер")
+        if cluster == "Итого":
+            continue
+        cluster_key = _normalize_cluster_name(cluster)
+        latest_row = latest_by_cluster.get(cluster_key)
+        period_rows = period_by_cluster.get(cluster_key, [])
+        enriched_report.at[index, "Последняя ставка"] = _to_optional_ad_bid_number(
+            (latest_row or {}).get("new_value")
+        )
+        enriched_report.at[index, "Изменения за период"] = _format_bid_period_changes(period_rows)
+    return enriched_report
+
+
+def _bid_change_verdict(history_row, period_changes_count, orders, spend, cpo_orders, cpo_threshold):
     if not history_row:
         return "Истории изменений нет"
 
     old_value = _to_optional_ad_bid_number(history_row.get("old_value"))
     new_value = _to_optional_ad_bid_number(history_row.get("new_value"))
+    prefix = (
+        f"Ставка менялась {_format_bid_changes_count(period_changes_count)}. "
+        if period_changes_count > 1
+        else ""
+    )
     if orders == 0 and spend > 0:
-        return "Неэффективно: есть расходы, нет заказов"
+        return f"{prefix}Неэффективно: есть расходы, нет заказов"
     if pd.isna(cpo_orders) or orders == 0:
-        return "Недостаточно заказов для вывода"
+        return f"{prefix}Недостаточно заказов для вывода"
     if old_value is None or new_value is None:
-        return "Недостаточно заказов для вывода"
+        return f"{prefix}Недостаточно заказов для вывода"
     if new_value < old_value and orders > 0:
-        return "Снижение ставки не сломало продажи"
+        return f"{prefix}Снижение ставки не сломало продажи"
     if new_value > old_value and orders > 0 and cpo_orders <= cpo_threshold:
-        return "Повышение может быть оправдано"
+        return f"{prefix}Повышение может быть оправдано"
     if new_value > old_value and cpo_orders > cpo_threshold:
-        return "Рост ставки ухудшил экономику"
+        return f"{prefix}Рост ставки ухудшил экономику"
     if new_value == old_value:
-        return "Без изменения"
-    return "Недостаточно заказов для вывода"
+        return f"{prefix}Без изменения"
+    return f"{prefix}Недостаточно заказов для вывода"
 
 
-def build_bid_changes_analysis_report(clusters_report, history_rows):
+def build_bid_changes_analysis_report(clusters_report, history_rows, start_date, end_date):
     report_rows = []
     latest_by_cluster = _latest_bid_change_by_cluster(history_rows)
+    period_by_cluster = _bid_change_period_rows_by_cluster(history_rows, start_date, end_date)
     cluster_rows = [
         row
         for row in clusters_report.to_dict("records")
@@ -1146,6 +1248,10 @@ def build_bid_changes_analysis_report(clusters_report, history_rows):
         cluster = row.get("Кластер")
         cluster_key = _normalize_cluster_name(cluster)
         history_row = latest_by_cluster.get(cluster_key)
+        period_rows = period_by_cluster.get(cluster_key, [])
+        period_changes_count = len(period_rows)
+        first_period_row = period_rows[0] if period_rows else None
+        last_period_row = period_rows[-1] if period_rows else None
         if history_row:
             matched_clusters.add(cluster)
         orders = int(_to_number(row.get("Заказы")))
@@ -1157,12 +1263,26 @@ def build_bid_changes_analysis_report(clusters_report, history_rows):
                 "Последнее изменение": (history_row or {}).get("changed_at") or "",
                 "Было": _to_optional_ad_bid_number((history_row or {}).get("old_value")),
                 "Стало": _to_optional_ad_bid_number((history_row or {}).get("new_value")),
-                "Текущая ставка CPM": row.get("Ставка CPM"),
+                "Последняя ставка": _to_optional_ad_bid_number((history_row or {}).get("new_value")),
+                "Изменений за период": period_changes_count,
+                "Первое изменение периода": _format_bid_change_pair(first_period_row)
+                if first_period_row
+                else "",
+                "Последнее изменение периода": _format_bid_change_pair(last_period_row)
+                if last_period_row
+                else "",
                 "Средняя позиция": row.get("Средняя позиция"),
                 "CTR": row.get("CTR"),
                 "CPO Заказов": cpo_orders,
                 "Заказы": orders,
-                "Вердикт": _bid_change_verdict(history_row, orders, spend, cpo_orders, cpo_threshold),
+                "Вердикт": _bid_change_verdict(
+                    history_row,
+                    period_changes_count,
+                    orders,
+                    spend,
+                    cpo_orders,
+                    cpo_threshold,
+                ),
                 "_spend": spend,
             }
         )
@@ -1181,13 +1301,32 @@ def build_bid_changes_analysis_report(clusters_report, history_rows):
             for row in report_rows
             if row.get("Вердикт") == "Истории изменений нет"
         ],
+        "period_changes_by_cluster": {
+            row.get("Кластер"): {
+                "changes_count": len(period_by_cluster.get(_normalize_cluster_name(row.get("Кластер")), [])),
+                "first_change": _format_bid_change_pair(
+                    period_by_cluster.get(_normalize_cluster_name(row.get("Кластер")), [None])[0]
+                )
+                if period_by_cluster.get(_normalize_cluster_name(row.get("Кластер")))
+                else "",
+                "last_change": _format_bid_change_pair(
+                    period_by_cluster.get(_normalize_cluster_name(row.get("Кластер")), [None])[-1]
+                )
+                if period_by_cluster.get(_normalize_cluster_name(row.get("Кластер")))
+                else "",
+            }
+            for row in cluster_rows
+        },
     }
     columns = [
         "Кластер",
         "Последнее изменение",
         "Было",
         "Стало",
-        "Текущая ставка CPM",
+        "Последняя ставка",
+        "Изменений за период",
+        "Первое изменение периода",
+        "Последнее изменение периода",
         "Средняя позиция",
         "CTR",
         "CPO Заказов",
@@ -1202,7 +1341,7 @@ def build_bid_changes_analysis_report(clusters_report, history_rows):
 
 def prepare_bid_changes_analysis_for_display(report):
     display_report = report.copy()
-    for column in ["Было", "Стало", "Текущая ставка CPM"]:
+    for column in ["Было", "Стало", "Последняя ставка"]:
         display_report[column] = display_report[column].apply(
             lambda value: _format_ads_cluster_value(value, suffix=" ₽", decimals=0)
         )
@@ -1925,6 +2064,12 @@ if ads_cluster_request:
             "clusters_without_history": [],
         }
         if not ads_cluster_report.empty:
+            ads_cluster_report = enrich_ads_clusters_report_with_bid_history(
+                ads_cluster_report,
+                ad_change_history_rows,
+                ads_cluster_request.get("start_date"),
+                ads_cluster_request.get("end_date"),
+            )
             st.dataframe(
                 prepare_ads_clusters_report_for_display(ads_cluster_report),
                 width="stretch",
@@ -1935,6 +2080,8 @@ if ads_cluster_request:
             bid_changes_analysis_report, bid_changes_analysis_debug = build_bid_changes_analysis_report(
                 ads_cluster_report,
                 ad_change_history_rows,
+                ads_cluster_request.get("start_date"),
+                ads_cluster_request.get("end_date"),
             )
             if bid_changes_analysis_report.empty:
                 st.info("Нет кластеров для анализа изменений ставок.")
