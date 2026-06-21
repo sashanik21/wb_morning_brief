@@ -11,7 +11,9 @@ from app.storage.supabase_storage import _get_client
 ADS_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v0/normquery/stats"
 ADS_DAILY_NORMQUERY_STATS_URL = "https://advert-api.wildberries.ru/adv/v1/normquery/stats"
 ADS_CLUSTERS_TIMEOUT_SECONDS = 60
-ADS_CLUSTERS_MAX_CAMPAIGNS = int(os.getenv("ADS_CLUSTERS_MAX_CAMPAIGNS", "5"))
+ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER = int(
+    os.getenv("ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER", "10")
+)
 ADS_CLUSTERS_REQUEST_PAUSE_SECONDS = float(os.getenv("ADS_CLUSTERS_REQUEST_PAUSE_SECONDS", "6.5"))
 ADS_CLUSTER_FORCE_CAMPAIGN_IDS_ENV = "ADS_CLUSTER_FORCE_CAMPAIGN_IDS"
 
@@ -342,18 +344,16 @@ def _load_active_ads_metric_campaigns(report_date, seller_id, limit):
             .table("daily_ads_metrics")
             .select(
                 "campaign_id,campaign_name,campaign_type,nm_id,vendor_code,title,"
-                "impressions,clicks,spend"
+                "impressions,clicks,spend,orders_count"
             )
             .eq("report_date", str(report_date))
             .eq("seller_id", _to_int(seller_id))
-            .order("spend", desc=True)
-            .limit(100)
             .execute()
             .data
         )
     except Exception as error:
         _summary_log(f"ADS CLUSTERS: daily_ads_metrics read error error={error}")
-        return []
+        return [], []
 
     campaigns_by_id = {}
     for row in rows or []:
@@ -364,7 +364,7 @@ def _load_active_ads_metric_campaigns(report_date, seller_id, limit):
             continue
         has_activity = any(
             (_to_number(row.get(key)) or 0) > 0
-            for key in ("impressions", "clicks", "spend")
+            for key in ("impressions", "clicks", "spend", "orders_count")
         )
         if not has_activity:
             continue
@@ -378,13 +378,32 @@ def _load_active_ads_metric_campaigns(report_date, seller_id, limit):
                 "nm_ids": [],
                 "vendor_code": row.get("vendor_code"),
                 "title": row.get("title"),
+                "spend": 0,
+                "orders_count": 0,
+                "impressions": 0,
             },
         )
+        campaign["campaign_name"] = campaign["campaign_name"] or row.get("campaign_name")
+        campaign["campaign_type"] = campaign["campaign_type"] or row.get("campaign_type")
+        campaign["vendor_code"] = campaign["vendor_code"] or row.get("vendor_code")
+        campaign["title"] = campaign["title"] or row.get("title")
+        campaign["spend"] += _to_number(row.get("spend")) or 0
+        campaign["orders_count"] += _to_number(row.get("orders_count")) or 0
+        campaign["impressions"] += _to_number(row.get("impressions")) or 0
         nm_id = _to_int(row.get("nm_id"))
         if nm_id is not None and nm_id not in campaign["nm_ids"]:
             campaign["nm_ids"].append(nm_id)
 
-    return list(campaigns_by_id.values())[:limit]
+    campaigns = sorted(
+        campaigns_by_id.values(),
+        key=lambda campaign: (
+            campaign.get("spend") or 0,
+            campaign.get("orders_count") or 0,
+            campaign.get("impressions") or 0,
+        ),
+        reverse=True,
+    )
+    return campaigns[:limit], campaigns[limit:]
 
 
 def _parse_force_campaign_ids():
@@ -513,22 +532,32 @@ def collect_ads_clusters(
         return []
 
     seller_id = seller_id or os.getenv("SELLER_ID") or os.getenv("WB_SELLER_ID")
-    if campaigns is None:
-        campaigns, _ = _load_campaigns(token, seller_id)
-
-    campaigns = campaigns or []
-    _summary_log(f"ADS CLUSTERS: campaigns found={len(campaigns)}")
-    active_campaigns = _load_active_ads_metric_campaigns(
-        report_date, seller_id, ADS_CLUSTERS_MAX_CAMPAIGNS
-    )
-    if active_campaigns:
-        campaigns = _merge_campaign_metadata(active_campaigns, campaigns)
-        _summary_log(
-            "ADS CLUSTERS: using active daily_ads_metrics campaigns="
-            + ",".join(str(row.get("campaign_id")) for row in campaigns)
-        )
+    wb_campaigns = []
+    if campaigns is not None:
+        wb_campaigns = campaigns or []
     else:
-        campaigns = campaigns[: min(ADS_CLUSTERS_MAX_CAMPAIGNS, 3)]
+        try:
+            wb_campaigns, _ = _load_campaigns(token, seller_id)
+        except Exception as error:
+            _summary_log(f"ADS CLUSTERS: WB campaigns metadata read error error={error}")
+            wb_campaigns = []
+
+    active_campaigns, skipped_campaigns = _load_active_ads_metric_campaigns(
+        report_date, seller_id, ADS_CLUSTER_MAX_CAMPAIGNS_PER_SELLER
+    )
+    campaigns = _merge_campaign_metadata(active_campaigns, wb_campaigns)
+    selected_campaign_ids = [campaign.get("campaign_id") for campaign in campaigns]
+    skipped_campaign_ids = [campaign.get("campaign_id") for campaign in skipped_campaigns]
+
+    _summary_log(
+        "ADS CLUSTERS SELECTION: "
+        f"seller_id={seller_id} campaigns_available={len(active_campaigns) + len(skipped_campaigns)} "
+        f"campaigns_selected={len(campaigns)} selected_campaign_ids={selected_campaign_ids} "
+        f"skipped_campaign_ids={skipped_campaign_ids}"
+    )
+    for campaign_id in skipped_campaign_ids:
+        _summary_log(f"ADS CLUSTERS SKIPPED BY LIMIT campaign_id={campaign_id}")
+    if not active_campaigns:
         _summary_log("ADS CLUSTERS: no active daily_ads_metrics campaigns found")
 
     force_campaign_ids = _parse_force_campaign_ids()
@@ -611,6 +640,13 @@ def collect_ads_clusters(
         all_rows.extend(rows)
         time.sleep(ADS_CLUSTERS_REQUEST_PAUSE_SECONDS)
 
+    _summary_log(
+        "ADS CLUSTERS RESULT: "
+        f"seller_id={seller_id} campaigns_available={len(active_campaigns) + len(skipped_campaigns)} "
+        f"campaigns_selected={len(selected_campaign_ids)} "
+        f"selected_campaign_ids={selected_campaign_ids} "
+        f"skipped_campaign_ids={skipped_campaign_ids} rows_saved={saved_rows}"
+    )
     _summary_log(
         "ADS CLUSTERS: "
         f"campaigns_found={len(campaigns)} campaigns_processed={processed} "
