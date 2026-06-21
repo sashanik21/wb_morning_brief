@@ -4,7 +4,7 @@ import hashlib
 from io import BytesIO
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import date
 from html import escape
 from pathlib import Path
 
@@ -262,7 +262,7 @@ def _empty_ads_cluster_debug(seller_id, campaign_id, start_date, end_date):
 
 
 @st.cache_data(ttl=300)
-def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None, start_date=None, end_date=None):
+def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None):
     query = (
         get_supabase_client()
         .table("wb_ad_change_history")
@@ -276,14 +276,6 @@ def fetch_ad_change_history_rows(seller_id=None, campaign_id=None, nm_id=None, s
         query = query.eq("campaign_id", _normalize_filter_id(campaign_id))
     if nm_id:
         query = query.eq("nm_id", _normalize_filter_id(nm_id))
-    if start_date:
-        query = query.gte("changed_at", str(start_date))
-    if end_date:
-        end_day = pd.to_datetime(str(end_date), errors="coerce")
-        if pd.notna(end_day):
-            query = query.lt("changed_at", (end_day.date() + timedelta(days=1)).isoformat())
-        else:
-            query = query.lte("changed_at", str(end_date))
     try:
         return query.execute().data or []
     except Exception:
@@ -1401,17 +1393,26 @@ if ads_cluster_request:
         st.caption(
             "Фильтр: "
             f"campaign_id={ads_cluster_request.get('campaign_id')}, "
-            f"seller_id={ads_cluster_request.get('seller_id')}, "
-            f"период {ads_cluster_request.get('start_date')} — {ads_cluster_request.get('end_date')}"
+            f"seller_id={ads_cluster_request.get('seller_id')}"
         )
         ad_change_history_rows = fetch_ad_change_history_rows(
             seller_id=ads_cluster_request.get("seller_id"),
             campaign_id=ads_cluster_request.get("campaign_id"),
-            start_date=ads_cluster_request.get("start_date"),
-            end_date=ads_cluster_request.get("end_date"),
         )
         if ad_change_history_rows:
-            st.caption(f"Найдено изменений: {len(ad_change_history_rows)}")
+            changed_at_values = pd.to_datetime(
+                [row.get("changed_at") for row in ad_change_history_rows],
+                errors="coerce",
+            ).dropna()
+            if not changed_at_values.empty:
+                first_change_date = changed_at_values.min().date().isoformat()
+                last_change_date = changed_at_values.max().date().isoformat()
+            else:
+                first_change_date = "—"
+                last_change_date = "—"
+            st.caption(f"Всего изменений: {len(ad_change_history_rows)}")
+            st.caption(f"Дата первого изменения: {first_change_date}")
+            st.caption(f"Дата последнего изменения: {last_change_date}")
             st.dataframe(
                 build_ad_change_history_dataframe(ad_change_history_rows, include_nm_id=True),
                 width="stretch",
