@@ -126,7 +126,7 @@ def _dashboard_ad_change_history_dedupe_key(row):
         ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("change_type")),
         ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("old_value")),
         ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("new_value")),
-        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("changed_at")),
+        ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("change_date")),
         ad_change_history_storage_module._ad_change_history_dedupe_part(row.get("change_source")),
     ]
     return "|".join(parts)
@@ -139,13 +139,13 @@ def _dashboard_normalize_ad_change_history_row(row, seller_id, import_id=None):
         "campaign_id": ad_change_history_storage_module._to_int(row.get("campaign_id")),
         "nm_id": ad_change_history_storage_module._to_int(row.get("nm_id")),
         "change_type": ad_change_history_storage_module._ad_change_history_text(row.get("change_type")),
-        "cluster_name": ad_change_history_storage_module._ad_change_history_text(row.get("cluster_name")),
+        "cluster_name": ad_change_history_storage_module._ad_change_history_text(row.get("cluster_name") or row.get("cluster")),
         "old_value": ad_change_history_storage_module._ad_change_history_text(row.get("old_value")),
         "new_value": ad_change_history_storage_module._ad_change_history_text(row.get("new_value")),
         "change_source": ad_change_history_storage_module._ad_change_history_text(
             row.get("change_source") or row.get("source")
         ),
-        "changed_at": ad_change_history_storage_module._ad_change_history_text(row.get("changed_at")),
+        "change_date": ad_change_history_storage_module._ad_change_history_text(row.get("change_date") or row.get("changed_at")),
         "raw_row": ad_change_history_storage_module._json_safe_row(row.get("raw_row") or row),
     }
     normalized["dedupe_key"] = _dashboard_ad_change_history_dedupe_key(normalized)
@@ -173,8 +173,8 @@ def _dashboard_find_existing_ad_change_history_import(file_hash):
     rows = ad_change_history_storage_module._execute_read(
         ad_change_history_storage_module._get_client()
         .table("wb_ad_change_history_imports")
-        .select("id,status,rows_total,rows_inserted,rows_skipped,error_message")
-        .eq("source_file_hash", file_hash)
+        .select("id,rows_total,rows_inserted,rows_skipped")
+        .eq("file_hash", file_hash)
         .limit(1),
         "wb_ad_change_history_imports",
     )
@@ -200,8 +200,8 @@ def _dashboard_save_ad_change_history_rows(seller_id, rows, rows_total=None, imp
             reason = "строка полностью пустая"
         elif row.get("campaign_id") is None:
             reason = "нет campaign_id"
-        elif row.get("changed_at") is None:
-            reason = "нет changed_at"
+        elif row.get("change_date") is None:
+            reason = "нет change_date"
         elif row.get("dedupe_key") in seen_keys:
             reason = "дубль по dedupe_key"
 
@@ -252,7 +252,6 @@ def _dashboard_save_ad_change_history_import(
     existing_import = _dashboard_find_existing_ad_change_history_import(file_hash)
     if (
         existing_import
-        and existing_import.get("status") == "parsed"
         and (existing_import.get("rows_inserted") or 0) > 0
     ):
         rows_inserted = existing_import.get("rows_inserted") or 0
@@ -322,6 +321,59 @@ ad_change_history_storage_module._ad_change_history_dedupe_key = _dashboard_ad_c
 ad_change_history_storage_module._normalize_ad_change_history_row = _dashboard_normalize_ad_change_history_row
 save_ad_change_history_import = _dashboard_save_ad_change_history_import
 save_ad_change_history_rows = _dashboard_save_ad_change_history_rows
+
+
+
+def _data_quality_table_exists(table_name):
+    try:
+        get_supabase_client().table(table_name).select("id").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
+def _data_quality_count_rows(table_name, columns, report_date=None):
+    try:
+        query = get_supabase_client().table(table_name).select(columns).limit(10000)
+        if report_date:
+            query = query.eq("report_date", report_date)
+        return query.execute().data or []
+    except Exception:
+        return []
+
+
+def _data_quality_duplicate_count(rows, key_fields):
+    counts = {}
+    for row in rows or []:
+        key = tuple(_normalize_filter_id(row.get(field)) for field in key_fields)
+        counts[key] = counts.get(key, 0) + 1
+    return sum(count - 1 for count in counts.values() if count > 1)
+
+
+def fetch_dashboard_consistency_checks(report_date=None):
+    problems_rows = _data_quality_count_rows(
+        "problems", "report_date,seller_id,nm_id,problem_type", report_date=report_date
+    )
+    stocks_rows = _data_quality_count_rows(
+        "stocks_daily", "report_date,seller_id,nm_id", report_date=report_date
+    )
+    seller_id_problem_rows = []
+    for table_name in ("problems", "stocks_daily", "daily_ads_metrics", "ads_clusters_daily", "ads_bid_history"):
+        rows = _data_quality_count_rows(table_name, "seller_id", report_date=report_date)
+        missing = sum(1 for row in rows if row.get("seller_id") in (None, ""))
+        if missing:
+            seller_id_problem_rows.append(f"{table_name}: {missing}")
+    return {
+        "has_wb_ad_change_history": _data_quality_table_exists("wb_ad_change_history"),
+        "has_wb_ad_change_history_imports": _data_quality_table_exists("wb_ad_change_history_imports"),
+        "seller_id_issues": ", ".join(seller_id_problem_rows) or "нет",
+        "problems_duplicates": _data_quality_duplicate_count(
+            problems_rows, ["report_date", "seller_id", "nm_id", "problem_type"]
+        ),
+        "stocks_daily_duplicates": _data_quality_duplicate_count(
+            stocks_rows, ["report_date", "seller_id", "nm_id"]
+        ),
+    }
 
 def metric_tooltip(title, how, sources, check, limits):
     return (
@@ -400,11 +452,20 @@ def reason_loss_help(reason_summary):
 
 
 
+
+def _seller_id_for_table(table_name, seller_id):
+    if table_name in {"ads_clusters_daily", "ads_bid_history", "problems", "stocks_daily"}:
+        try:
+            return int(float(str(seller_id).replace(",", ".")))
+        except (TypeError, ValueError):
+            return seller_id
+    return _normalize_filter_id(seller_id)
+
 def _fetch_ads_rows(table_name, columns, seller_id=None):
     try:
         query = get_supabase_client().table(table_name).select(columns).limit(10000)
         if seller_id:
-            query = query.eq("seller_id", seller_id)
+            query = query.eq("seller_id", _seller_id_for_table(table_name, seller_id))
         return query.execute().data or []
     except Exception:
         return []
@@ -480,19 +541,19 @@ def _empty_ad_change_history_debug(seller_id, campaign_id):
         "rows_after_seller": 0,
         "rows_after_campaign": 0,
         "available_campaign_ids_for_seller": [],
-        "min_changed_at": None,
-        "max_changed_at": None,
+        "min_change_date": None,
+        "max_change_date": None,
     }
 
 
-def _changed_at_bounds(rows):
-    changed_at_values = pd.to_datetime(
-        [row.get("changed_at") for row in rows],
+def _change_date_bounds(rows):
+    change_date_values = pd.to_datetime(
+        [row.get("change_date") for row in rows],
         errors="coerce",
     ).dropna()
-    if changed_at_values.empty:
+    if change_date_values.empty:
         return None, None
-    return changed_at_values.min().isoformat(), changed_at_values.max().isoformat()
+    return change_date_values.min().isoformat(), change_date_values.max().isoformat()
 
 
 @st.cache_data(ttl=300)
@@ -504,8 +565,8 @@ def fetch_ad_change_history_rows_with_debug(seller_id=None, campaign_id=None):
     query = (
         get_supabase_client()
         .table("wb_ad_change_history")
-        .select("changed_at,change_type,cluster_name,old_value,new_value,change_source,nm_id,campaign_id,seller_id")
-        .order("changed_at", desc=True)
+        .select("change_date,change_type,cluster_name,old_value,new_value,change_source,nm_id,campaign_id,seller_id")
+        .order("change_date", desc=True)
         .limit(10000)
     )
     try:
@@ -544,7 +605,7 @@ def fetch_ad_change_history_rows_with_debug(seller_id=None, campaign_id=None):
     else:
         campaign_rows = seller_rows
     debug["rows_after_campaign"] = len(campaign_rows)
-    debug["min_changed_at"], debug["max_changed_at"] = _changed_at_bounds(campaign_rows)
+    debug["min_change_date"], debug["max_change_date"] = _change_date_bounds(campaign_rows)
 
     return campaign_rows, debug
 
@@ -564,7 +625,7 @@ def build_ad_change_history_dataframe(rows, include_campaign=False, include_nm_i
     records = []
     for row in rows:
         record = {
-            "Дата и время": row.get("changed_at") or "",
+            "Дата и время": row.get("change_date") or "",
             "Что изменилось": row.get("change_type") or "",
             "Кластер": row.get("cluster_name") or "",
             "Было": row.get("old_value") or "",
@@ -639,7 +700,7 @@ def _fetch_ads_cluster_campaign_rows(seller_id):
                 get_supabase_client()
                 .table("daily_ads_metrics")
                 .select("campaign_id,campaign_name,campaign_type")
-                .eq("seller_id", seller_id)
+                .eq("seller_id", _seller_id_for_table("daily_ads_metrics", seller_id))
                 .range(offset, offset + page_size - 1)
                 .execute()
                 .data
@@ -724,7 +785,7 @@ def find_ads_cluster_campaign(seller_id, campaign_search):
                 get_supabase_client()
                 .table(table_name)
                 .select("seller_id,seller_name,campaign_id,campaign_name,campaign_type")
-                .eq("seller_id", seller_id)
+                .eq("seller_id", _seller_id_for_table(table_name, seller_id))
                 .eq("campaign_id", campaign_id_for_lookup)
                 .limit(1)
                 .execute()
@@ -762,7 +823,7 @@ def campaign_exists_in_daily_ads_metrics(seller_id, campaign_id):
             get_supabase_client()
             .table("daily_ads_metrics")
             .select("campaign_id")
-            .eq("seller_id", seller_id)
+            .eq("seller_id", _seller_id_for_table("daily_ads_metrics", seller_id))
             .eq("campaign_id", _normalize_filter_id(campaign_id))
             .limit(1)
             .execute()
@@ -859,7 +920,7 @@ def fetch_ads_cluster_available_dates(seller_id=None, campaign_id=None):
         .limit(10000)
     )
     if seller_id:
-        query = query.eq("seller_id", seller_id)
+        query = query.eq("seller_id", _seller_id_for_table("ads_clusters_daily", seller_id))
     if campaign_id:
         query = query.eq("campaign_id", campaign_id)
     rows = query.execute().data or []
@@ -1093,9 +1154,9 @@ def _latest_bid_change_by_cluster(history_rows):
     bid_rows = sorted(
         bid_rows,
         key=lambda row: (
-            not pd.isna(pd.to_datetime(row.get("changed_at"), errors="coerce")),
-            pd.to_datetime(row.get("changed_at"), errors="coerce")
-            if not pd.isna(pd.to_datetime(row.get("changed_at"), errors="coerce"))
+            not pd.isna(pd.to_datetime(row.get("change_date"), errors="coerce")),
+            pd.to_datetime(row.get("change_date"), errors="coerce")
+            if not pd.isna(pd.to_datetime(row.get("change_date"), errors="coerce"))
             else pd.Timestamp.min,
         ),
         reverse=True,
@@ -1108,8 +1169,8 @@ def _latest_bid_change_by_cluster(history_rows):
     return latest_by_cluster
 
 
-def _history_changed_at(row):
-    return pd.to_datetime(row.get("changed_at"), errors="coerce", utc=True)
+def _history_change_date(row):
+    return pd.to_datetime(row.get("change_date"), errors="coerce", utc=True)
 
 
 def _bid_change_history_rows_by_cluster(history_rows):
@@ -1126,9 +1187,9 @@ def _bid_change_history_rows_by_cluster(history_rows):
         rows_by_cluster[cluster_key] = sorted(
             rows,
             key=lambda row: (
-                not pd.isna(_history_changed_at(row)),
-                _history_changed_at(row)
-                if not pd.isna(_history_changed_at(row))
+                not pd.isna(_history_change_date(row)),
+                _history_change_date(row)
+                if not pd.isna(_history_change_date(row))
                 else pd.Timestamp.min,
             ),
         )
@@ -1146,10 +1207,10 @@ def _bid_change_period_rows_by_cluster(history_rows, start_date, end_date):
     for cluster_key, rows in _bid_change_history_rows_by_cluster(history_rows).items():
         period_rows = []
         for row in rows:
-            changed_at = _history_changed_at(row)
-            if pd.isna(changed_at):
+            change_date = _history_change_date(row)
+            if pd.isna(change_date):
                 continue
-            if start_at <= changed_at < end_at:
+            if start_at <= change_date < end_at:
                 period_rows.append(row)
         rows_by_cluster[cluster_key] = period_rows
     return rows_by_cluster
@@ -1260,7 +1321,7 @@ def build_bid_changes_analysis_report(clusters_report, history_rows, start_date,
         report_rows.append(
             {
                 "Кластер": cluster,
-                "Последнее изменение": (history_row or {}).get("changed_at") or "",
+                "Последнее изменение": (history_row or {}).get("change_date") or "",
                 "Было": _to_optional_ad_bid_number((history_row or {}).get("old_value")),
                 "Стало": _to_optional_ad_bid_number((history_row or {}).get("new_value")),
                 "Последняя ставка": _to_optional_ad_bid_number((history_row or {}).get("new_value")),
@@ -1412,9 +1473,9 @@ AD_CHANGE_HISTORY_COLUMNS = {
     "old_value": ["было", "old_value", "old value", "previous value"],
     "new_value": ["стало", "new_value", "new value", "current value"],
     "change_source": ["источник", "change_source", "change source", "source", "источник изменения"],
-    "changed_at": [
+    "change_date": [
         "дата и время (gmt +3)",
-        "changed_at",
+        "change_date",
         "changed at",
         "дата и время",
         "дата изменения",
@@ -1470,7 +1531,7 @@ def _parse_ad_change_history_excel(uploaded_file):
     }
     required_fields = [
         "campaign_id",
-        "changed_at",
+        "change_date",
     ]
     missing_fields = [field for field in required_fields if column_map.get(field) is None]
     if missing_fields:
@@ -2102,8 +2163,8 @@ if ads_cluster_request:
             f"seller_id={ads_cluster_request.get('seller_id')}"
         )
         if ad_change_history_rows:
-            first_change_date = ad_change_history_debug.get("min_changed_at") or "—"
-            last_change_date = ad_change_history_debug.get("max_changed_at") or "—"
+            first_change_date = ad_change_history_debug.get("min_change_date") or "—"
+            last_change_date = ad_change_history_debug.get("max_change_date") or "—"
             st.caption(f"Всего изменений: {len(ad_change_history_rows)}")
             st.caption(f"Дата первого изменения: {first_change_date}")
             st.caption(f"Дата последнего изменения: {last_change_date}")
@@ -2132,8 +2193,8 @@ if ads_cluster_request:
                     "available_campaign_ids_for_seller:\n\n"
                     f"{ad_change_history_debug['available_campaign_ids_for_seller']}"
                 )
-                st.write(f"min_changed_at:\n\n{ad_change_history_debug['min_changed_at']}")
-                st.write(f"max_changed_at:\n\n{ad_change_history_debug['max_changed_at']}")
+                st.write(f"min_change_date:\n\n{ad_change_history_debug['min_change_date']}")
+                st.write(f"max_change_date:\n\n{ad_change_history_debug['max_change_date']}")
             with st.expander("Debug Bid Changes Analysis", expanded=False):
                 st.markdown("**BID CHANGES ANALYSIS DEBUG:**")
                 st.write(f"rows_clusters:\n\n{bid_changes_analysis_debug['rows_clusters']}")
@@ -2204,6 +2265,7 @@ problems_diagnostics = fetch_problems_diagnostics(
     available_dates=report_dates,
 )
 quality = fetch_data_quality(report_date=report_date)
+consistency_checks = fetch_dashboard_consistency_checks(report_date=report_date)
 
 if not connection_diagnostics["problems_readable"] or (
     connection_diagnostics["problems_total_count"] == 0 and not date_problems
@@ -2332,6 +2394,12 @@ quality_1.metric("problems без seller_id", format_number(quality["problems_wi
 quality_2.metric("ads_bid_history без seller_id", format_number(quality["ads_bid_history_without_seller_id"]))
 quality_3.metric("SKU без рекламы", format_number(quality["sku_without_ads"]))
 quality_4.metric("SKU без поставок", format_number(quality["sku_without_supplies"]))
+consistency_1, consistency_2, consistency_3, consistency_4, consistency_5 = st.columns(5)
+consistency_1.metric("wb_ad_change_history", "OK" if consistency_checks["has_wb_ad_change_history"] else "нет")
+consistency_2.metric("history_imports", "OK" if consistency_checks["has_wb_ad_change_history_imports"] else "нет")
+consistency_3.metric("seller_id проблемы", consistency_checks["seller_id_issues"])
+consistency_4.metric("дубли problems", format_number(consistency_checks["problems_duplicates"]))
+consistency_5.metric("дубли stocks_daily", format_number(consistency_checks["stocks_daily_duplicates"]))
 
 
 if show_debug:
