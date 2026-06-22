@@ -295,8 +295,10 @@ create table if not exists stocks_daily (
     incoming_stock integer,
     returning_stock integer,
     ready_for_sale_stock integer,
+    acceptance_stock integer,
     transit_stock integer,
     stock_state text,
+    days_until_oos numeric,
     forecast_type text,
     forecast_message text,
     raw_json jsonb,
@@ -311,8 +313,10 @@ alter table if exists public.stocks_daily
     add column if not exists incoming_stock integer,
     add column if not exists returning_stock integer,
     add column if not exists ready_for_sale_stock integer,
+    add column if not exists acceptance_stock integer,
     add column if not exists transit_stock integer,
     add column if not exists stock_state text,
+    add column if not exists days_until_oos numeric,
     add column if not exists forecast_type text,
     add column if not exists forecast_message text;
 

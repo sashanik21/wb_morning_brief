@@ -620,10 +620,16 @@ def _normalize_stocks_daily_row(row):
         "ready_for_sale_stock": _to_int(
             _first_present(row, ["ready_for_sale_stock", "readyForSaleStock"])
         ),
+        "acceptance_stock": _to_int(
+            _first_present(row, ["acceptance_stock", "acceptanceStock"])
+        ),
         "transit_stock": _to_int(
             _first_present(row, ["transit_stock", "transitStock"])
         ),
         "stock_state": _first_present(row, ["stock_state", "stockState"]),
+        "days_until_oos": _to_number(
+            _first_present(row, ["days_until_oos", "daysUntilOOS"])
+        ),
         "forecast_type": _first_present(row, ["forecast_type", "forecastType"]),
         "forecast_message": _first_present(
             row, ["forecast_message", "forecastMessage"]
@@ -652,8 +658,10 @@ def _stocks_daily_columns():
         "incoming_stock",
         "returning_stock",
         "ready_for_sale_stock",
+        "acceptance_stock",
         "transit_stock",
         "stock_state",
+        "days_until_oos",
         "forecast_type",
         "forecast_message",
         "raw_json",
