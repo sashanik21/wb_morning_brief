@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PROJECT_TIMEZONE: Europe/Moscow
-      SCHEDULED_LOCAL_TIME: "09:05"
-      SCHEDULED_CRON_UTC: "05 06 * * *"
+      SCHEDULED_LOCAL_TIME: "10:05"
+      SCHEDULED_CRON_UTC: "05 07 * * *"
 
     steps:
       - name: Checkout repository
@@ -64,9 +64,9 @@ jobs:
           echo "CRON RAW:"
           echo "${SCHEDULED_CRON_UTC}"
           echo "EXPECTED UTC:"
-          echo "06:05"
+          echo "07:05"
           echo "EXPECTED MSK:"
-          echo "09:05"
+          echo "10:05"
           echo "Workflow run started: $(TZ=${PROJECT_TIMEZONE} date '+%H:%M') local"
           python -m app.main
 
