@@ -285,12 +285,36 @@ create table if not exists stocks_daily (
     id bigserial primary key,
     report_date date not null,
     seller_id bigint references sellers(id),
+    seller_name text,
     nm_id bigint,
+    vendor_code text,
+    title text,
     warehouse_name text,
     quantity integer default 0,
+    real_sellable_stock integer,
+    incoming_stock integer,
+    returning_stock integer,
+    ready_for_sale_stock integer,
+    transit_stock integer,
+    stock_state text,
+    forecast_type text,
+    forecast_message text,
     raw_json jsonb,
     created_at timestamptz default now()
 );
+
+alter table if exists public.stocks_daily
+    add column if not exists seller_name text,
+    add column if not exists vendor_code text,
+    add column if not exists title text,
+    add column if not exists real_sellable_stock integer,
+    add column if not exists incoming_stock integer,
+    add column if not exists returning_stock integer,
+    add column if not exists ready_for_sale_stock integer,
+    add column if not exists transit_stock integer,
+    add column if not exists stock_state text,
+    add column if not exists forecast_type text,
+    add column if not exists forecast_message text;
 
 create index if not exists idx_products_seller_id_nm_id
     on products(seller_id, nm_id);
