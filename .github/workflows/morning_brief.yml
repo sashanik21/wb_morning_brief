@@ -2,7 +2,7 @@ name: WB Morning Brief Scheduled
 
 on:
   schedule:
-    - cron: '20 07 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PROJECT_TIMEZONE: Europe/Moscow
-      SCHEDULED_LOCAL_TIME: "10:05"
-      SCHEDULED_CRON_UTC: "05 07 * * *"
+      SCHEDULED_LOCAL_TIME: "every 5 minutes"
+      SCHEDULED_CRON_UTC: "*/5 * * * *"
 
     steps:
       - name: Checkout repository
@@ -64,9 +64,9 @@ jobs:
           echo "CRON RAW:"
           echo "${SCHEDULED_CRON_UTC}"
           echo "EXPECTED UTC:"
-          echo "07:05"
+          echo "every 5 minutes"
           echo "EXPECTED MSK:"
-          echo "10:05"
+          echo "every 5 minutes"
           echo "Workflow run started: $(TZ=${PROJECT_TIMEZONE} date '+%H:%M') local"
           python -m app.main
 
