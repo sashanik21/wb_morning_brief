@@ -231,6 +231,39 @@ create table if not exists ads_clusters_daily (
     created_at timestamptz default now()
 );
 
+
+create table if not exists wb_ad_change_history_imports (
+    id bigserial primary key,
+    file_name text,
+    file_hash text not null unique,
+    rows_total integer default 0,
+    rows_inserted integer default 0,
+    rows_skipped integer default 0,
+    created_at timestamptz default now()
+);
+
+create table if not exists wb_ad_change_history (
+    id bigserial primary key,
+    import_id bigint references wb_ad_change_history_imports(id),
+    seller_id text,
+    seller_name text,
+    campaign_id bigint,
+    campaign_name text,
+    nm_id bigint,
+    vendor_code text,
+    title text,
+    cluster_name text,
+    change_date timestamptz not null,
+    change_type text,
+    old_value text,
+    new_value text,
+    change_source text,
+    changed_by text,
+    comment text,
+    dedupe_key text not null unique,
+    created_at timestamptz default now()
+);
+
 create table if not exists ads_campaigns_cache (
     id bigint generated always as identity primary key,
     seller_id text,
@@ -285,6 +318,12 @@ create unique index if not exists daily_ads_metrics_unique_idx
 
 create unique index if not exists ads_clusters_daily_unique_idx
     on ads_clusters_daily(report_date, seller_id, campaign_id, nm_id, cluster);
+
+create index if not exists idx_wb_ad_change_history_report
+    on wb_ad_change_history(change_date, seller_id, campaign_id);
+
+create index if not exists idx_wb_ad_change_history_cluster_name
+    on wb_ad_change_history(seller_id, campaign_id, cluster_name);
 
 create index if not exists idx_ads_campaigns_cache_seller_last_seen
     on ads_campaigns_cache(seller_id, last_seen_at desc);
@@ -373,11 +412,14 @@ alter table if exists public.problems enable row level security;
 alter table if exists public.daily_funnel enable row level security;
 alter table if exists public.daily_ads_metrics enable row level security;
 alter table if exists public.ads_clusters_daily enable row level security;
+alter table if exists public.wb_ad_change_history enable row level security;
+alter table if exists public.wb_ad_change_history_imports enable row level security;
 alter table if exists public.api_coverage_daily enable row level security;
 alter table if exists public.daily_qbiki_metrics enable row level security;
 
 create table if not exists ads_bid_history (
     id bigserial primary key,
+    seller_id bigint references sellers(id),
     seller_name text,
     campaign_id bigint not null,
     nm_id bigint,

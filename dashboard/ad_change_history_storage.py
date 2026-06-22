@@ -87,12 +87,12 @@ def _ad_change_history_dedupe_key(row):
         _ad_change_history_dedupe_part(row.get("seller_id")),
         _ad_change_history_dedupe_part(row.get("campaign_id")),
         _ad_change_history_dedupe_part(row.get("nm_id")),
-        _ad_change_history_dedupe_part(row.get("cluster")),
+        _ad_change_history_dedupe_part(row.get("cluster_name")),
         _ad_change_history_dedupe_part(row.get("change_type")),
         _ad_change_history_dedupe_part(row.get("old_value")),
         _ad_change_history_dedupe_part(row.get("new_value")),
-        _ad_change_history_dedupe_part(row.get("changed_at")),
-        _ad_change_history_dedupe_part(row.get("source")),
+        _ad_change_history_dedupe_part(row.get("change_date")),
+        _ad_change_history_dedupe_part(row.get("change_source")),
     ]
     return "|".join(parts)
 
@@ -104,11 +104,11 @@ def _normalize_ad_change_history_row(row, seller_id, import_id=None):
         "campaign_id": _to_int(row.get("campaign_id")),
         "nm_id": _to_int(row.get("nm_id")),
         "change_type": _ad_change_history_text(row.get("change_type")),
-        "cluster": _ad_change_history_text(row.get("cluster")),
+        "cluster_name": _ad_change_history_text(row.get("cluster_name") or row.get("cluster")),
         "old_value": _ad_change_history_text(row.get("old_value")),
         "new_value": _ad_change_history_text(row.get("new_value")),
-        "source": _ad_change_history_text(row.get("source")),
-        "changed_at": _ad_change_history_text(row.get("changed_at")),
+        "change_source": _ad_change_history_text(row.get("change_source") or row.get("source")),
+        "change_date": _ad_change_history_text(row.get("change_date") or row.get("changed_at")),
         "raw_row": _json_safe_row(row.get("raw_row") or row),
     }
     normalized["dedupe_key"] = _ad_change_history_dedupe_key(normalized)
@@ -137,9 +137,8 @@ def _find_existing_ad_change_history_import(seller_id, file_hash):
     rows = _execute_read(
         _get_client()
         .table("wb_ad_change_history_imports")
-        .select("id,rows_total,rows_inserted,rows_skipped,error_message")
-        .eq("seller_id", _string_or_none(seller_id))
-        .eq("source_file_hash", file_hash)
+        .select("id,rows_total,rows_inserted,rows_skipped")
+        .eq("file_hash", file_hash)
         .limit(1),
         "wb_ad_change_history_imports",
     )
@@ -148,15 +147,12 @@ def _find_existing_ad_change_history_import(seller_id, file_hash):
 
 def _create_ad_change_history_import(seller_id, file_name, file_hash, rows_total):
     payload = {
-        "seller_id": _string_or_none(seller_id),
-        "source_file_name": file_name,
-        "source_file_hash": file_hash,
+        "file_name": file_name,
+        "file_hash": file_hash,
         "rows_total": rows_total,
         "rows_inserted": 0,
         "rows_skipped": 0,
-        "status": "uploaded",
-        "error_message": None,
-        "uploaded_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.utcnow().isoformat(),
     }
     try:
         response = (
@@ -179,9 +175,6 @@ def _update_ad_change_history_import(import_id, rows_inserted, rows_skipped, err
     payload = {
         "rows_inserted": rows_inserted,
         "rows_skipped": rows_skipped,
-        "status": "failed" if error_message else "parsed",
-        "error_message": error_message,
-        "parsed_at": datetime.utcnow().isoformat(),
     }
     _execute_write(
         _get_client()
@@ -199,7 +192,7 @@ def save_ad_change_history_rows(seller_id, rows, rows_total=None, import_id=None
         for row in rows or []
     ]
     normalized_rows = _drop_empty_required(
-        normalized_rows, ["seller_id", "campaign_id", "changed_at", "dedupe_key"]
+        normalized_rows, ["seller_id", "campaign_id", "change_date", "dedupe_key"]
     )
 
     seen_keys = set()
