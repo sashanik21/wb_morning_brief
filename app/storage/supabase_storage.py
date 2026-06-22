@@ -604,6 +604,10 @@ def _normalize_stocks_daily_row(row):
         "nm_id": _to_int(_first_present(row, ["nm_id", "nmId", "nmID"])),
         "vendor_code": _first_present(row, ["vendor_code", "vendorCode"]),
         "title": row.get("title"),
+        "warehouse_name": _first_present(row, ["warehouse_name", "warehouseName"]),
+        "quantity": _to_int(
+            _first_present(row, ["quantity", "wb_stocks", "wbStocks", "stocks"])
+        ),
         "real_sellable_stock": _to_int(
             _first_present(row, ["real_sellable_stock", "realSellableStock"])
         ),
@@ -616,23 +620,17 @@ def _normalize_stocks_daily_row(row):
         "ready_for_sale_stock": _to_int(
             _first_present(row, ["ready_for_sale_stock", "readyForSaleStock"])
         ),
-        "acceptance_stock": _to_int(
-            _first_present(row, ["acceptance_stock", "acceptanceStock"])
-        ),
         "transit_stock": _to_int(
             _first_present(row, ["transit_stock", "transitStock"])
         ),
         "stock_state": _first_present(row, ["stock_state", "stockState"]),
-        "days_until_oos": _to_number(
-            _first_present(row, ["days_until_oos", "daysUntilOOS"])
-        ),
         "forecast_type": _first_present(row, ["forecast_type", "forecastType"]),
         "forecast_message": _first_present(
             row, ["forecast_message", "forecastMessage"]
         ),
+        "raw_json": _json_safe_row(row),
         "created_at": _first_present(row, ["created_at", "createdAt"]),
     }
-
 
 def _stocks_daily_columns():
     rows = _execute_read(
@@ -648,16 +646,17 @@ def _stocks_daily_columns():
         "nm_id",
         "vendor_code",
         "title",
+        "warehouse_name",
+        "quantity",
         "real_sellable_stock",
         "incoming_stock",
         "returning_stock",
         "ready_for_sale_stock",
-        "acceptance_stock",
         "transit_stock",
         "stock_state",
-        "days_until_oos",
         "forecast_type",
         "forecast_message",
+        "raw_json",
         "created_at",
     }
 
@@ -747,6 +746,10 @@ def save_stocks_daily(rows):
         "stocks_daily",
     )
     if success:
+        print("STOCKS DAILY SAVED SUCCESSFULLY")
+        print(f"rows={len(normalized_rows)}")
+        print(f"seller_id={seller_id}")
+        print(f"report_date={report_date}")
         print("STOCKS HISTORY:")
         print(f"saved rows={len(normalized_rows)}")
         print(f"report_date={report_date}")
@@ -760,6 +763,10 @@ def save_stocks_daily(rows):
             "stocks_daily",
         )
         if success:
+            print("STOCKS DAILY SAVED SUCCESSFULLY")
+            print(f"rows={len(retry_rows)}")
+            print(f"seller_id={seller_id}")
+            print(f"report_date={report_date}")
             print("STOCKS HISTORY:")
             print(f"saved rows={len(retry_rows)}")
             print(f"report_date={report_date}")
