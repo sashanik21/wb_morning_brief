@@ -1,4 +1,4 @@
-name: WB Morning Brief
+name: WB Morning Brief Scheduled
 
 on:
   schedule:
