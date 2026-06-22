@@ -156,6 +156,12 @@ def _date_value(row):
     return to_business_date(row)
 
 
+def _report_date_value(row):
+    if not isinstance(row, dict):
+        return None
+    return first_present(row, ["report_date", "reportDate"])
+
+
 def _normalize_date(value):
     if isinstance(value, dict):
         value = to_business_date(value)
@@ -181,12 +187,12 @@ def _format_period_range(start_date, end_date):
     return f"{start_date.isoformat()} — {end_date.isoformat()}"
 
 
-def _filter_rows_by_period(rows, start_date, end_date):
+def _filter_rows_by_period(rows, start_date, end_date, date_getter=_date_value):
     start_text = _normalize_date(start_date)
     end_text = _normalize_date(end_date)
     filtered = []
     for row in rows:
-        row_date = _normalize_date(_date_value(row))
+        row_date = _normalize_date(date_getter(row))
         if row_date and start_text <= row_date <= end_text:
             filtered.append(row)
     return filtered
@@ -197,7 +203,7 @@ def _dedupe_rows(rows):
     for index, row in enumerate(rows):
         key = row.get("id") or (
             first_present(row, ["nm_id", "nmId", "nmID"]),
-            _normalize_date(_date_value(row)),
+            _normalize_date(_report_date_value(row) or _date_value(row)),
             first_present(row, ["seller_id", "sellerId"]),
             index,
         )
@@ -207,7 +213,7 @@ def _dedupe_rows(rows):
 
 def _fetch_daily_funnel_rows_by_date(selected_nm_id, selected_seller, start_date, end_date):
     rows = fetch_sku_history(selected_nm_id, selected_seller, start_date, end_date)
-    filtered_rows = _filter_rows_by_period(rows, start_date, end_date)
+    filtered_rows = _filter_rows_by_period(rows, start_date, end_date, date_getter=_report_date_value)
     if filtered_rows:
         return filtered_rows
 
@@ -229,11 +235,11 @@ def _fetch_daily_funnel_rows_by_date(selected_nm_id, selected_seller, start_date
             for row in fallback_rows
             if str(first_present(row, ["seller_id", "sellerId"], "")) in ("", "None", str(selected_seller))
         ]
-    return _dedupe_rows(_filter_rows_by_period([*rows, *fallback_rows], start_date, end_date))
+    return _dedupe_rows(_filter_rows_by_period([*rows, *fallback_rows], start_date, end_date, date_getter=_report_date_value))
 
 
-def _row_date_debug(rows, start_date, end_date, date_field="report_date"):
-    raw_values = [_date_value(row) for row in rows or []]
+def _row_date_debug(rows, start_date, end_date, date_field="report_date", date_getter=_date_value):
+    raw_values = [date_getter(row) for row in rows or []]
     raw_series = pd.Series(raw_values, dtype="object")
     normalized = pd.to_datetime(raw_series, errors="coerce").dt.date if len(raw_series) else pd.Series([], dtype="object")
     valid_dates = [value for value in normalized.tolist() if pd.notna(value)]
@@ -271,7 +277,7 @@ def _row_date_debug(rows, start_date, end_date, date_field="report_date"):
 def _history_dataframe(rows):
     records = []
     for row in rows:
-        row_date = _normalize_date(_date_value(row))
+        row_date = _normalize_date(_report_date_value(row))
         if not row_date:
             continue
         orders = to_number(first_present(row, ["orders", "order_count", "orderCount"]))
@@ -309,7 +315,7 @@ def _history_dataframe(rows):
 def _ads_dataframe(rows):
     records = []
     for row in rows:
-        row_date = _normalize_date(_date_value(row))
+        row_date = _normalize_date(_report_date_value(row))
         if not row_date:
             continue
         records.append(
@@ -486,6 +492,18 @@ def _format_comparison_value(value, formatter, no_base=False):
     return formatter(value)
 
 
+def _format_optional_percent(value):
+    return "нет данных" if value is None else f"{value:.1f}%"
+
+
+def _format_optional_money(value):
+    return "нет данных" if value is None else format_money(value)
+
+
+def _format_optional_number(value):
+    return "нет данных" if value is None else format_number(value)
+
+
 def _comparison_dataframe(current, previous):
     specs = [
         ("Заказы", "orders", format_number, "шт"),
@@ -597,11 +615,11 @@ def _top_sku_loss(problem_rows):
 
 
 def _has_comparison_base(previous):
-    return any(previous.get(key) is not None for key in ("orders", "revenue", "opens", "carts"))
+    return bool(previous.get("has_history"))
 
 
 
-def _build_sku_summary(current, previous, problem_rows, stock_rows):
+def _build_sku_summary(current, previous, problem_rows, stock_rows, previous_period_text=None):
     import logging
 
     orders_delta = _change_percent(current["orders"], previous["orders"])
@@ -663,7 +681,7 @@ def _build_sku_summary(current, previous, problem_rows, stock_rows):
             _format_transition("Заказы", current.get("orders"), previous.get("orders")),
         ]
     else:
-        confirmation = ["Нет базы для сравнения за прошлый период."]
+        confirmation = [f"Нет данных за прошлый период: {previous_period_text or '—'}"]
     if ads_incomplete:
         confirmation.append("Реклама требует проверки: данных недостаточно.")
     elif reason == "реклама":
@@ -886,7 +904,13 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     )
     current_metrics = _period_metrics(history_rows, ads_rows)
     previous_metrics = _period_metrics(previous_history_rows, previous_ads_rows)
-    status, summary_reason, confirmation, lost_rev, lost_ord, actions = _build_sku_summary(current_metrics, previous_metrics, problem_rows, stock_rows)
+    status, summary_reason, confirmation, lost_rev, lost_ord, actions = _build_sku_summary(
+        current_metrics,
+        previous_metrics,
+        problem_rows,
+        stock_rows,
+        previous_period_text=_format_period_range(previous_start, previous_end),
+    )
     reason = summary_reason
     history_df = _history_dataframe(history_rows)
     ads_df = _ads_dataframe(ads_rows)
@@ -925,6 +949,10 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
             st.write(f"- {item}")
 
         st.subheader("Сравнение периодов")
+        st.caption(f"Текущий период: {_format_period_range(start_date, end_date)}")
+        st.caption(f"Прошлый период: {_format_period_range(previous_start, previous_end)}")
+        if not previous_history_rows:
+            st.info(f"Нет данных за прошлый период: {_format_period_range(previous_start, previous_end)}")
         st.dataframe(
             _comparison_dataframe(current_metrics, previous_metrics),
             width="stretch",
@@ -950,7 +978,7 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
         sales_1.metric("Потеря выручки ⓘ", format_money(lost_rev), help=LOST_REVENUE_HELP)
         sales_2.metric("Потеря заказов ⓘ", format_number(round(lost_ord)), help=LOST_ORDERS_HELP)
         if history_df.empty:
-            history_debug = _row_date_debug(history_rows, start_date, end_date, date_field="daily_funnel date")
+            history_debug = _row_date_debug(history_rows, start_date, end_date, date_field="daily_funnel report_date", date_getter=_report_date_value)
             st.info(f"История продаж и воронки за выбранный период не найдена. Причина: {history_debug.get('reason') or 'NO_DATA_FOR_SELECTED_DATE'}")
             with st.expander("Техническое объяснение", expanded=False):
                 st.json(history_debug)
@@ -974,10 +1002,10 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
             st.line_chart(history_df[["Заказы"]])
             st.subheader("Воронка")
             funnel_1, funnel_2, funnel_3, funnel_4 = st.columns(4)
-            funnel_1.metric("Переходы", format_number(current_metrics["opens"]))
-            funnel_2.metric("Корзина", format_number(current_metrics["carts"]))
-            funnel_3.metric("Конверсия в корзину ⓘ", f"{current_metrics['cart_conversion'] or 0:.1f}%", help=CONVERSION_HELP)
-            funnel_4.metric("Конверсия в заказ ⓘ", f"{current_metrics['order_conversion'] or 0:.1f}%", help=CONVERSION_HELP)
+            funnel_1.metric("Переходы", _format_optional_number(current_metrics["opens"]))
+            funnel_2.metric("Корзина", _format_optional_number(current_metrics["carts"]))
+            funnel_3.metric("Конверсия в корзину ⓘ", _format_optional_percent(current_metrics["cart_conversion"]), help=CONVERSION_HELP)
+            funnel_4.metric("Конверсия в заказ ⓘ", _format_optional_percent(current_metrics["order_conversion"]), help=CONVERSION_HELP)
             st.subheader("Переходы → Корзина → Заказы")
             st.line_chart(history_df[["Переходы", "Корзина", "Заказы"]])
             st.subheader("Конверсия в корзину и конверсия в заказ")
@@ -986,16 +1014,16 @@ def render_sku_page(sellers, sellers_by_id, initial_nm_id=None, selected_seller=
     with ads_tab:
         st.subheader("Реклама")
         ads_1, ads_2, ads_3, ads_4 = st.columns(4)
-        ads_1.metric("CTR рекламы ⓘ", f"{current_metrics['ctr'] or 0:.1f}%", help=CTR_HELP)
-        ads_2.metric("CPC ⓘ", format_money(current_metrics["cpc"] or 0), help=CPC_HELP)
-        ads_3.metric("ДРР ⓘ", f"{current_metrics['drr'] or 0:.1f}%", help=DRR_HELP)
+        ads_1.metric("CTR рекламы ⓘ", _format_optional_percent(current_metrics["ctr"]), help=CTR_HELP)
+        ads_2.metric("CPC ⓘ", _format_optional_money(current_metrics["cpc"]), help=CPC_HELP)
+        ads_3.metric("ДРР ⓘ", _format_optional_percent(current_metrics["drr"]), help=DRR_HELP)
         ads_4.metric("Количество кампаний", format_number(_campaign_count(ads_rows)))
         ads_diagnosis, ads_evidence = _ads_diagnosis(current_metrics, previous_metrics)
         st.markdown(f"**Рекламный диагноз:** {ads_diagnosis} {help_icon(SKU_DIAGNOSIS_HELP)}", unsafe_allow_html=True)
         for item in ads_evidence:
             st.caption(item)
         if ads_df.empty:
-            ads_debug = _row_date_debug(ads_rows, start_date, end_date, date_field="ads date")
+            ads_debug = _row_date_debug(ads_rows, start_date, end_date, date_field="daily_ads_metrics report_date", date_getter=_report_date_value)
             st.info(f"История рекламы за выбранный период не найдена. Причина: {ads_debug.get('reason') or 'NO_DATA_FOR_SELECTED_DATE'}")
             with st.expander("Техническое объяснение", expanded=False):
                 st.json(ads_debug)
