@@ -844,6 +844,9 @@ def _normalize_ads_metric_row(row):
         "campaign_name": _first_present(row, ["campaign_name", "campaignName"]),
         "campaign_status": _first_present(row, ["campaign_status", "campaignStatus"]),
         "campaign_type": _first_present(row, ["campaign_type", "campaignType"]),
+        "attribution_method": _first_present(
+            row, ["attribution_method", "attributionMethod"], default="unknown"
+        ),
         "nm_id": _to_int(_first_present(row, ["nm_id", "nmId", "nm"])),
         "vendor_code": _first_present(row, ["vendor_code", "vendorCode"]),
         "title": row.get("title"),

@@ -219,6 +219,20 @@ def _recalculate_ads_ratios(row, prefix=""):
 
 
 
+def _ads_attribution_method(row):
+    raw_json = row.get("raw_json") if isinstance(row, dict) else None
+    method = (row or {}).get("attributionMethod") or (
+        row or {}
+    ).get("attribution_method")
+    if method in (None, "") and isinstance(raw_json, dict):
+        method = raw_json.get("attributionMethod") or raw_json.get("attribution_method")
+    return method or "unknown"
+
+
+def _ads_has_valid_attribution(row):
+    return _ads_attribution_method(row) in {"direct", "campaign_nm_id", "distributed"}
+
+
 def _ads_distribution_warning(row):
     raw_json = row.get("raw_json") if isinstance(row, dict) else None
     return bool(
@@ -244,6 +258,8 @@ def _mark_duplicated_campaign_sku_rows(ads_rows):
     rows = [row for row in ads_rows or [] if isinstance(row, dict)]
     grouped = {}
     for row in rows:
+        if _ads_attribution_method(row) == "distributed":
+            continue
         key = _ads_distribution_key(row)
         nm_id = row.get("nmId") or row.get("nm_id") or row.get("nm")
         if key[2] in (None, "") or nm_id in (None, ""):
@@ -269,6 +285,22 @@ def _mark_duplicated_campaign_sku_rows(ads_rows):
             ]
         warning_rows += 1
     return duplicated_rows, warning_rows
+
+
+def _log_ads_attribution(ads_rows):
+    counts = {"direct": 0, "distributed": 0, "unknown": 0}
+    for row in ads_rows or []:
+        method = _ads_attribution_method(row)
+        if method in {"direct", "campaign_nm_id"}:
+            counts["direct"] += 1
+        elif method == "distributed":
+            counts["distributed"] += 1
+        else:
+            counts["unknown"] += 1
+    print("ADS ATTRIBUTION:")
+    print(f"direct={counts['direct']}")
+    print(f"distributed={counts['distributed']}")
+    print(f"unknown={counts['unknown']}")
 
 
 def _log_ads_data_quality(ads_rows, duplicated_rows, warning_rows):
@@ -319,6 +351,7 @@ def aggregate_ads_rows(ads_rows):
     """Aggregate WB Ads rows to the daily_ads_metrics unique key."""
     duplicated_rows, warning_rows = _mark_duplicated_campaign_sku_rows(ads_rows)
     _log_ads_data_quality(ads_rows, duplicated_rows, warning_rows)
+    _log_ads_attribution(ads_rows)
     grouped = {}
     order = []
     for row in ads_rows or []:
@@ -369,6 +402,22 @@ def aggregate_ads_rows(ads_rows):
             search_queries.extend(row.get("searchQueries") or [])
         merged["searchQueries"] = search_queries
         merged["adsRawRowsCount"] = len(rows)
+        methods = {_ads_attribution_method(row) for row in rows}
+        if len(methods) == 1:
+            merged["attributionMethod"] = next(iter(methods))
+        elif "unknown" in methods:
+            merged["attributionMethod"] = "unknown"
+        elif "distributed" in methods:
+            merged["attributionMethod"] = "distributed"
+        else:
+            merged["attributionMethod"] = "direct"
+        merged["attributionConfidence"] = {
+            "direct": "high",
+            "campaign_nm_id": "medium",
+            "distributed": "medium",
+            "unknown": "low",
+        }.get(merged.get("attributionMethod"), "low")
+
         if any(_ads_distribution_warning(row) for row in rows):
             merged["adsDistributionWarning"] = True
             merged["adsDistributionWarningReason"] = (
@@ -520,6 +569,14 @@ def _ads_coverage(row):
 
 
 def _ads_management_diagnosis(row):
+    if not _ads_has_valid_attribution(row):
+        return {
+            "status": "🟡 Требует проверки",
+            "confirmation": "сомнительная атрибуция рекламных данных к SKU",
+            "reason": "LOW_ADS_ATTRIBUTION_CONFIDENCE",
+            "coverage": _ads_coverage(row),
+        }
+
     if _ads_distribution_warning(row):
         return {
             "status": "🟡 Требует проверки",
@@ -939,6 +996,9 @@ def analyze_ads_problems(ads_rows, funnel_rows=None, ads_api_partial=False):
     funnel_by_nm_id = _funnel_rows_by_nm_id(funnel_rows)
 
     for row in ads_rows or []:
+        if not _ads_has_valid_attribution(row):
+            continue
+
         ctr = _to_number(row.get("ctr"))
         cpc = _to_number(row.get("cpc"))
         cpm = _to_number(row.get("cpm"))

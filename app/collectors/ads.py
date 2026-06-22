@@ -681,7 +681,27 @@ def _debug_ads_raw(campaigns, report_date):
     _debug_log(f"ADS RAW DEBUG DUMP: {path}")
 
 
-def _aggregate_campaign(campaign, nm_row=None):
+def _nm_row_has_own_metrics(nm_row):
+    if not isinstance(nm_row, dict):
+        return False
+    return any(
+        nm_row.get(key) not in (None, "")
+        for key in (
+            "views",
+            "impressions",
+            "clicks",
+            "sum",
+            "spend",
+            "orders",
+            "sum_price",
+            "ordersSum",
+        )
+    )
+
+
+def _aggregate_campaign(
+    campaign, nm_row=None, distribution_factor=1, attribution_method=None
+):
     nm_rows = _flatten_nm_stats(campaign)
     impressions = _to_number(campaign.get("views") or campaign.get("impressions"))
     clicks = _to_number(campaign.get("clicks"))
@@ -720,16 +740,38 @@ def _aggregate_campaign(campaign, nm_row=None):
             nm_row.get("sum_price") or nm_row.get("ordersSum"), orders_sum
         )
 
+    if distribution_factor and distribution_factor > 1:
+        impressions = impressions / distribution_factor
+        clicks = clicks / distribution_factor
+        spend = spend / distribution_factor
+        orders = orders / distribution_factor
+        orders_sum = orders_sum / distribution_factor
+
     ctr = _to_number(campaign.get("ctr")) or _safe_percent(clicks, impressions)
     cpc = _to_number(campaign.get("cpc")) or _safe_ratio(spend, clicks)
     cpm = _to_number(campaign.get("cpm")) or _safe_ratio(spend * 1000, impressions)
     drr = _safe_percent(spend, orders_sum)
 
+    resolved_nm_id = first_nm.get("nm") or first_nm.get("nmId") or campaign.get("nm")
+    if attribution_method is None:
+        if nm_row and _nm_row_has_own_metrics(nm_row):
+            attribution_method = "direct"
+        elif resolved_nm_id not in (None, ""):
+            attribution_method = "campaign_nm_id"
+        else:
+            attribution_method = "unknown"
+    attribution_confidence = {
+        "direct": "high",
+        "campaign_nm_id": "medium",
+        "distributed": "medium",
+        "unknown": "low",
+    }.get(attribution_method, "low")
+
     return {
         "campaignId": _campaign_id(campaign),
         "advertId": campaign.get("advertId") or _campaign_id(campaign),
         "campaignName": _campaign_name(campaign),
-        "nmId": first_nm.get("nm") or first_nm.get("nmId") or campaign.get("nm"),
+        "nmId": resolved_nm_id,
         "vendorCode": first_nm.get("vendorCode") or campaign.get("vendorCode") or "",
         "title": first_nm.get("name")
         or first_nm.get("title")
@@ -752,6 +794,9 @@ def _aggregate_campaign(campaign, nm_row=None):
         "subject": _extract_subject(campaign),
         "campaignStatus": _extract_status(campaign),
         "campaignType": _extract_campaign_type(campaign),
+        "attributionMethod": attribution_method,
+        "attributionSource": "nm_stats" if nm_row else "campaign",
+        "attributionConfidence": attribution_confidence,
     }
 
 
@@ -818,11 +863,30 @@ def _append_campaign_rows(target_rows, campaign):
     nm_rows = _flatten_nm_stats(campaign)
 
     if nm_rows:
-        campaign_rows.extend(
-            _aggregate_campaign(campaign, nm_row) for nm_row in nm_rows
-        )
+        rows_with_own_metrics = [row for row in nm_rows if _nm_row_has_own_metrics(row)]
+        if rows_with_own_metrics:
+            campaign_rows.extend(
+                _aggregate_campaign(campaign, nm_row, attribution_method="direct")
+                for nm_row in rows_with_own_metrics
+            )
+        else:
+            distribution_factor = len(nm_rows)
+            attribution_method = (
+                "distributed" if distribution_factor > 1 else "campaign_nm_id"
+            )
+            campaign_rows.extend(
+                _aggregate_campaign(
+                    campaign,
+                    nm_row,
+                    distribution_factor=distribution_factor,
+                    attribution_method=attribution_method,
+                )
+                for nm_row in nm_rows
+            )
     else:
-        campaign_rows.append(_aggregate_campaign(campaign))
+        campaign_rows.append(
+            _aggregate_campaign(campaign, attribution_method="unknown")
+        )
 
     target_rows.extend(campaign_rows)
     return campaign_rows
