@@ -233,6 +233,10 @@ def _ads_has_valid_attribution(row):
     return _ads_attribution_method(row) in {"direct", "campaign_nm_id", "distributed"}
 
 
+def _ads_is_direct_attribution(row):
+    return _ads_attribution_method(row) == "direct"
+
+
 def _ads_distribution_warning(row):
     raw_json = row.get("raw_json") if isinstance(row, dict) else None
     return bool(
@@ -258,32 +262,53 @@ def _mark_duplicated_campaign_sku_rows(ads_rows):
     rows = [row for row in ads_rows or [] if isinstance(row, dict)]
     grouped = {}
     for row in rows:
-        if _ads_attribution_method(row) == "distributed":
-            continue
-        key = _ads_distribution_key(row)
+        report_date = row.get("date") or row.get("report_date") or row.get("selectedPeriod")
+        seller_id = row.get("seller_id") or row.get("sellerId")
+        campaign_id = row.get("campaignId") or row.get("campaign_id")
         nm_id = row.get("nmId") or row.get("nm_id") or row.get("nm")
-        if key[2] in (None, "") or nm_id in (None, ""):
+        if report_date in (None, "") or campaign_id in (None, "") or nm_id in (None, ""):
             continue
-        grouped.setdefault(key, set()).add(nm_id)
+        grouped.setdefault((report_date, seller_id, campaign_id), set()).add(nm_id)
 
-    warning_keys = {key for key, nm_ids in grouped.items() if len(nm_ids) > 1}
+    multi_sku_keys = {key for key, nm_ids in grouped.items() if len(nm_ids) > 1}
     duplicated_rows = 0
     warning_rows = 0
     for row in rows:
-        if _ads_distribution_key(row) not in warning_keys:
-            continue
-        duplicated_rows += 1
-        row["adsDistributionWarning"] = True
-        row["adsDistributionWarningReason"] = (
-            "campaign metrics duplicated across multiple SKU"
+        key = (
+            row.get("date") or row.get("report_date") or row.get("selectedPeriod"),
+            row.get("seller_id") or row.get("sellerId"),
+            row.get("campaignId") or row.get("campaign_id"),
         )
-        raw_json = row.get("raw_json")
-        if isinstance(raw_json, dict):
-            raw_json["adsDistributionWarning"] = True
-            raw_json["adsDistributionWarningReason"] = row[
-                "adsDistributionWarningReason"
-            ]
-        warning_rows += 1
+        if key not in multi_sku_keys:
+            continue
+
+        duplicated_rows += 1
+        clicks = _to_number(row.get("clicks"))
+        orders = _to_number(row.get("orders"))
+        spend = _to_number(row.get("spend"))
+        if clicks > 0 or orders > 0:
+            row["attributionMethod"] = "direct"
+            row["attributionConfidence"] = "high"
+            continue
+        if spend > 0:
+            row["attributionMethod"] = "distributed"
+            row["attributionConfidence"] = "low"
+            row["adsDistributionWarning"] = True
+            row["adsDistributionWarningReason"] = (
+                "campaign spend distributed across multiple SKU without direct clicks or orders"
+            )
+            raw_json = row.get("raw_json")
+            if isinstance(raw_json, dict):
+                raw_json["attributionMethod"] = row["attributionMethod"]
+                raw_json["attributionConfidence"] = row["attributionConfidence"]
+                raw_json["adsDistributionWarning"] = True
+                raw_json["adsDistributionWarningReason"] = row[
+                    "adsDistributionWarningReason"
+                ]
+            warning_rows += 1
+        else:
+            row["attributionMethod"] = "unknown"
+            row["attributionConfidence"] = "low"
     return duplicated_rows, warning_rows
 
 
@@ -414,7 +439,7 @@ def aggregate_ads_rows(ads_rows):
         merged["attributionConfidence"] = {
             "direct": "high",
             "campaign_nm_id": "medium",
-            "distributed": "medium",
+            "distributed": "low",
             "unknown": "low",
         }.get(merged.get("attributionMethod"), "low")
 
@@ -574,6 +599,14 @@ def _ads_management_diagnosis(row):
             "status": "🟡 Требует проверки",
             "confirmation": "сомнительная атрибуция рекламных данных к SKU",
             "reason": "LOW_ADS_ATTRIBUTION_CONFIDENCE",
+            "coverage": _ads_coverage(row),
+        }
+
+    if _ads_attribution_method(row) == "distributed":
+        return {
+            "status": "🟡 Низкая уверенность",
+            "confirmation": "расход распределён по multi-SKU кампании без прямых кликов или заказов",
+            "reason": "DISTRIBUTED_ADS_ATTRIBUTION",
             "coverage": _ads_coverage(row),
         }
 
@@ -996,7 +1029,7 @@ def analyze_ads_problems(ads_rows, funnel_rows=None, ads_api_partial=False):
     funnel_by_nm_id = _funnel_rows_by_nm_id(funnel_rows)
 
     for row in ads_rows or []:
-        if not _ads_has_valid_attribution(row):
+        if not _ads_is_direct_attribution(row):
             continue
 
         ctr = _to_number(row.get("ctr"))

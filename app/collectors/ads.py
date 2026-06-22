@@ -763,7 +763,7 @@ def _aggregate_campaign(
     attribution_confidence = {
         "direct": "high",
         "campaign_nm_id": "medium",
-        "distributed": "medium",
+        "distributed": "low",
         "unknown": "low",
     }.get(attribution_method, "low")
 
