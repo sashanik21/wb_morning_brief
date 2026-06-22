@@ -2,7 +2,7 @@ name: WB Morning Brief Scheduled
 
 on:
   schedule:
-    - cron: '05 07 * * *'
+    - cron: '20 07 * * *'
   workflow_dispatch:
 
 jobs:
