@@ -828,11 +828,19 @@ def _normalize_ads_metric_row(row):
     if seller_name not in (None, ""):
         raw_json.setdefault("sellerName", seller_name)
         raw_json.setdefault("seller_name", seller_name)
+    attribution_method = _first_present(
+        row, ["attribution_method", "attributionMethod"], default="unknown"
+    )
+    attribution_confidence = _first_present(
+        row, ["attribution_confidence", "attributionConfidence"], default="low"
+    )
+    raw_json["attributionMethod"] = attribution_method
+    raw_json["attributionConfidence"] = attribution_confidence
     if row.get("adsDistributionWarning") or row.get("ads_distribution_warning"):
         raw_json["adsDistributionWarning"] = True
         raw_json.setdefault(
             "adsDistributionWarningReason",
-            "campaign metrics duplicated across multiple SKU",
+            "campaign spend distributed across multiple SKU without direct clicks or orders",
         )
 
     return {
@@ -844,9 +852,7 @@ def _normalize_ads_metric_row(row):
         "campaign_name": _first_present(row, ["campaign_name", "campaignName"]),
         "campaign_status": _first_present(row, ["campaign_status", "campaignStatus"]),
         "campaign_type": _first_present(row, ["campaign_type", "campaignType"]),
-        "attribution_method": _first_present(
-            row, ["attribution_method", "attributionMethod"], default="unknown"
-        ),
+        "attribution_method": attribution_method,
         "nm_id": _to_int(_first_present(row, ["nm_id", "nmId", "nm"])),
         "vendor_code": _first_present(row, ["vendor_code", "vendorCode"]),
         "title": row.get("title"),
