@@ -1757,13 +1757,14 @@ with st.sidebar:
             else date.today()
         )
         for key in ("ads_cluster_start_date", "ads_cluster_end_date"):
-            selected_date = st.session_state.get(key)
-            selected_date_iso = selected_date.isoformat() if hasattr(selected_date, "isoformat") else str(selected_date or "")
-            if not selected_date or (seller_available_dates and selected_date_iso not in seller_available_dates):
+            if key not in st.session_state:
                 st.session_state[key] = cluster_default_date
 
         cluster_start_date = st.date_input("дата начала", key="ads_cluster_start_date")
         cluster_end_date = st.date_input("дата окончания", key="ads_cluster_end_date")
+        cluster_dates_are_valid = cluster_end_date >= cluster_start_date
+        if not cluster_dates_are_valid:
+            st.error("Дата окончания не может быть меньше даты начала")
 
         manual_campaign_id_raw = st.text_input(
             "ID рекламной кампании",
@@ -1841,6 +1842,8 @@ with st.sidebar:
 
         if show_cluster_report and campaign_search and manual_campaign_id_parsed is None:
             st.error("ID кампании должен быть числом")
+        elif show_cluster_report and not cluster_dates_are_valid:
+            st.error("Дата окончания не может быть меньше даты начала")
         elif show_cluster_report:
             selected_campaign_debug = (
                 found_cluster_campaign
