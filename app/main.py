@@ -42,7 +42,7 @@ from app.collectors.funnel import (
 )
 from app.collectors.qbiki import collect_qbiki_metrics
 from app.collectors.supplies import collect_supply_stock_metrics
-from app.config import set_wb_api_token
+from app.config import REQUIRED_SELLERS, set_wb_api_token
 from app.reports.api_coverage import (
     build_api_coverage_report,
     coverage_summary_line,
@@ -259,6 +259,71 @@ def _seller_id(seller):
         return None
 
     return seller.get("seller_id") or seller.get("id")
+
+
+def _seller_name(seller):
+    if not isinstance(seller, dict):
+        return ""
+
+    return seller.get("seller_name") or seller.get("name") or ""
+
+
+def _seller_insert_payload(required_seller, existing_sellers):
+    existing_keys = {key for seller in existing_sellers or [] for key in seller.keys()}
+    default_keys = {
+        "seller_name",
+        "name",
+        "cabinet_name",
+        "status",
+        "wb_api_token_env",
+        "wb_token_secret_name",
+    }
+    target_keys = existing_keys & default_keys or default_keys - {"name"}
+    payload = {
+        key: value
+        for key, value in required_seller.items()
+        if key in target_keys and value not in (None, "")
+    }
+
+    if "name" in target_keys:
+        payload["name"] = required_seller.get("name") or required_seller.get("seller_name")
+    if "seller_name" in target_keys:
+        payload["seller_name"] = required_seller.get("seller_name") or required_seller.get("name")
+
+    payload.setdefault("seller_name", required_seller.get("seller_name") or required_seller.get("name"))
+    payload.setdefault("status", "active")
+    return payload
+
+
+def _ensure_required_sellers(storage, sellers):
+    ensured_sellers = list(sellers or [])
+    existing_names = {_seller_name(seller) for seller in ensured_sellers}
+
+    for required_seller in REQUIRED_SELLERS:
+        seller_name = required_seller.get("seller_name") or required_seller.get("name")
+        if seller_name in existing_names:
+            continue
+
+        payload = _seller_insert_payload(required_seller, ensured_sellers)
+        inserted = []
+        if hasattr(storage, "_get_client"):
+            try:
+                response = storage._get_client().table("sellers").insert(payload).execute()
+                inserted = response.data or []
+                _summary_log(f"SELLER AUTO-CREATE: {seller_name} status=created")
+            except Exception as error:
+                _summary_log(f"SELLER AUTO-CREATE: {seller_name} status=failed error={error}")
+
+        if inserted:
+            ensured_sellers.extend(inserted)
+        else:
+            runtime_seller = payload.copy()
+            runtime_seller.setdefault("seller_name", seller_name)
+            runtime_seller.setdefault("status", "active")
+            ensured_sellers.append(runtime_seller)
+        existing_names.add(seller_name)
+
+    return ensured_sellers
 
 
 def _to_float(value):
@@ -1610,7 +1675,7 @@ def main():
 
     storage = get_storage()
 
-    sellers = storage.get_sellers()
+    sellers = _ensure_required_sellers(storage, storage.get_sellers())
     active_sellers = [seller for seller in sellers if seller.get("status") == "active"]
 
     _summary_log(
