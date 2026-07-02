@@ -295,6 +295,35 @@ def _seller_insert_payload(required_seller, existing_sellers):
     return payload
 
 
+def _next_seller_id(storage, existing_sellers):
+    numeric_ids = []
+    for seller in existing_sellers or []:
+        seller_id = _seller_id(seller)
+        try:
+            numeric_ids.append(int(seller_id))
+        except (TypeError, ValueError):
+            continue
+
+    if hasattr(storage, "_get_client"):
+        try:
+            response = (
+                storage._get_client()
+                .table("sellers")
+                .select("id")
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            for row in response.data or []:
+                try:
+                    numeric_ids.append(int(row.get("id")))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+        except Exception as error:
+            _summary_log(f"SELLER AUTO-CREATE: next id lookup failed error={error}")
+
+    return (max(numeric_ids) if numeric_ids else 0) + 1
+
 def _ensure_required_sellers(storage, sellers):
     ensured_sellers = list(sellers or [])
     existing_names = {_seller_name(seller) for seller in ensured_sellers}
@@ -305,6 +334,7 @@ def _ensure_required_sellers(storage, sellers):
             continue
 
         payload = _seller_insert_payload(required_seller, ensured_sellers)
+        payload.setdefault("id", _next_seller_id(storage, ensured_sellers))
         inserted = []
         if hasattr(storage, "_get_client"):
             try:
