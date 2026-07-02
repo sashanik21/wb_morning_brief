@@ -8,6 +8,17 @@ WB_API_TOKEN = os.getenv(DEFAULT_WB_TOKEN_SECRET_NAME) or ""
 
 HEADERS = {"Authorization": WB_API_TOKEN}
 
+REQUIRED_SELLERS = [
+    {
+        "seller_name": "ООО Парадайс",
+        "cabinet_name": "WB ООО Парадайс",
+        "status": "active",
+        "wb_api_token_env": "WB_API_TOKEN_PARADIS",
+        "wb_token_secret_name": "WB_API_TOKEN_PARADIS",
+    },
+]
+
+
 
 def set_wb_api_token(secret_name):
     global CURRENT_WB_TOKEN_SECRET_NAME, WB_API_TOKEN
